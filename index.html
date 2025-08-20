@@ -22,14 +22,14 @@
       --blocked: #6aa84f;
 
       /* Managed from JS */
-      --vh: 1vh;
-      --header-h: 56px;   /* will be overwritten by app.js -> sizeGrid() */
-      --footer-h: 76px;   /* keep in sync with footer height – JS overwrites */
-      --rows: 2;          /* JS sets the real row count (14 tiles / cols) */
+      --vh: 1vh;          /* app.js sets this to 1% of window.innerHeight */
+      --header-h: 56px;   /* overwritten by app.js -> sizeGrid() */
+      --footer-h: 76px;   /* overwritten by app.js -> sizeGrid() */
+      --rows: 2;          /* app.js sets the real row count (14 tiles / cols) */
 
       /* Layout helpers */
       --row-gap: .6rem;   /* must match .grid gap */
-      --main-vpad: 16px;  /* approx top padding inside main; keep small */
+      --main-vpad: 16px;  /* total vertical padding inside main */
     }
 
     * { box-sizing: border-box; }
@@ -42,7 +42,7 @@
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 
       /* No scrollbars anywhere */
-      height: 100vh;
+      height: calc(var(--vh) * 100);
       overflow: hidden;
 
       /* Flex column for header / content / footer */
@@ -81,11 +81,7 @@
       z-index: 2;                  /* ensure text stays above the logo */
     }
 
-    /* ===== Overlayed logo (does not take layout space) =====
-       - Absolutely positioned under the candidate name
-       - Large but responsive
-       - Pointer-events disabled so taps pass through
-       - Opacity can be tuned to taste (acts like a watermark) */
+    /* ===== Overlayed logo (does not take layout space) ===== */
     .company-logo-overlay {
       position: absolute;
       left: 0;
@@ -148,11 +144,11 @@
       display: block;
       margin: .15rem 0 .6rem;
       padding: .45rem .6rem;
-      border-radius: 10px;
-      font-size: .9rem;
+      border-radius: 10px; font-size: .9rem;
       color: var(--muted);
       border: 1px solid #2a3446;
       background: #131926;
+
       /* Let the grid take the remaining space below */
       flex: 0 0 auto;
       position: relative;
@@ -169,9 +165,13 @@
       width: 100%;
       max-width: 100%;
 
-      /* Each row height is computed from viewport minus header/footer/main padding */
+      /* Available height = true viewport - header - footer - main padding */
+      /* Subtract total vertical gaps: (rows - 1) * row-gap */
       grid-auto-rows: calc(
-        (100vh - var(--header-h) - var(--footer-h) - var(--main-vpad)) / var(--rows)
+        (
+          (var(--vh) * 100) - var(--header-h) - var(--footer-h) - var(--main-vpad)
+          - ((var(--rows) - 1) * var(--row-gap))
+        ) / var(--rows)
       );
     }
     @media (max-width: 900px) { .grid { grid-template-columns: repeat(5, 1fr); } }
@@ -291,7 +291,7 @@
     <div class="name-and-logo">
       <h1 id="candidateName"></h1>
       <!-- Overlayed logo (does not affect layout) -->
-      <img src="ARMSLOGO.PNG" alt="Company Logo" class="company-logo-overlay" />
+      <img src="ARMSLOGO.png" alt="Company Logo" class="company-logo-overlay" />
     </div>
     <div class="spacer"></div>
     <button id="refreshBtn">Refresh</button>

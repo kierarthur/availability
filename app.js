@@ -34,6 +34,55 @@ const els = {
   helpMsg: document.getElementById('helpMsg') // if you add a help banner element
 };
 
+// ===== Auth guard (fatal overlay) =====
+let AUTH_DENIED = false;
+function showAuthError(message = 'Not an authorised user') {
+  if (AUTH_DENIED) return;
+  AUTH_DENIED = true;
+
+  // Hide interactive UI
+  try { els.footer && els.footer.classList.add('hidden'); } catch {}
+  try { els.grid && (els.grid.innerHTML = ''); } catch {}
+  try { els.helpMsg && els.helpMsg.classList.add('hidden'); } catch {}
+  try { els.submitBtn && (els.submitBtn.disabled = true); } catch {}
+  try { els.clearBtn && (els.clearBtn.disabled = true); } catch {}
+  try { els.refreshBtn && (els.refreshBtn.disabled = true); } catch {}
+
+  // Remove any loading overlay
+  hideLoading();
+
+  // Create a full-screen blocking message
+  const div = document.createElement('div');
+  div.id = 'authErrorOverlay';
+  div.setAttribute('role', 'alertdialog');
+  div.setAttribute('aria-modal', 'true');
+  div.style.position = 'fixed';
+  div.style.inset = '0';
+  div.style.zIndex = '10000';
+  div.style.display = 'flex';
+  div.style.alignItems = 'center';
+  div.style.justifyContent = 'center';
+  div.style.background = 'rgba(10,12,16,0.85)';
+  div.style.backdropFilter = 'blur(2px)';
+  div.innerHTML = `
+    <div style="
+      border:1px solid #2a3446;
+      background:#131926;
+      color:#e7ecf3;
+      padding:1rem 1.2rem;
+      border-radius:12px;
+      font-weight:800;
+      font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
+      box-shadow:0 12px 30px rgba(0,0,0,.4);
+      max-width: 90vw;
+      text-align:center;
+    ">
+      ${message}
+    </div>
+  `;
+  document.body.appendChild(div);
+}
+
 // State
 let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)
 let draft = {};               // ymd -> status (only diffs from baseline)
@@ -186,7 +235,7 @@ document.addEventListener('visibilitychange', () => {
       }
       showLoading();
       loadFromServer({ force: true })
-        .catch(err => showToast('Reload failed: ' + err.message))
+        .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
         .finally(hideLoading);
     } else {
       // Auto reload when returning if not making changes
@@ -547,8 +596,10 @@ function authToken() {
 }
 
 async function loadFromServer({ force=false } = {}) {
+  // If there is no identity at all, deny immediately
   if (!Object.keys(identity).length) {
-    throw new Error('Missing identity: provide ?k= or ?msisdn=');
+    showAuthError('Not an authorised user');
+    throw new Error('__AUTH_STOP__');
   }
 
   showLoading();
@@ -560,10 +611,32 @@ async function loadFromServer({ force=false } = {}) {
 
     const url = `${API_BASE_URL}?${params.toString()}`;
     const res = await fetch(url, { method: 'GET', credentials: 'omit' });
-    const json = await res.json().catch(() => ({}));
-    if (!res.ok || !json || json.ok === false) {
-      const msg = (json && json.error) || `HTTP ${res.status}`;
+
+    // Best effort JSON
+    let json = {};
+    try { json = await res.json(); } catch { json = {}; }
+
+    // Unauthorised cases → show fatal message and abort
+    const errCode = (json && json.error) || '';
+    if (!res.ok) {
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        showAuthError('Not an authorised user');
+        throw new Error('__AUTH_STOP__');
+      }
+      const msg = errCode || `HTTP ${res.status}`;
       throw new Error(msg);
+    }
+    if (json && json.ok === false) {
+      const unauthErrors = new Set([
+        'INVALID_OR_UNKNOWN_IDENTITY',
+        'NOT_IN_CANDIDATE_LIST',
+        'FORBIDDEN'
+      ]);
+      if (unauthErrors.has(errCode)) {
+        showAuthError('Not an authorised user');
+        throw new Error('__AUTH_STOP__');
+      }
+      throw new Error(errCode || 'SERVER_ERROR');
     }
 
     baseline = json;
@@ -599,6 +672,7 @@ async function loadFromServer({ force=false } = {}) {
 }
 
 async function submitChanges() {
+  if (AUTH_DENIED) return; // Block any action after auth failure
   if (!baseline) return;
 
   const changes = [];
@@ -634,7 +708,23 @@ async function submitChanges() {
     let json = {};
     try { json = JSON.parse(text); } catch { /* keep text for diagnostics */ }
 
+    // Handle unauthorised on submit too
+    if (!res.ok) {
+      if (res.status === 400 || res.status === 401 || res.status === 403) {
+        showAuthError('Not an authorised user');
+        throw new Error('__AUTH_STOP__');
+      }
+    }
     if (!res.ok || !json || json.ok === false) {
+      const unauthErrors = new Set([
+        'INVALID_OR_UNKNOWN_IDENTITY',
+        'NOT_IN_CANDIDATE_LIST',
+        'FORBIDDEN'
+      ]);
+      if (json && unauthErrors.has(json.error)) {
+        showAuthError('Not an authorised user');
+        throw new Error('__AUTH_STOP__');
+      }
       const msg = (json && json.error) || `HTTP ${res.status}`;
       const extra = text && text !== '{}' ? ` – ${text.slice(0,200)}` : '';
       throw new Error(msg + extra);
@@ -657,7 +747,9 @@ async function submitChanges() {
     // NOTE: Do NOT call showLoading() here (avoids double spinner).
     await loadFromServer({ force: true });
   } catch (err) {
-    showToast('Submit failed: ' + (err.message || err));
+    if (String(err && err.message) !== '__AUTH_STOP__') {
+      showToast('Submit failed: ' + (err.message || err));
+    }
   } finally {
     hideLoading();
   }
@@ -687,7 +779,7 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
   try {
     await loadFromServer({ force: true });
   } catch (e) {
-    showToast('Reload failed: ' + e.message);
+    if (!AUTH_DENIED) showToast('Reload failed: ' + e.message);
   } finally {
     hideLoading();
   }
@@ -703,12 +795,21 @@ window.addEventListener('orientationchange', () => {
 // Boot
 (async function init() {
   parseQuery();
+
+  // If no k or msisdn provided in URL → deny immediately
+  if (!identity.k && !identity.msisdn) {
+    showAuthError('Not an authorised user');
+    return;
+  }
+
   loadDraft();
   showLoading(); // show immediately on first load
   try {
     await loadFromServer({ force: true });
   } catch (e) {
-    showToast('Load failed: ' + e.message, 5000);
+    if (String(e && e.message) !== '__AUTH_STOP__') {
+      showToast('Load failed: ' + e.message, 5000);
+    }
   } finally {
     // Ensure initial sizing even if load fails
     sizeGrid();
