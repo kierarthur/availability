@@ -30,6 +30,9 @@
       /* Layout helpers */
       --row-gap: .6rem;   /* must match .grid gap */
       --main-vpad: 16px;  /* total vertical padding inside main */
+
+      /* NEW: tiny slack so the last row doesn't collapse on tight viewports */
+      --row-safety: 10px;
     }
 
     * { box-sizing: border-box; }
@@ -165,12 +168,14 @@
       width: 100%;
       max-width: 100%;
 
-      /* Available height = true viewport - header - footer - main padding */
-      /* Subtract total vertical gaps: (rows - 1) * row-gap */
+      /* Available height = true viewport - header - footer - main padding
+         Subtract total vertical gaps: (rows - 1) * row-gap
+         Add a small safety margin so the last row doesn't collapse on tight viewports */
       grid-auto-rows: calc(
         (
           (var(--vh) * 100) - var(--header-h) - var(--footer-h) - var(--main-vpad)
           - ((var(--rows) - 1) * var(--row-gap))
+          + var(--row-safety)
         ) / var(--rows)
       );
     }
@@ -185,12 +190,13 @@
       border-radius: 14px;
       padding: .6rem;
 
-      /* 3-row grid so status sits in a consistent row */
+      /* 3-row grid so status sits in a consistent row.
+         Force the details row to have a minimum height so it can't collapse. */
       display: grid;
-      grid-template-rows: auto auto 1fr; /* header, status, sub (fills rest) */
+      grid-template-rows: auto auto minmax(1.8em, 1fr); /* header, status, sub */
 
       transition: background .15s ease;
-      overflow: hidden;   /* ensure no scroll inside tiles */
+      overflow: hidden;   /* avoid inner scroll */
     }
     .tile:hover { background: var(--tile-hover); }
 
@@ -233,14 +239,14 @@
     .status-booked  { color: var(--booked); }
     .status-blocked { color: var(--blocked); }
 
-    /* Sub info occupies the final row; its height won't push the status */
+    /* Sub info (details). Give it a minimum so at least one line always shows. */
     .tile-sub {
       margin-top: .2rem;
       color: var(--muted);
       font-size: .8rem;
       line-height: 1.2;
       overflow: hidden;          /* stay within tile */
-      /* Removed ellipsis so we shrink instead of clipping important text */
+      min-height: 1.6em;         /* NEW: protect from collapsing to 0 */
     }
     .tile .edit-note { color: var(--accent); font-size: .78rem; }
 
@@ -347,7 +353,6 @@
       }
 
       function measureTile(tile) {
-        const csTile = getComputedStyle(tile);
         const padV = getNumericPx(tile, 'paddingTop') + getNumericPx(tile, 'paddingBottom');
         const innerH = tile.clientHeight - padV;
 
