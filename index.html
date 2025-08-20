@@ -22,20 +22,21 @@
       --blocked: #6aa84f;
 
       /* Managed from JS */
-      --vh: 1vh;          /* app.js may set this; we override on iOS below */
-      --header-h: 56px;   /* overwritten by app.js -> sizeGrid() */
-      --footer-h: 76px;   /* visual footer content height (excluding safe area) */
-      --rows: 2;          /* app.js sets the real row count (14 tiles / cols) */
+      --vh: 1vh;                 /* updated via JS; iOS uses visualViewport */
+      --header-h: 56px;          /* updated by app.js sizeGrid() */
+      --footer-h: 76px;          /* JS overwrites with measured height */
+      --rows: 2;                 /* app.js sets (14 tiles / columns) */
 
       /* Layout helpers */
-      --row-gap: .6rem;   /* must match .grid gap */
-      --main-vpad: 16px;  /* total vertical padding inside main */
+      --row-gap: .6rem;          /* must match .grid gap */
+      --main-vpad: 16px;         /* vertical padding inside <main> */
 
-      /* iPhone-specific helpers (defaults harmless elsewhere) */
-      --footer-safe: env(safe-area-inset-bottom); /* 0 on non‑notch devices */
-      --ios-bottom-guard: 0px;    /* we set to ~12px on iPhone via JS */
+      /* iPhone-only helpers (safe to keep at 0 elsewhere) */
+      --footer-safe: env(safe-area-inset-bottom);
+      --ios-bottom-guard: 0px;   /* JS sets ~16–20px on iPhone */
+      --ios-tile-budget: 0px;    /* JS sets ~12–16px on iPhone when tight */
 
-      /* Small slack to avoid starving the last row due to sub‑pixel jitter */
+      /* Small slack for sub-pixel jitter */
       --row-safety: 12px;
     }
 
@@ -51,7 +52,7 @@
       /* Stop iOS auto-text zoom from changing measurements */
       -webkit-text-size-adjust: 100%;
 
-      /* No page‑level scrolling; grid is exact‑fit */
+      /* No page-level scrolling; grid is exact-fit */
       height: calc(var(--vh) * 100);
       overflow: hidden;
 
@@ -65,19 +66,14 @@
       padding: .6rem .9rem;
       background: rgba(15,17,21,.9); backdrop-filter: blur(6px);
       border-bottom: 1px solid #222936;
-
-      /* allow the overlay logo to extend without pushing layout */
-      overflow: visible;
+      overflow: visible; /* allow the overlay logo to extend */
     }
 
-    /* Candidate name + overlay container */
+    /* Candidate name + overlay */
     .name-and-logo {
-      position: relative;          /* positioning context for the overlay */
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: 0.2rem;
-      z-index: 2;                  /* above the watermark */
+      position: relative;
+      display: flex; flex-direction: column; align-items: flex-start; gap: 0.2rem;
+      z-index: 2;
     }
 
     #candidateName {
@@ -87,36 +83,25 @@
       font-weight: 800;
       letter-spacing: .2px;
       position: relative;
-      z-index: 2;                  /* ensure text stays above the logo */
+      z-index: 2;
     }
 
-    /* ===== Overlayed logo (does not take layout space) ===== */
     .company-logo-overlay {
       position: absolute;
       left: 0;
-      top: calc(100% + 4px);       /* visually under the name */
+      top: calc(100% + 4px);
       z-index: 1;
-      pointer-events: none;        /* do not block clicks/taps */
-      opacity: 0.25;               /* watermark feel */
-
-      width: auto;
-      height: auto;
+      pointer-events: none;
+      opacity: 0.25;
+      width: auto; height: auto;
       max-width: min(65vw, 520px);
       max-height: 280px;
     }
     @media (max-width: 900px) {
-      .company-logo-overlay {
-        max-width: min(70vw, 420px);
-        max-height: 220px;
-        opacity: 0.22;
-      }
+      .company-logo-overlay { max-width: min(70vw, 420px); max-height: 220px; opacity: 0.22; }
     }
     @media (max-width: 560px) {
-      .company-logo-overlay {
-        max-width: 60vw;
-        max-height: 180px;
-        opacity: 0.20;
-      }
+      .company-logo-overlay { max-width: 60vw; max-height: 180px; opacity: 0.20; }
     }
 
     header .spacer { flex: 1; }
@@ -126,8 +111,7 @@
       border-radius: 10px; padding: .5rem .7rem; font-weight: 600; font-size: .9rem;
       background: var(--panel); color: var(--text);
       transition: background .15s ease, opacity .15s ease;
-      position: relative;
-      z-index: 2;                  /* above the watermark */
+      position: relative; z-index: 2;
     }
     button:hover { background: #1e2532; }
     button:disabled { opacity: .55; cursor: not-allowed; }
@@ -135,18 +119,9 @@
     .btn-ghost { background: transparent; color: var(--muted); }
 
     main {
-      /* Take all space between header and footer */
-      flex: 1;
-      min-height: 0;              /* allow the grid to shrink within */
-      display: flex;
-      flex-direction: column;
-
-      /* Keep vertical padding very small so math stays exact */
+      flex: 1; min-height: 0; display: flex; flex-direction: column;
       padding: .6rem .9rem 0;
-      max-width: 1024px;
-      width: 100%;
-      margin: 0 auto;
-      box-sizing: border-box;
+      max-width: 1024px; width: 100%; margin: 0 auto; box-sizing: border-box;
     }
 
     #helpMsg {
@@ -157,38 +132,29 @@
       color: var(--muted);
       border: 1px solid #2a3446;
       background: #131926;
-
-      /* Let the grid take the remaining space below */
-      flex: 0 0 auto;
-      position: relative;
-      z-index: 1; /* sits below header components by default */
+      flex: 0 0 auto; position: relative; z-index: 1;
     }
 
-    /* The calendar grid fills the remaining space in main exactly */
+    /* Calendar grid fills remaining space exactly */
     .grid {
-      flex: 1 1 auto;
-      min-height: 0;                  /* critical for nested flex */
-      display: grid;
+      flex: 1 1 auto; min-height: 0;
+      display: grid; width: 100%; max-width: 100%;
       grid-template-columns: repeat(7, minmax(0, 1fr));
       gap: var(--row-gap);
-      width: 100%;
-      max-width: 100%;
 
-      /* Available height = true viewport - header - footer - main padding
-         Subtract total vertical gaps: (rows - 1) * row-gap
-         Subtract iPhone footer safe-area + iOS guard so last row never hides
-         Add a small safety margin for sub-pixel jitter
-         Then divide evenly across rows. */
+      /* Available height = viewport - header - footer - paddings/gaps
+         - iPhone safe/guard - iOS tile budget + safety; divided by rows */
       grid-auto-rows: calc(
         (
           (var(--vh) * 100)
           - var(--header-h)
           - var(--footer-h)
-          - var(--footer-safe)      /* iPhone home-indicator space */
-          - var(--ios-bottom-guard) /* iPhone-only gap above footer */
+          - var(--footer-safe)
+          - var(--ios-bottom-guard)
           - var(--main-vpad)
           - ((var(--rows) - 1) * var(--row-gap))
           + var(--row-safety)
+          - var(--ios-tile-budget)
         ) / var(--rows)
       );
     }
@@ -196,51 +162,36 @@
     @media (max-width: 700px) { .grid { grid-template-columns: repeat(4, 1fr); } }
     @media (max-width: 560px) { .grid { grid-template-columns: repeat(3, 1fr); } }
 
-    /* --- Tile layout: make status align across all tiles --- */
+    /* --- Tile layout: status aligned across tiles --- */
     .tile {
       background: var(--tile);
       border: 1px solid #222a36;
       border-radius: 14px;
       padding: .6rem;
 
-      /* Header (auto), Status (auto), Details must always retain some space */
       display: grid;
       grid-template-rows: auto auto minmax(1.2em, 1fr); /* header, status, sub */
-
       transition: background .15s ease;
-      overflow: hidden;   /* ensure no scroll inside tiles */
+      overflow: hidden; /* no inner scroll */
     }
     .tile:hover { background: var(--tile-hover); }
 
     .tile-header {
-      display: flex;
-      flex-direction: column;
-      align-items: flex-start;
-      gap: .1rem;
+      display: flex; flex-direction: column; align-items: flex-start; gap: .1rem;
       min-height: 30px; /* stabiliser so tiny wrapping doesn't nudge status */
     }
     .tile-day {
-      font-weight: 800;
-      letter-spacing: .5px;
-      font-size: .92rem;
-      color: var(--muted);
-      text-transform: uppercase;
+      font-weight: 800; letter-spacing: .5px; font-size: .92rem; color: var(--muted); text-transform: uppercase;
     }
     .tile-date {
-      font-size: .92rem;
-      color: var(--text);
-      font-weight: 700;
-      margin-left: 0.05rem;
+      font-size: .92rem; color: var(--text); font-weight: 700; margin-left: 0.05rem;
     }
 
     .tile-status {
       margin-top: .25rem;
       font-size: .92rem;
       font-weight: 800;
-      /* allow two lines if needed */
-      display: -webkit-box;
-      -webkit-line-clamp: 2;
-      -webkit-box-orient: vertical;
+      display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
       overflow: hidden;
     }
     .status-pending { color: var(--muted); }
@@ -251,34 +202,29 @@
     .status-booked  { color: var(--booked); }
     .status-blocked { color: var(--blocked); }
 
-    /* Sub info occupies the final row; its height won't push the status */
     .tile-sub {
       margin-top: .2rem;
       color: var(--muted);
       font-size: .8rem;
       line-height: 1.2;
-      overflow: hidden;          /* stay within tile */
-      min-height: 1.4em;         /* protect from collapsing to 0 */
+      overflow: hidden;
+      min-height: 1.4em; /* keep at least one visible line */
     }
     .tile .edit-note { color: var(--accent); font-size: .78rem; }
 
-    /* Footer: kept in flow to reserve height; only visibility toggles */
+    /* Footer: kept in flow so its height is always reserved */
     .footer {
-      position: sticky;
-      bottom: 0;
-      z-index: 20;
+      position: sticky; bottom: 0; z-index: 20;
       background: rgba(15,17,21,.95); backdrop-filter: blur(6px);
       border-top: 1px solid #222936;
-      height: var(--footer-h);
+      height: var(--footer-h); /* set by JS from measured height */
       padding: .7rem .9rem calc(.7rem + env(safe-area-inset-bottom));
-      box-sizing: border-box;
-      width: 100%;
-      flex: 0 0 auto;  /* fixed height footer in the flex column */
+      box-sizing: border-box; width: 100%;
+      flex: 0 0 auto;
     }
     .footer-inner {
       max-width: 1024px; margin: 0 auto;
-      display: flex; gap: .6rem; align-items: center;
-      width: 100%;
+      display: flex; gap: .6rem; align-items: center; width: 100%;
     }
     .footer .spacer { flex: 1; }
 
@@ -287,14 +233,13 @@
       border: 1px solid #2a3446; background: #131926; color: #a7b0c0;
     }
 
-    /* IMPORTANT: keep space but hide visually so layout doesn't jump */
+    /* Hide visually but keep space so layout doesn't jump */
     .hidden {
-      visibility: hidden !important;   /* still reserves space */
+      visibility: hidden !important;
       pointer-events: none !important;
-      opacity: 0;                      /* nicer transition if animated later */
+      opacity: 0;
     }
 
-    /* Toast (optional) */
     .toast {
       position: fixed; right: .75rem; bottom: calc(5.25rem + env(safe-area-inset-bottom));
       background: #131926; color: var(--text);
@@ -303,7 +248,7 @@
       max-width: 90vw; font-size: .9rem;
     }
 
-    /* Short screens: minor base reductions; fit logic will fine-tune per tile */
+    /* Short screens: minor base reductions; per-tile fit will fine-tune */
     @media (max-height: 740px) {
       .tile-day, .tile-date { font-size: .9rem; }
       .tile-status { font-size: .9rem; }
@@ -314,7 +259,6 @@
   <header>
     <div class="name-and-logo">
       <h1 id="candidateName"></h1>
-      <!-- Overlayed logo (does not affect layout) -->
       <img src="ARMSLOGO.png" alt="Company Logo" class="company-logo-overlay" />
     </div>
     <div class="spacer"></div>
@@ -344,57 +288,89 @@
   <!-- Your app logic -->
   <script src="app.js"></script>
 
-  <!-- iPhone dynamic viewport + Budgeted shrink engine -->
+  <!-- iPhone dynamic viewport + measured footer + budgeted shrink -->
   <script>
     (function () {
       const GRID_SEL = '#grid';
+      const FOOTER_SEL = '#footer';
 
-      // -------- iPhone-specific viewport handling --------
+      // -------- iPhone detection --------
       const isIOS = (() => {
         if (typeof navigator === 'undefined') return false;
         const ua = navigator.userAgent || '';
         return /iPhone|iPad|iPod/i.test(ua) && !('MSStream' in window);
       })();
 
+      // -------- Dynamic viewport (no scrolling) --------
       function setVH() {
-        // Prefer the visual viewport height on iOS, else innerHeight
         const h = (isIOS && window.visualViewport)
           ? window.visualViewport.height
           : window.innerHeight;
-        // Publish as 1% unit
         document.documentElement.style.setProperty('--vh', (h * 0.01) + 'px');
-        // On iOS also ensure a tiny visible gap above footer
         if (isIOS) {
-          document.documentElement.style.setProperty('--ios-bottom-guard', '12px');
+          // ensure a persistent visible gap above the home indicator
+          document.documentElement.style.setProperty('--ios-bottom-guard', '18px');
         }
       }
 
-      // Initial and delayed recompute (iOS can settle late after UI bars animate)
-      setVH();
-      window.addEventListener('load', () => { setVH(); setTimeout(setVH, 350); });
-      window.addEventListener('resize', setVH);
-      window.addEventListener('orientationchange', () => setTimeout(setVH, 250));
-      if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', setVH);
+      // -------- Measure and reserve real footer height --------
+      function setFooterH() {
+        const footer = document.querySelector(FOOTER_SEL);
+        if (!footer) return;
+
+        const rect = footer.getBoundingClientRect(); // includes safe-area padding
+        let measured = Math.max(0, Math.round(rect.height));
+
+        // iPhone: add a guard band to absorb toolbar settle/rounding quirks
+        if (isIOS) measured += 16; // tune 12–20px if needed
+
+        document.documentElement.style.setProperty('--footer-h', measured + 'px');
+
+        // On iPhone also shrink tiles slightly to buy breathing room
+        if (isIOS) {
+          const budget = 14; // tune 12–16px
+          document.documentElement.style.setProperty('--ios-tile-budget', budget + 'px');
+        } else {
+          document.documentElement.style.setProperty('--ios-tile-budget', '0px');
+        }
       }
 
-      // -------- Budgeted shrink engine (protect Row 3) --------
-      const MIN_SUB_PX    = 10;   // details row can go small, but visible
-      const MIN_STATUS_PX = 11;
-      const MIN_HDR_PX    = 12;   // header day/date together
-      const MIN_LH        = 1.06; // tight but readable
-      const STEP_PX       = 1;    // shrink step
-      const EPSILON       = 1.5;  // px hysteresis to avoid jitter
+      // Recompute on load, resize, orientation, and visualViewport changes
+      setVH();
+      window.addEventListener('load', () => { setVH(); setFooterH(); setTimeout(() => { setVH(); setFooterH(); fitAllTiles(); }, 400); });
+      window.addEventListener('resize', () => { setVH(); setFooterH(); });
+      window.addEventListener('orientationchange', () => setTimeout(() => { setVH(); setFooterH(); fitAllTiles(); }, 250));
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => { setVH(); setFooterH(); });
+      }
 
-      const SUB_MIN_LINES = 1.2;  // ~1 line minimum
+      // Observe footer visibility toggles (.hidden class) and recompute layout
+      const footer = document.querySelector(FOOTER_SEL);
+      if (footer && window.MutationObserver) {
+        const mo = new MutationObserver(() => {
+          // height is reserved even when hidden, but re-measure anyway
+          setFooterH();
+          // give iOS time to settle animations then refit tiles
+          if (isIOS) setTimeout(fitAllTiles, 250);
+        });
+        mo.observe(footer, { attributes: true, attributeFilter: ['class', 'style'] });
+      }
+
+      // -------- Budgeted shrink engine (Row 3 protected) --------
+      const MIN_SUB_PX    = isIOS ? 10 : 11; // details row floor (retina safe on iOS)
+      const MIN_STATUS_PX = isIOS ? 11 : 12;
+      const MIN_HDR_PX    = isIOS ? 12 : 13; // header floor
+      const MIN_LH        = 1.06;            // tight but readable
+      const STEP_PX       = 1;               // shrink step
+      const EPSILON       = 1.5;             // hysteresis
+
+      const SUB_MIN_LINES = 1.2;             // ~1 line
 
       function emToPx(el, em) {
         const fs = parseFloat(getComputedStyle(el).fontSize || '13');
         return em * (Number.isFinite(fs) ? fs : 13);
       }
-
       function px(n) { return n + 'px'; }
-
       function getPx(el, prop) {
         const v = parseFloat(getComputedStyle(el)[prop] || '0');
         return Number.isFinite(v) ? v : 0;
@@ -422,7 +398,6 @@
         const cur = parseFloat(cs.fontSize || '0');
         if (!Number.isFinite(cur)) return false;
         if (cur <= floorPx) {
-          // Try a little line-height tighten if possible
           const lh = parseFloat(cs.lineHeight) || 1.2;
           if (lh > MIN_LH) {
             el.style.lineHeight = String(Math.max(MIN_LH, lh - 0.03));
@@ -461,33 +436,27 @@
         }
       }
 
-      // Budgeted shrink: protect Row 3 by reclaiming from status then header
+      // Shrink order: Row 2 (status) -> Row 1 (day/date). Row 3 protected.
       function fitTile(tile) {
         let m = measure(tile);
         if (!m.innerH) return;
 
-        // Always start from base sizes to avoid cumulative shrink
         resetToBase(tile, m);
         m = measure(tile);
 
         const subMinPx = Math.max(MIN_SUB_PX, emToPx(m.sub, SUB_MIN_LINES));
-        const need = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
+        let remaining = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
 
-        if (need <= EPSILON) return; // plenty of space; do nothing
+        if (remaining <= EPSILON) return;
 
-        // Reclaim budget only as much as needed
-        let remaining = need;
         let guards = 0;
-
         while (remaining > EPSILON && guards++ < 80) {
-          // 1) Squeeze Row 2 (status) first
           if (shrinkFont(m.status, MIN_STATUS_PX)) {
             m = measure(tile);
             remaining = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
             continue;
           }
 
-          // 2) Then Row 1 (header: day & date together)
           const hDay  = tile.querySelector('.tile-day');
           const hDate = tile.querySelector('.tile-date');
           let did = false;
@@ -497,7 +466,7 @@
           m = measure(tile);
           remaining = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
 
-          if (!did) break; // hit floors everywhere; stop
+          if (!did) break;
         }
       }
 
@@ -507,28 +476,23 @@
         grid.querySelectorAll('.tile').forEach(fitTile);
       }
 
-      // Refit on resize/orientation
-      window.addEventListener('resize', () => { requestAnimationFrame(fitAllTiles); });
-      window.addEventListener('orientationchange', () => {
-        setTimeout(() => requestAnimationFrame(fitAllTiles), 250);
-      });
+      // Refit on viewport changes
+      window.addEventListener('resize', () => requestAnimationFrame(fitAllTiles));
+      window.addEventListener('orientationchange', () => setTimeout(() => requestAnimationFrame(fitAllTiles), 250));
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', () => requestAnimationFrame(fitAllTiles));
+      }
 
       // Observe grid changes (app.js re-renders tiles)
       const obsInit = () => {
         const grid = document.querySelector(GRID_SEL);
         if (!grid) return;
-        const mo = new MutationObserver(() => {
-          // Batch with rAF to avoid thrash during mass updates
-          requestAnimationFrame(fitAllTiles);
-        });
+        const mo = new MutationObserver(() => requestAnimationFrame(fitAllTiles));
         mo.observe(grid, { childList: true, subtree: true });
-        // Initial fit (in case tiles are already there)
         requestAnimationFrame(fitAllTiles);
 
-        // iOS can settle late after bars animate — do one more pass shortly after
-        if (isIOS) {
-          setTimeout(() => requestAnimationFrame(fitAllTiles), 350);
-        }
+        // iOS can settle late after bars animate — one more pass
+        if (isIOS) setTimeout(() => requestAnimationFrame(fitAllTiles), 350);
       };
 
       if (document.readyState === 'loading') {
@@ -536,7 +500,6 @@
       } else {
         obsInit();
       }
-      // Also, run once after the page fully settles (images/fonts)
       window.addEventListener('load', () => requestAnimationFrame(fitAllTiles));
     })();
   </script>
