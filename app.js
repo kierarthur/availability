@@ -1,5 +1,5 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL    = 'https://script.google.com/macros/s/AKfycbwnw1pImnH46jD9F5bXwQGdxVu4YFyN9gvdtC1QU8YsD8wKTM5VPp8LZDeStx_JG_GVtQ/exec'; // <-- REPLACE
+const API_BASE_URL    = 'https://script.google.com/macros/s/AKfycbxM4cS0l-spLH0K0u8lLbtVrHJKcuAcQi7Uvddc6K4-i89KnZD9OryNCMEqr_gbGJvqVg/exec'; // <-- REPLACE
 const API_SHARED_TOKEN= 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
@@ -177,7 +177,7 @@ function ensureLoadingOverlay() {
         <div id="pastTitle">Past 14 days</div>
         <button id="pastClose" aria-label="Close">✕</button>
       </div>
-      <div id="pastList" tabindex="0"></div>
+        <div id="pastList" tabindex="0"></div>
     </div>
   `;
   document.body.appendChild(pastOverlay);
@@ -479,52 +479,43 @@ function renderTiles() {
     card.className = 'tile';
     card.dataset.ymd = t.ymd;
 
-    // Header: stacked day / date (weekday directly above date)
+    // Header: single line "MON 1 AUG"
     const header = document.createElement('div');
     header.className = 'tile-header';
-    const day = document.createElement('div');
-    day.className = 'tile-day';
-    day.textContent = t.displayDay;          // e.g., MON
-    const date = document.createElement('div');
-    date.className = 'tile-date';
-    date.textContent = t.displayDate;        // e.g., 1 August
-    header.append(day, date);
+
+    // Safe parse "YYYY-MM-DD" -> local Date
+    const [Y, M, D] = t.ymd.split('-').map(Number);
+    const d = new Date(Y, M - 1, D);
+
+    // "Mon 1 Aug" (en-GB) -> strip comma -> upper-case
+    const formatted = d
+      .toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
+      .replace(/,/g, '')
+      .toUpperCase(); // e.g., "MON 1 AUG"
+
+    const dateLine = document.createElement('div');
+    dateLine.className = 'tile-day'; // reuse existing styling
+    dateLine.textContent = formatted;
+
+    header.appendChild(dateLine);
 
     const status = document.createElement('div');
     status.className = `tile-status ${statusClass(t.effectiveStatus)}`;
 
-    // Status text rules:
-    // - BOOKED: show "BOOKED"
-    // - BLOCKED: show "BLOCKED"
-    // - Non-booked availability:
-    //     LONG DAY -> "LONG DAY 07:30–20:00"
-    //     NIGHT -> "NIGHT 19:30–08:00"
-    //     LONG DAY/NIGHT -> "LD 07:30–20:00 or N 19:30–08:00"
-    //     others -> unchanged
-    if (t.booked) {
-      status.textContent = 'BOOKED';
-    } else if (t.effectiveStatus === 'LONG DAY') {
-      status.textContent = 'LONG DAY 07:30–20:00';
-    } else if (t.effectiveStatus === 'NIGHT') {
-      status.textContent = 'NIGHT 19:30–08:00';
-    } else if (t.effectiveStatus === 'LONG DAY/NIGHT') {
-      status.textContent = 'LD 07:30–20:00 or N 19:30–08:00';
-    } else {
-      status.textContent = t.effectiveStatus;
-    }
-
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
+    // ===== Status/Sub content rules =====
     if (t.booked) {
-      // Notes override: if shiftInfo present and looks like Notes, use verbatim.
-      // If shiftInfo is just "LONG DAY"/"NIGHT", show canonical line including label + times.
+      // BOOKED: show booked label with details in sub
+      status.textContent = 'BOOKED';
+
       const line1 = (() => {
         const si = (t.shiftInfo || '').trim();
         if (si && si.toUpperCase() !== 'LONG DAY' && si.toUpperCase() !== 'NIGHT') {
           return si; // treat as Notes verbatim
         }
-        // fallback to canonical with label
+        // fallback to canonical with label + times
         const shiftType = (t.shiftInfo || '').toUpperCase().includes('NIGHT') ? 'NIGHT' : 'LONG DAY';
         return shiftType === 'NIGHT' ? 'NIGHT 19:30–08:00' : 'LONG DAY 07:30–20:00';
       })();
@@ -534,7 +525,6 @@ function renderTiles() {
       const roleLine = (t.jobTitle && t.jobTitle.trim()) ? `Role: ${t.jobTitle.trim()}` : '';
       const refLine = (t.bookingRef && t.bookingRef.trim()) ? `Ref: ${t.bookingRef.trim()}` : '';
 
-      // Build multi-line subtext with <br>, no layout changes
       const lines = [];
       lines.push(line1);
       if (hospital) lines.push(hospital);
@@ -544,13 +534,40 @@ function renderTiles() {
 
       sub.innerHTML = lines.map(escapeHtml).join('<br>');
     } else if (t.effectiveStatus === 'BLOCKED') {
-      // Show fixed explanatory line
+      status.textContent = 'BLOCKED';
       sub.textContent = 'You cannot work this shift as it will breach the 6 days in a row rule.';
-    } else if (t.effectiveStatus !== t.status) {
-      sub.innerHTML = `<span class="edit-note">Pending change</span>`;
+    } else if (t.effectiveStatus === 'NOT AVAILABLE') {
+      status.textContent = 'NOT AVAILABLE';
+      // keep pending indicator if applicable
+      if (t.effectiveStatus !== t.status) {
+        sub.innerHTML = `<span class="edit-note">Pending change</span>`;
+      } else {
+        sub.textContent = '';
+      }
+    } else if (t.effectiveStatus === 'LONG DAY' || t.effectiveStatus === 'NIGHT' || t.effectiveStatus === 'LONG DAY/NIGHT') {
+      // AVAILABILITY (not booked): "AVAILABLE FOR" + next line with type (no times)
+      status.textContent = 'AVAILABLE FOR';
+      const availability =
+        t.effectiveStatus === 'LONG DAY' ? 'LONG DAY ONLY' :
+        t.effectiveStatus === 'NIGHT' ? 'NIGHT ONLY' :
+        'LONG DAY AND NIGHT';
+
+      if (t.effectiveStatus !== t.status) {
+        // show pending note and the availability below it
+        sub.innerHTML = `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`;
+      } else {
+        sub.textContent = availability;
+      }
     } else {
-      sub.textContent = '';
+      // PENDING AVAILABILITY or anything else
+      status.textContent = t.effectiveStatus;
+      if (t.effectiveStatus !== t.status) {
+        sub.innerHTML = `<span class="edit-note">Pending change</span>`;
+      } else {
+        sub.textContent = '';
+      }
     }
+    // ===== end rules =====
 
     card.append(header, status, sub);
 
