@@ -22,16 +22,20 @@
       --blocked: #6aa84f;
 
       /* Managed from JS */
-      --vh: 1vh;          /* app.js sets this to 1% of window.innerHeight */
+      --vh: 1vh;          /* app.js may set this; we override on iOS below */
       --header-h: 56px;   /* overwritten by app.js -> sizeGrid() */
-      --footer-h: 76px;   /* overwritten by app.js -> sizeGrid() */
+      --footer-h: 76px;   /* visual footer content height (excluding safe area) */
       --rows: 2;          /* app.js sets the real row count (14 tiles / cols) */
 
       /* Layout helpers */
       --row-gap: .6rem;   /* must match .grid gap */
       --main-vpad: 16px;  /* total vertical padding inside main */
 
-      /* Tiny slack to avoid starving the last row due to sub‑pixel jitter */
+      /* iPhone-specific helpers (defaults harmless elsewhere) */
+      --footer-safe: env(safe-area-inset-bottom); /* 0 on non‑notch devices */
+      --ios-bottom-guard: 0px;    /* we set to ~12px on iPhone via JS */
+
+      /* Small slack to avoid starving the last row due to sub‑pixel jitter */
       --row-safety: 12px;
     }
 
@@ -43,6 +47,9 @@
       background: var(--bg);
       color: var(--text);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+
+      /* Stop iOS auto-text zoom from changing measurements */
+      -webkit-text-size-adjust: 100%;
 
       /* No page‑level scrolling; grid is exact‑fit */
       height: calc(var(--vh) * 100);
@@ -169,11 +176,17 @@
 
       /* Available height = true viewport - header - footer - main padding
          Subtract total vertical gaps: (rows - 1) * row-gap
-         Add a small safety margin to avoid starving the last row
+         Subtract iPhone footer safe-area + iOS guard so last row never hides
+         Add a small safety margin for sub-pixel jitter
          Then divide evenly across rows. */
       grid-auto-rows: calc(
         (
-          (var(--vh) * 100) - var(--header-h) - var(--footer-h) - var(--main-vpad)
+          (var(--vh) * 100)
+          - var(--header-h)
+          - var(--footer-h)
+          - var(--footer-safe)      /* iPhone home-indicator space */
+          - var(--ios-bottom-guard) /* iPhone-only gap above footer */
+          - var(--main-vpad)
           - ((var(--rows) - 1) * var(--row-gap))
           + var(--row-safety)
         ) / var(--rows)
@@ -204,7 +217,7 @@
       flex-direction: column;
       align-items: flex-start;
       gap: .1rem;
-      min-height: 30px; /* light stabilizer so tiny wrapping doesn't nudge status */
+      min-height: 30px; /* stabiliser so tiny wrapping doesn't nudge status */
     }
     .tile-day {
       font-weight: 800;
@@ -276,8 +289,9 @@
 
     /* IMPORTANT: keep space but hide visually so layout doesn't jump */
     .hidden {
-      visibility: hidden !important;
+      visibility: hidden !important;   /* still reserves space */
       pointer-events: none !important;
+      opacity: 0;                      /* nicer transition if animated later */
     }
 
     /* Toast (optional) */
@@ -330,12 +344,41 @@
   <!-- Your app logic -->
   <script src="app.js"></script>
 
-  <!-- Budgeted shrink engine: protect Row 3 by reclaiming from Rows 2 → 1 only when needed -->
+  <!-- iPhone dynamic viewport + Budgeted shrink engine -->
   <script>
     (function () {
       const GRID_SEL = '#grid';
 
-      // Floors / limits
+      // -------- iPhone-specific viewport handling --------
+      const isIOS = (() => {
+        if (typeof navigator === 'undefined') return false;
+        const ua = navigator.userAgent || '';
+        return /iPhone|iPad|iPod/i.test(ua) && !('MSStream' in window);
+      })();
+
+      function setVH() {
+        // Prefer the visual viewport height on iOS, else innerHeight
+        const h = (isIOS && window.visualViewport)
+          ? window.visualViewport.height
+          : window.innerHeight;
+        // Publish as 1% unit
+        document.documentElement.style.setProperty('--vh', (h * 0.01) + 'px');
+        // On iOS also ensure a tiny visible gap above footer
+        if (isIOS) {
+          document.documentElement.style.setProperty('--ios-bottom-guard', '12px');
+        }
+      }
+
+      // Initial and delayed recompute (iOS can settle late after UI bars animate)
+      setVH();
+      window.addEventListener('load', () => { setVH(); setTimeout(setVH, 350); });
+      window.addEventListener('resize', setVH);
+      window.addEventListener('orientationchange', () => setTimeout(setVH, 250));
+      if (window.visualViewport) {
+        window.visualViewport.addEventListener('resize', setVH);
+      }
+
+      // -------- Budgeted shrink engine (protect Row 3) --------
       const MIN_SUB_PX    = 10;   // details row can go small, but visible
       const MIN_STATUS_PX = 11;
       const MIN_HDR_PX    = 12;   // header day/date together
@@ -343,8 +386,8 @@
       const STEP_PX       = 1;    // shrink step
       const EPSILON       = 1.5;  // px hysteresis to avoid jitter
 
-      // Guarantees for Row 3
       const SUB_MIN_LINES = 1.2;  // ~1 line minimum
+
       function emToPx(el, em) {
         const fs = parseFloat(getComputedStyle(el).fontSize || '13');
         return em * (Number.isFinite(fs) ? fs : 13);
@@ -355,7 +398,7 @@
       function getPx(el, prop) {
         const v = parseFloat(getComputedStyle(el)[prop] || '0');
         return Number.isFinite(v) ? v : 0;
-        }
+      }
 
       function measure(tile) {
         const padV = getPx(tile, 'paddingTop') + getPx(tile, 'paddingBottom');
@@ -481,6 +524,11 @@
         mo.observe(grid, { childList: true, subtree: true });
         // Initial fit (in case tiles are already there)
         requestAnimationFrame(fitAllTiles);
+
+        // iOS can settle late after bars animate — do one more pass shortly after
+        if (isIOS) {
+          setTimeout(() => requestAnimationFrame(fitAllTiles), 350);
+        }
       };
 
       if (document.readyState === 'loading') {
