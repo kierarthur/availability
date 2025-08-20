@@ -31,8 +31,8 @@
       --row-gap: .6rem;   /* must match .grid gap */
       --main-vpad: 16px;  /* total vertical padding inside main */
 
-      /* NEW: tiny slack so the last row doesn't collapse on tight viewports */
-      --row-safety: 10px;
+      /* Tiny slack to avoid starving the last row due to sub‑pixel jitter */
+      --row-safety: 12px;
     }
 
     * { box-sizing: border-box; }
@@ -44,11 +44,10 @@
       color: var(--text);
       font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
 
-      /* No scrollbars anywhere */
+      /* No page‑level scrolling; grid is exact‑fit */
       height: calc(var(--vh) * 100);
       overflow: hidden;
 
-      /* Flex column for header / content / footer */
       display: flex;
       flex-direction: column;
     }
@@ -91,7 +90,7 @@
       top: calc(100% + 4px);       /* visually under the name */
       z-index: 1;
       pointer-events: none;        /* do not block clicks/taps */
-      opacity: 0.25;               /* watermark feel; adjust as needed */
+      opacity: 0.25;               /* watermark feel */
 
       width: auto;
       height: auto;
@@ -170,7 +169,8 @@
 
       /* Available height = true viewport - header - footer - main padding
          Subtract total vertical gaps: (rows - 1) * row-gap
-         Add a small safety margin so the last row doesn't collapse on tight viewports */
+         Add a small safety margin to avoid starving the last row
+         Then divide evenly across rows. */
       grid-auto-rows: calc(
         (
           (var(--vh) * 100) - var(--header-h) - var(--footer-h) - var(--main-vpad)
@@ -190,13 +190,12 @@
       border-radius: 14px;
       padding: .6rem;
 
-      /* 3-row grid so status sits in a consistent row.
-         Force the details row to have a minimum height so it can't collapse. */
+      /* Header (auto), Status (auto), Details must always retain some space */
       display: grid;
-      grid-template-rows: auto auto minmax(1.8em, 1fr); /* header, status, sub */
+      grid-template-rows: auto auto minmax(1.2em, 1fr); /* header, status, sub */
 
       transition: background .15s ease;
-      overflow: hidden;   /* avoid inner scroll */
+      overflow: hidden;   /* ensure no scroll inside tiles */
     }
     .tile:hover { background: var(--tile-hover); }
 
@@ -205,7 +204,7 @@
       flex-direction: column;
       align-items: flex-start;
       gap: .1rem;
-      min-height: 34px; /* stabilizer so tiny wrapping doesn't nudge status */
+      min-height: 30px; /* light stabilizer so tiny wrapping doesn't nudge status */
     }
     .tile-day {
       font-weight: 800;
@@ -222,7 +221,7 @@
     }
 
     .tile-status {
-      margin-top: .3rem;
+      margin-top: .25rem;
       font-size: .92rem;
       font-weight: 800;
       /* allow two lines if needed */
@@ -239,14 +238,14 @@
     .status-booked  { color: var(--booked); }
     .status-blocked { color: var(--blocked); }
 
-    /* Sub info (details). Give it a minimum so at least one line always shows. */
+    /* Sub info occupies the final row; its height won't push the status */
     .tile-sub {
       margin-top: .2rem;
       color: var(--muted);
       font-size: .8rem;
       line-height: 1.2;
       overflow: hidden;          /* stay within tile */
-      min-height: 1.6em;         /* NEW: protect from collapsing to 0 */
+      min-height: 1.4em;         /* protect from collapsing to 0 */
     }
     .tile .edit-note { color: var(--accent); font-size: .78rem; }
 
@@ -290,7 +289,7 @@
       max-width: 90vw; font-size: .9rem;
     }
 
-    /* Short screens: scale text a touch to avoid clipping */
+    /* Short screens: minor base reductions; fit logic will fine-tune per tile */
     @media (max-height: 740px) {
       .tile-day, .tile-date { font-size: .9rem; }
       .tile-status { font-size: .9rem; }
@@ -331,71 +330,82 @@
   <!-- Your app logic -->
   <script src="app.js"></script>
 
-  <!-- Auto-fit text so each tile always fits without clipping -->
+  <!-- Budgeted shrink engine: protect Row 3 by reclaiming from Rows 2 → 1 only when needed -->
   <script>
     (function () {
       const GRID_SEL = '#grid';
 
-      // Minimum pixel sizes to preserve legibility
-      const MIN_SUB_PX    = 11;   // tile-sub
-      const MIN_STATUS_PX = 12;   // tile-status
-      const MIN_HDR_PX    = 13;   // header lines (day/date)
+      // Floors / limits
+      const MIN_SUB_PX    = 10;   // details row can go small, but visible
+      const MIN_STATUS_PX = 11;
+      const MIN_HDR_PX    = 12;   // header day/date together
+      const MIN_LH        = 1.06; // tight but readable
+      const STEP_PX       = 1;    // shrink step
+      const EPSILON       = 1.5;  // px hysteresis to avoid jitter
 
-      // Optional gentle line-height tightening when needed
-      const MIN_LH = 1.10;
-      const STEP_PX = 1;          // shrink step
+      // Guarantees for Row 3
+      const SUB_MIN_LINES = 1.2;  // ~1 line minimum
+      function emToPx(el, em) {
+        const fs = parseFloat(getComputedStyle(el).fontSize || '13');
+        return em * (Number.isFinite(fs) ? fs : 13);
+      }
 
       function px(n) { return n + 'px'; }
 
-      function getNumericPx(el, prop) {
+      function getPx(el, prop) {
         const v = parseFloat(getComputedStyle(el)[prop] || '0');
         return Number.isFinite(v) ? v : 0;
-      }
+        }
 
-      function measureTile(tile) {
-        const padV = getNumericPx(tile, 'paddingTop') + getNumericPx(tile, 'paddingBottom');
+      function measure(tile) {
+        const padV = getPx(tile, 'paddingTop') + getPx(tile, 'paddingBottom');
         const innerH = tile.clientHeight - padV;
 
         const header = tile.querySelector('.tile-header');
         const status = tile.querySelector('.tile-status');
         const sub    = tile.querySelector('.tile-sub');
 
-        if (!header || !status || !sub) return { innerH: 0, contentH: 0 };
+        if (!header || !status || !sub) return { innerH: 0 };
 
         const headerH = header.offsetHeight;
-        const statusH = status.offsetHeight + getNumericPx(status, 'marginTop'); // include margin
-        const subH    = sub.offsetHeight + getNumericPx(sub, 'marginTop');
+        const statusH = status.offsetHeight + getPx(status, 'marginTop');
+        const subH    = sub.offsetHeight    + getPx(sub,    'marginTop');
 
-        const contentH = headerH + statusH + subH;
-        return { innerH, contentH, header, status, sub };
+        return { innerH, header, status, sub, headerH, statusH, subH };
       }
 
-      function shrinkElement(el, floorPx) {
+      function shrinkFont(el, floorPx) {
         const cs = getComputedStyle(el);
-        const curPx = parseFloat(cs.fontSize || '0');
-        if (!Number.isFinite(curPx)) return false;
-        if (curPx <= floorPx) {
-          // Try tiny line-height tighten if allowed
-          const curLh = parseFloat(cs.lineHeight) || 1.2;
-          if (curLh > MIN_LH) {
-            el.style.lineHeight = String(Math.max(MIN_LH, curLh - 0.03));
+        const cur = parseFloat(cs.fontSize || '0');
+        if (!Number.isFinite(cur)) return false;
+        if (cur <= floorPx) {
+          // Try a little line-height tighten if possible
+          const lh = parseFloat(cs.lineHeight) || 1.2;
+          if (lh > MIN_LH) {
+            el.style.lineHeight = String(Math.max(MIN_LH, lh - 0.03));
             return true;
           }
-          return false; // cannot shrink further
+          return false;
         }
-        el.style.fontSize = px(Math.max(floorPx, curPx - STEP_PX));
+        el.style.fontSize = px(Math.max(floorPx, cur - STEP_PX));
         return true;
       }
 
-      // Shrink in order: sub -> status -> header (date then day together)
-      function fitTile(tile) {
-        const m = measureTile(tile);
-        if (!m.innerH) return;
+      function resetToBase(tile, m) {
+        const hDay  = tile.querySelector('.tile-day');
+        const hDate = tile.querySelector('.tile-date');
 
-        // Cache original sizes on first run so repeated passes don't keep shrinking
-        if (!tile.__fitInit) {
-          const hDay  = tile.querySelector('.tile-day');
-          const hDate = tile.querySelector('.tile-date');
+        if (tile.__fitInit) {
+          if (tile.__fitInit.statusFS) m.status.style.fontSize = tile.__fitInit.statusFS;
+          if (tile.__fitInit.subFS)    m.sub.style.fontSize    = tile.__fitInit.subFS;
+          if (tile.__fitInit.subLH)    m.sub.style.lineHeight  = tile.__fitInit.subLH;
+
+          if (hDay && tile.__fitInit.dayFS)  hDay.style.fontSize = tile.__fitInit.dayFS;
+          if (hDate&& tile.__fitInit.dateFS) hDate.style.fontSize= tile.__fitInit.dateFS;
+          if (hDay && tile.__fitInit.dayLH)  hDay.style.lineHeight = tile.__fitInit.dayLH;
+          if (hDate&& tile.__fitInit.dateLH) hDate.style.lineHeight= tile.__fitInit.dateLH;
+        } else {
+          // First-run cache
           tile.__fitInit = {
             statusFS: getComputedStyle(m.status).fontSize,
             subFS:    getComputedStyle(m.sub).fontSize,
@@ -405,49 +415,53 @@
             dayLH:    hDay ? getComputedStyle(hDay).lineHeight : '',
             dateLH:   hDate ? getComputedStyle(hDate).lineHeight : ''
           };
-        } else {
-          // Reset to original before fitting again (e.g., on orientation change)
-          if (tile.__fitInit.statusFS) m.status.style.fontSize = tile.__fitInit.statusFS;
-          if (tile.__fitInit.subFS)    m.sub.style.fontSize    = tile.__fitInit.subFS;
-          if (tile.__fitInit.subLH)    m.sub.style.lineHeight  = tile.__fitInit.subLH;
-          const hDay = tile.querySelector('.tile-day');
-          const hDate= tile.querySelector('.tile-date');
-          if (hDay && tile.__fitInit.dayFS)  hDay.style.fontSize = tile.__fitInit.dayFS;
-          if (hDate&& tile.__fitInit.dateFS) hDate.style.fontSize= tile.__fitInit.dateFS;
-          if (hDay && tile.__fitInit.dayLH)  hDay.style.lineHeight = tile.__fitInit.dayLH;
-          if (hDate&& tile.__fitInit.dateLH) hDate.style.lineHeight= tile.__fitInit.dateLH;
         }
+      }
 
-        // Iteratively shrink until it fits or we hit floors
+      // Budgeted shrink: protect Row 3 by reclaiming from status then header
+      function fitTile(tile) {
+        let m = measure(tile);
+        if (!m.innerH) return;
+
+        // Always start from base sizes to avoid cumulative shrink
+        resetToBase(tile, m);
+        m = measure(tile);
+
+        const subMinPx = Math.max(MIN_SUB_PX, emToPx(m.sub, SUB_MIN_LINES));
+        const need = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
+
+        if (need <= EPSILON) return; // plenty of space; do nothing
+
+        // Reclaim budget only as much as needed
+        let remaining = need;
         let guards = 0;
-        while (guards++ < 40) {
-          const { innerH, contentH } = measureTile(tile);
-          if (contentH <= innerH) break;
 
-          // 1) sub
-          if (shrinkElement(m.sub, MIN_SUB_PX)) continue;
+        while (remaining > EPSILON && guards++ < 80) {
+          // 1) Squeeze Row 2 (status) first
+          if (shrinkFont(m.status, MIN_STATUS_PX)) {
+            m = measure(tile);
+            remaining = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
+            continue;
+          }
 
-          // 2) status
-          if (shrinkElement(m.status, MIN_STATUS_PX)) continue;
+          // 2) Then Row 1 (header: day & date together)
+          const hDay  = tile.querySelector('.tile-day');
+          const hDate = tile.querySelector('.tile-date');
+          let did = false;
+          if (hDay)  did = shrinkFont(hDay,  MIN_HDR_PX) || did;
+          if (hDate) did = shrinkFont(hDate, MIN_HDR_PX) || did;
 
-          // 3) header (shrink day & date together)
-          const day  = tile.querySelector('.tile-day');
-          const date = tile.querySelector('.tile-date');
-          let headerShrunk = false;
-          if (day)  headerShrunk = shrinkElement(day,  MIN_HDR_PX) || headerShrunk;
-          if (date) headerShrunk = shrinkElement(date, MIN_HDR_PX) || headerShrunk;
-          if (headerShrunk) continue;
+          m = measure(tile);
+          remaining = (m.headerH + m.statusH + Math.max(m.subH, subMinPx)) - m.innerH;
 
-          // Nothing else can shrink; stop
-          break;
+          if (!did) break; // hit floors everywhere; stop
         }
       }
 
       function fitAllTiles() {
         const grid = document.querySelector(GRID_SEL);
         if (!grid) return;
-        const tiles = grid.querySelectorAll('.tile');
-        tiles.forEach(fitTile);
+        grid.querySelectorAll('.tile').forEach(fitTile);
       }
 
       // Refit on resize/orientation
