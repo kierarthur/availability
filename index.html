@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <meta name="theme-color" content="#111" />
+  <link rel="manifest" href="manifest.json" />
+  <title>Availability</title>
+  <style>
+    :root {
+      --bg: #0f1115;
+      --panel: #161a22;
+      --muted: #a7b0c0;
+      --text: #e7ecf3;
+      --accent: #4f8cff;
+      --danger: #e06666;
+      --ok: #6aa84f;
+      --warn: #c8a94a;
+      --tile: #1b212c;
+      --tile-hover: #222a38;
+      --booked: #4a86e8;
+      --blocked: #6aa84f;
+
+      /* Managed from JS */
+      --vh: 1vh;
+      --header-h: 56px;   /* will be overwritten by app.js -> sizeGrid() */
+      --footer-h: 76px;   /* keep in sync with footer height – JS overwrites */
+      --rows: 2;          /* JS sets the real row count (14 tiles / cols) */
+
+      /* Layout helpers */
+      --row-gap: .6rem;   /* must match .grid gap */
+      --main-vpad: 16px;  /* approx top padding inside main; keep small */
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      margin: 0;
+      padding: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+
+      /* No scrollbars anywhere */
+      height: 100vh;
+      overflow: hidden;
+
+      /* Flex column for header / content / footer */
+      display: flex;
+      flex-direction: column;
+    }
+
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+      padding: .6rem .9rem;
+      background: rgba(15,17,21,.9); backdrop-filter: blur(6px);
+      border-bottom: 1px solid #222936;
+
+      /* allow the overlay logo to extend without pushing layout */
+      overflow: visible;
+    }
+
+    /* Candidate name + overlay container */
+    .name-and-logo {
+      position: relative;          /* positioning context for the overlay */
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.2rem;
+      z-index: 2;                  /* above the watermark */
+    }
+
+    #candidateName {
+      margin: 0;
+      font-size: 1.35rem;
+      line-height: 1.1;
+      font-weight: 800;
+      letter-spacing: .2px;
+      position: relative;
+      z-index: 2;                  /* ensure text stays above the logo */
+    }
+
+    /* ===== Overlayed logo (does not take layout space) =====
+       - Absolutely positioned under the candidate name
+       - Large but responsive
+       - Pointer-events disabled so taps pass through
+       - Opacity can be tuned to taste (acts like a watermark) */
+    .company-logo-overlay {
+      position: absolute;
+      left: 0;
+      top: calc(100% + 4px);       /* visually under the name */
+      z-index: 1;
+      pointer-events: none;        /* do not block clicks/taps */
+      opacity: 0.25;               /* watermark feel; adjust as needed */
+
+      width: auto;
+      height: auto;
+      max-width: min(65vw, 520px);
+      max-height: 280px;
+    }
+    @media (max-width: 900px) {
+      .company-logo-overlay {
+        max-width: min(70vw, 420px);
+        max-height: 220px;
+        opacity: 0.22;
+      }
+    }
+    @media (max-width: 560px) {
+      .company-logo-overlay {
+        max-width: 60vw;
+        max-height: 180px;
+        opacity: 0.20;
+      }
+    }
+
+    header .spacer { flex: 1; }
+
+    button, .btn {
+      appearance: none; border: 0; outline: 0; cursor: pointer;
+      border-radius: 10px; padding: .5rem .7rem; font-weight: 600; font-size: .9rem;
+      background: var(--panel); color: var(--text);
+      transition: background .15s ease, opacity .15s ease;
+      position: relative;
+      z-index: 2;                  /* above the watermark */
+    }
+    button:hover { background: #1e2532; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-ghost { background: transparent; color: var(--muted); }
+
+    main {
+      /* Take all space between header and footer */
+      flex: 1;
+      min-height: 0;              /* allow the grid to shrink within */
+      display: flex;
+      flex-direction: column;
+
+      /* Keep vertical padding very small so math stays exact */
+      padding: .6rem .9rem 0;
+      max-width: 1024px;
+      width: 100%;
+      margin: 0 auto;
+      box-sizing: border-box;
+    }
+
+    #helpMsg {
+      display: block;
+      margin: .15rem 0 .6rem;
+      padding: .45rem .6rem;
+      border-radius: 10px;
+      font-size: .9rem;
+      color: var(--muted);
+      border: 1px solid #2a3446;
+      background: #131926;
+      /* Let the grid take the remaining space below */
+      flex: 0 0 auto;
+      position: relative;
+      z-index: 1; /* sits below header components by default */
+    }
+
+    /* The calendar grid fills the remaining space in main exactly */
+    .grid {
+      flex: 1 1 auto;
+      min-height: 0;                  /* critical for nested flex */
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: var(--row-gap);
+      width: 100%;
+      max-width: 100%;
+
+      /* Each row height is computed from viewport minus header/footer/main padding */
+      grid-auto-rows: calc(
+        (100vh - var(--header-h) - var(--footer-h) - var(--main-vpad)) / var(--rows)
+      );
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: repeat(5, 1fr); } }
+    @media (max-width: 700px) { .grid { grid-template-columns: repeat(4, 1fr); } }
+    @media (max-width: 560px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+
+    /* --- Tile layout: make status align across all tiles --- */
+    .tile {
+      background: var(--tile);
+      border: 1px solid #222a36;
+      border-radius: 14px;
+      padding: .6rem;
+
+      /* 3-row grid so status sits in a consistent row */
+      display: grid;
+      grid-template-rows: auto auto 1fr; /* header, status, sub (fills rest) */
+
+      transition: background .15s ease;
+      overflow: hidden;   /* ensure no scroll inside tiles */
+    }
+    .tile:hover { background: var(--tile-hover); }
+
+    .tile-header {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: .1rem;
+      min-height: 34px; /* stabilizer so tiny wrapping doesn't nudge status */
+    }
+    .tile-day {
+      font-weight: 800;
+      letter-spacing: .5px;
+      font-size: .92rem;
+      color: var(--muted);
+      text-transform: uppercase;
+    }
+    .tile-date {
+      font-size: .92rem;
+      color: var(--text);
+      font-weight: 700;
+      margin-left: 0.05rem;
+    }
+
+    .tile-status {
+      margin-top: .3rem;
+      font-size: .92rem;
+      font-weight: 800;
+    }
+    .status-pending { color: var(--muted); }
+    .status-na      { color: var(--danger); }
+    .status-ld,
+    .status-n,
+    .status-ldn     { color: var(--warn); }
+    .status-booked  { color: var(--booked); }
+    .status-blocked { color: var(--blocked); }
+
+    /* Sub info occupies the final row; its height won't push the status */
+    .tile-sub {
+      margin-top: .2rem;
+      color: var(--muted);
+      font-size: .8rem;
+      line-height: 1.2;
+      overflow: hidden;          /* stay within tile */
+      text-overflow: ellipsis;   /* graceful clipping if needed */
+    }
+    .tile .edit-note { color: var(--accent); font-size: .78rem; }
+
+    /* Footer: kept in flow to reserve height; only visibility toggles */
+    .footer {
+      position: sticky;
+      bottom: 0;
+      z-index: 20;
+      background: rgba(15,17,21,.95); backdrop-filter: blur(6px);
+      border-top: 1px solid #222936;
+      height: var(--footer-h);
+      padding: .7rem .9rem calc(.7rem + env(safe-area-inset-bottom));
+      box-sizing: border-box;
+      width: 100%;
+      flex: 0 0 auto;  /* fixed height footer in the flex column */
+    }
+    .footer-inner {
+      max-width: 1024px; margin: 0 auto;
+      display: flex; gap: .6rem; align-items: center;
+      width: 100%;
+    }
+    .footer .spacer { flex: 1; }
+
+    .banner {
+      padding: .55rem .7rem; border-radius: 10px; font-size: .88rem;
+      border: 1px solid #2a3446; background: #131926; color: var(--muted);
+    }
+
+    /* IMPORTANT: keep space but hide visually so layout doesn't jump */
+    .hidden {
+      visibility: hidden !important;
+      pointer-events: none !important;
+    }
+
+    /* Toast (optional) */
+    .toast {
+      position: fixed; right: .75rem; bottom: calc(5.25rem + env(safe-area-inset-bottom));
+      background: #131926; color: var(--text);
+      border: 1px solid #2a3446; padding: .6rem .75rem; border-radius: 10px; z-index: 25;
+      box-shadow: 0 8px 30px rgba(0,0,0,.35);
+      max-width: 90vw; font-size: .9rem;
+    }
+
+    /* Short screens: scale text a touch to avoid clipping */
+    @media (max-height: 740px) {
+      .tile-day, .tile-date { font-size: .9rem; }
+      .tile-status { font-size: .9rem; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="name-and-logo">
+      <h1 id="candidateName"></h1>
+      <!-- Overlayed logo (does not affect layout) -->
+      <img src="ARMSLOGO.PNG" alt="Company Logo" class="company-logo-overlay" />
+    </div>
+    <div class="spacer"></div>
+    <button id="refreshBtn">Refresh</button>
+    <button id="installBtn" class="btn-ghost hidden">Install</button>
+  </header>
+
+  <main>
+    <div id="helpMsg">
+      Please tap any date to change your availability — don’t forget to tap <strong>Submit</strong> when you’re done.
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <!-- Footer space is always reserved; only visibility toggles via .hidden -->
+  <div id="footer" class="footer hidden" role="region" aria-label="Submission actions">
+    <div class="footer-inner">
+      <span id="draftMsg" class="banner">You have unsaved changes.</span>
+      <div class="spacer"></div>
+      <button id="clearBtn" class="btn">Clear changes</button>
+      <button id="submitBtn" class="btn-primary">Submit</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
