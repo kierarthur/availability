@@ -219,6 +219,11 @@
       margin-top: .3rem;
       font-size: .92rem;
       font-weight: 800;
+      /* allow two lines if needed */
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
     .status-pending { color: var(--muted); }
     .status-na      { color: var(--danger); }
@@ -235,7 +240,7 @@
       font-size: .8rem;
       line-height: 1.2;
       overflow: hidden;          /* stay within tile */
-      text-overflow: ellipsis;   /* graceful clipping if needed */
+      /* Removed ellipsis so we shrink instead of clipping important text */
     }
     .tile .edit-note { color: var(--accent); font-size: .78rem; }
 
@@ -261,7 +266,7 @@
 
     .banner {
       padding: .55rem .7rem; border-radius: 10px; font-size: .88rem;
-      border: 1px solid #2a3446; background: #131926; color: var(--muted);
+      border: 1px solid #2a3446; background: #131926; color: #a7b0c0;
     }
 
     /* IMPORTANT: keep space but hide visually so layout doesn't jump */
@@ -317,6 +322,156 @@
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
+  <!-- Your app logic -->
   <script src="app.js"></script>
+
+  <!-- Auto-fit text so each tile always fits without clipping -->
+  <script>
+    (function () {
+      const GRID_SEL = '#grid';
+
+      // Minimum pixel sizes to preserve legibility
+      const MIN_SUB_PX    = 11;   // tile-sub
+      const MIN_STATUS_PX = 12;   // tile-status
+      const MIN_HDR_PX    = 13;   // header lines (day/date)
+
+      // Optional gentle line-height tightening when needed
+      const MIN_LH = 1.10;
+      const STEP_PX = 1;          // shrink step
+
+      function px(n) { return n + 'px'; }
+
+      function getNumericPx(el, prop) {
+        const v = parseFloat(getComputedStyle(el)[prop] || '0');
+        return Number.isFinite(v) ? v : 0;
+      }
+
+      function measureTile(tile) {
+        const csTile = getComputedStyle(tile);
+        const padV = getNumericPx(tile, 'paddingTop') + getNumericPx(tile, 'paddingBottom');
+        const innerH = tile.clientHeight - padV;
+
+        const header = tile.querySelector('.tile-header');
+        const status = tile.querySelector('.tile-status');
+        const sub    = tile.querySelector('.tile-sub');
+
+        if (!header || !status || !sub) return { innerH: 0, contentH: 0 };
+
+        const headerH = header.offsetHeight;
+        const statusH = status.offsetHeight + getNumericPx(status, 'marginTop'); // include margin
+        const subH    = sub.offsetHeight + getNumericPx(sub, 'marginTop');
+
+        const contentH = headerH + statusH + subH;
+        return { innerH, contentH, header, status, sub };
+      }
+
+      function shrinkElement(el, floorPx) {
+        const cs = getComputedStyle(el);
+        const curPx = parseFloat(cs.fontSize || '0');
+        if (!Number.isFinite(curPx)) return false;
+        if (curPx <= floorPx) {
+          // Try tiny line-height tighten if allowed
+          const curLh = parseFloat(cs.lineHeight) || 1.2;
+          if (curLh > MIN_LH) {
+            el.style.lineHeight = String(Math.max(MIN_LH, curLh - 0.03));
+            return true;
+          }
+          return false; // cannot shrink further
+        }
+        el.style.fontSize = px(Math.max(floorPx, curPx - STEP_PX));
+        return true;
+      }
+
+      // Shrink in order: sub -> status -> header (date then day together)
+      function fitTile(tile) {
+        const m = measureTile(tile);
+        if (!m.innerH) return;
+
+        // Cache original sizes on first run so repeated passes don't keep shrinking
+        if (!tile.__fitInit) {
+          const hDay  = tile.querySelector('.tile-day');
+          const hDate = tile.querySelector('.tile-date');
+          tile.__fitInit = {
+            statusFS: getComputedStyle(m.status).fontSize,
+            subFS:    getComputedStyle(m.sub).fontSize,
+            subLH:    getComputedStyle(m.sub).lineHeight,
+            dayFS:    hDay ? getComputedStyle(hDay).fontSize : '',
+            dateFS:   hDate ? getComputedStyle(hDate).fontSize : '',
+            dayLH:    hDay ? getComputedStyle(hDay).lineHeight : '',
+            dateLH:   hDate ? getComputedStyle(hDate).lineHeight : ''
+          };
+        } else {
+          // Reset to original before fitting again (e.g., on orientation change)
+          if (tile.__fitInit.statusFS) m.status.style.fontSize = tile.__fitInit.statusFS;
+          if (tile.__fitInit.subFS)    m.sub.style.fontSize    = tile.__fitInit.subFS;
+          if (tile.__fitInit.subLH)    m.sub.style.lineHeight  = tile.__fitInit.subLH;
+          const hDay = tile.querySelector('.tile-day');
+          const hDate= tile.querySelector('.tile-date');
+          if (hDay && tile.__fitInit.dayFS)  hDay.style.fontSize = tile.__fitInit.dayFS;
+          if (hDate&& tile.__fitInit.dateFS) hDate.style.fontSize= tile.__fitInit.dateFS;
+          if (hDay && tile.__fitInit.dayLH)  hDay.style.lineHeight = tile.__fitInit.dayLH;
+          if (hDate&& tile.__fitInit.dateLH) hDate.style.lineHeight= tile.__fitInit.dateLH;
+        }
+
+        // Iteratively shrink until it fits or we hit floors
+        let guards = 0;
+        while (guards++ < 40) {
+          const { innerH, contentH } = measureTile(tile);
+          if (contentH <= innerH) break;
+
+          // 1) sub
+          if (shrinkElement(m.sub, MIN_SUB_PX)) continue;
+
+          // 2) status
+          if (shrinkElement(m.status, MIN_STATUS_PX)) continue;
+
+          // 3) header (shrink day & date together)
+          const day  = tile.querySelector('.tile-day');
+          const date = tile.querySelector('.tile-date');
+          let headerShrunk = false;
+          if (day)  headerShrunk = shrinkElement(day,  MIN_HDR_PX) || headerShrunk;
+          if (date) headerShrunk = shrinkElement(date, MIN_HDR_PX) || headerShrunk;
+          if (headerShrunk) continue;
+
+          // Nothing else can shrink; stop
+          break;
+        }
+      }
+
+      function fitAllTiles() {
+        const grid = document.querySelector(GRID_SEL);
+        if (!grid) return;
+        const tiles = grid.querySelectorAll('.tile');
+        tiles.forEach(fitTile);
+      }
+
+      // Refit on resize/orientation
+      window.addEventListener('resize', () => { requestAnimationFrame(fitAllTiles); });
+      window.addEventListener('orientationchange', () => {
+        setTimeout(() => requestAnimationFrame(fitAllTiles), 250);
+      });
+
+      // Observe grid changes (app.js re-renders tiles)
+      const obsInit = () => {
+        const grid = document.querySelector(GRID_SEL);
+        if (!grid) return;
+        const mo = new MutationObserver(() => {
+          // Batch with rAF to avoid thrash during mass updates
+          requestAnimationFrame(fitAllTiles);
+        });
+        mo.observe(grid, { childList: true, subtree: true });
+        // Initial fit (in case tiles are already there)
+        requestAnimationFrame(fitAllTiles);
+      };
+
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', obsInit);
+      } else {
+        obsInit();
+      }
+      // Also, run once after the page fully settles (images/fonts)
+      window.addEventListener('load', () => requestAnimationFrame(fitAllTiles));
+    })();
+  </script>
 </body>
 </html>
