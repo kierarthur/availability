@@ -215,6 +215,323 @@
       background: rgba(15,17,21,.97);
       backdrop-filter: blur(6px);
       border-top: 1px solid #222936;
+      padding: .55rem .9rem calc(.55rem + env(safe-area-inset-bottom));
+      box-sizing: border-box;
+      width: 100%;
+    }
+    .footer-inner {
+      max-width: 1024px; margin: 0 auto;
+      display: flex; gap: .6rem; align-items: center;
+      width: 100%;
+    }
+    .footer .spacer { flex: 1; }
+
+    .banner {
+      padding: .5rem .7rem; border-radius: 10px; font-size: .9rem;
+      border: 1px solid #2a3446; background: #131926; color: #a7b0c0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      max-width: 50vw;
+    }
+
+    /* Keep .hidden simple (as app.js expects). Do NOT collapse height globally. */
+    .hidden {
+      visibility: hidden !important;
+      pointer-events: none !important;
+      opacity: 0;
+    }
+
+    .toast {
+      position: fixed; right: .75rem; bottom: calc(5.25rem + env(safe-area-inset-bottom));
+      background: #131926; color: var(--text);
+      border: 1px solid #2a3446; padding: .6rem .75rem; border-radius: 10px; z-index: 25;
+      box-shadow: 0 8px 30px rgba(0,0,0,.35);
+      max-width: 90vw; font-size: .9rem;
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="name-and-logo">
+      <h1 id="candidateName"></h1>
+      <!-- Overlayed logo (does not affect layout) -->
+      <img src="ARMSLOGO.png" alt="Company Logo" class="company-logo-overlay" />
+    </div>
+    <div class="spacer"></div>
+    <button id="refreshBtn">Refresh</button>
+    <button id="installBtn" class="btn-ghost hidden">Install</button>
+  </header>
+
+  <main>
+    <div id="helpMsg">
+      Please tap any date to change your availability — don’t forget to tap <strong>Submit</strong> when you’re done.
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <!-- Fixed footer; we reserve its space in <main> via JS-set --footer-h -->
+  <div id="footer" class="footer hidden" role="region" aria-label="Submission actions">
+    <div class="footer-inner">
+      <span id="draftMsg" class="banner">You have unsaved changes.</span>
+      <div class="spacer"></div>
+      <button id="clearBtn" class="btn">Clear changes</button>
+      <button id="submitBtn" class="btn-primary">Submit</button>
+    </div>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
+
+  <!-- Your app logic -->
+  <script src="app.js"></script>
+
+  <!-- Footer measurement + last‑resort spinner safety -->
+  <script>
+    (function () {
+      const FOOTER_SEL = '#footer';
+      const GRID_SEL = '#grid';
+
+      function measureFooter() {
+        const footer = document.querySelector(FOOTER_SEL);
+        if (!footer) return;
+
+        const wasHidden = footer.classList.contains('hidden');
+        if (wasHidden) {
+          // Temporarily unhide without flashing on screen
+          footer.style.visibility = 'hidden';
+          footer.classList.remove('hidden');
+        }
+
+        const h = Math.max(0, Math.round(footer.getBoundingClientRect().height));
+        document.documentElement.style.setProperty('--footer-h', h + 'px');
+
+        if (wasHidden) {
+          footer.classList.add('hidden');
+          footer.style.visibility = '';
+        }
+      }
+
+      // Measure at key times
+      window.addEventListener('load', () => {
+        measureFooter();
+        setTimeout(measureFooter, 250);   // iOS toolbars settle late
+        setTimeout(measureFooter, 900);   // extra guard after async data load
+      });
+      window.addEventListener('resize', measureFooter);
+      window.addEventListener('orientationchange', () => setTimeout(measureFooter, 200));
+
+      // React when footer visibility toggles (e.g., unsaved changes)
+      const footer = document.querySelector(FOOTER_SEL);
+      if (footer && window.MutationObserver) {
+        const mo = new MutationObserver(measureFooter);
+        mo.observe(footer, { attributes: true, attributeFilter: ['class', 'style'] });
+      }
+
+      // Spinner safety: if tiles exist but overlay didn't hide, nudge it
+      function nudgeSpinnerOnceTilesRender() {
+        const grid = document.querySelector(GRID_SEL);
+        if (!grid) return;
+        const check = () => {
+          if (grid.children.length > 0) {
+            // app.js defines hideLoading(); if it's there, use it
+            if (typeof window.hideLoading === 'function') {
+              try { window.hideLoading(); } catch {}
+            }
+          }
+        };
+        // Try a few times in case data arrives slightly later
+        setTimeout(check, 300);
+        setTimeout(check, 800);
+        setTimeout(check, 1500);
+      }
+      // Run after DOM is ready
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', nudgeSpinnerOnceTilesRender);
+      } else {
+        nudgeSpinnerOnceTilesRender();
+      }
+    })();
+  </script>
+</body>
+</html>      /* Allow vertical scrolling so tiles can grow as needed */
+      height: 100%;
+      overflow-x: hidden;
+      overflow-y: auto;
+
+      /* iOS text zoom can mess with measurements; keep it steady */
+      -webkit-text-size-adjust: 100%;
+    }
+
+    header {
+      position: sticky; top: 0; z-index: 10;
+      display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
+      padding: .6rem .9rem;
+      background: rgba(15,17,21,.9); backdrop-filter: blur(6px);
+      border-bottom: 1px solid #222936;
+      overflow: visible; /* allow overlay logo to extend */
+    }
+
+    /* Candidate name + overlay container */
+    .name-and-logo {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 0.2rem;
+      z-index: 2;
+    }
+
+    #candidateName {
+      margin: 0;
+      font-size: 1.35rem;
+      line-height: 1.1;
+      font-weight: 800;
+      letter-spacing: .2px;
+      position: relative;
+      z-index: 2;
+    }
+
+    /* Overlayed logo (does not take layout space) */
+    .company-logo-overlay {
+      position: absolute;
+      left: 0;
+      top: calc(100% + 4px);
+      z-index: 1;
+      pointer-events: none;
+      opacity: 0.25;
+      width: auto; height: auto;
+      max-width: min(65vw, 520px);
+      max-height: 280px;
+    }
+    @media (max-width: 900px) {
+      .company-logo-overlay { max-width: min(70vw, 420px); max-height: 220px; opacity: 0.22; }
+    }
+    @media (max-width: 560px) {
+      .company-logo-overlay { max-width: 60vw; max-height: 180px; opacity: 0.20; }
+    }
+
+    header .spacer { flex: 1; }
+
+    button, .btn {
+      appearance: none; border: 0; outline: 0; cursor: pointer;
+      border-radius: 10px; padding: .5rem .7rem; font-weight: 600; font-size: .9rem;
+      background: var(--panel); color: var(--text);
+      transition: background .15s ease, opacity .15s ease;
+      position: relative; z-index: 2;
+    }
+    button:hover { background: #1e2532; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
+    .btn-primary { background: var(--accent); color: #fff; }
+    .btn-ghost { background: transparent; color: var(--muted); }
+
+    main {
+      max-width: 1024px;
+      width: 100%;
+      margin: 0 auto;
+      padding: .6rem .9rem 0;
+      box-sizing: border-box;
+
+      /* Critical: reserve real footer height so content never sits underneath */
+      padding-bottom: calc(var(--footer-h) + env(safe-area-inset-bottom));
+      scroll-padding-bottom: calc(var(--footer-h) + env(safe-area-inset-bottom) + 12px);
+    }
+
+    #helpMsg {
+      display: block;
+      margin: .15rem 0 .6rem;
+      padding: .45rem .6rem;
+      border-radius: 10px; font-size: .9rem;
+      color: var(--muted);
+      border: 1px solid #2a3446;
+      background: #131926;
+      position: relative;
+      z-index: 1;
+    }
+
+    /* Grid: responsive columns; rows grow to fit tallest tile in that row */
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(0, 1fr));
+      gap: .6rem;
+      width: 100%;
+      max-width: 100%;
+    }
+    @media (max-width: 900px) { .grid { grid-template-columns: repeat(5, 1fr); } }
+    @media (max-width: 700px) { .grid { grid-template-columns: repeat(4, 1fr); } }
+    @media (max-width: 560px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+
+    /* Tiles: let content dictate height. No clamps, no hidden overflow. */
+    .tile {
+      background: var(--tile);
+      border: 1px solid #222a36;
+      border-radius: 14px;
+      padding: .6rem;
+      display: grid;
+      grid-template-rows: auto auto auto; /* header, status, sub */
+      transition: background .15s ease;
+    }
+    .tile:hover { background: var(--tile-hover); }
+
+    .tile-header {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: .1rem;
+    }
+    .tile-day {
+      font-weight: 800;
+      letter-spacing: .5px;
+      font-size: .95rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      line-height: 1.2;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .tile-date {
+      font-size: .95rem;
+      color: var(--text);
+      font-weight: 700;
+      margin-left: 0.05rem;
+      line-height: 1.2;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+
+    .tile-status {
+      margin-top: .3rem;
+      font-size: 1rem;
+      font-weight: 800;
+      line-height: 1.25;
+      /* No clamps; always wrap */
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .status-pending { color: var(--muted); }
+    .status-na      { color: var(--danger); }
+    .status-ld,
+    .status-n,
+    .status-ldn     { color: var(--warn); }
+    .status-booked  { color: var(--booked); }
+    .status-blocked { color: var(--blocked); }
+
+    .tile-sub {
+      margin-top: .25rem;
+      color: var(--muted);
+      font-size: .9rem;
+      line-height: 1.25;
+      /* No clamps; always wrap */
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    .tile .edit-note { color: var(--accent); font-size: .85rem; }
+
+    /* Footer is fixed at the very bottom; we reserve its height in <main> */
+    .footer {
+      position: fixed;
+      left: 0; right: 0; bottom: 0;
+      z-index: 20;
+      background: rgba(15,17,21,.97);
+      backdrop-filter: blur(6px);
+      border-top: 1px solid #222936;
       /* Vertical padding includes safe-area so the button sits as low as possible */
       padding: .55rem .9rem calc(.55rem + env(safe-area-inset-bottom));
       box-sizing: border-box;
