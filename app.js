@@ -81,12 +81,16 @@ function showAuthError(message = 'Not an authorised user') {
 
 // ---------- State ----------
 let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)
-let draft = {};               // ymd -> status (only diffs from baseline) (stores BASE labels, not the "wrapped" variant)
+let draft = {};               // ymd -> status (only diffs from baseline) (stores BASE label for pending)
 let identity = {};            // { k?:string, msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
 const DRAFT_KEY = 'rota_avail_draft_v1';
 const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
 const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // persisted identity
+
+// Per-session memory of tiles the user has tapped at least once this session.
+// Used to decide whether the pending wording should be "wrapped" (NOT SURE...).
+const toggledThisSession = new Set();
 
 // Submit-nudge timer state (1-minute reminder)
 let submitNudgeTimer = null;
@@ -220,7 +224,7 @@ function ensureLoadingOverlay() {
         <div id="pastTitle">Past 14 days</div>
         <button id="pastClose" aria-label="Close">✕</button>
       </div>
-      <div id="pastList" tabindex="0"></div>
+        <div id="pastList" tabindex="0"></div>
     </div>
   `;
   document.body.appendChild(pastOverlay);
@@ -381,47 +385,79 @@ function getCssVarPx(name) {
 }
 
 /**
+ * Decide which pending wording to display.
+ * - On initial load of a server-pending tile => base wording ("PLEASE PROVIDE...")
+ * - After the user has tapped the tile in this session, any time it returns to pending => wrapped wording ("NOT SURE...")
+ * - If baseline was non-pending but effective is pending (only reachable via user action), show wrapped wording.
+ */
+function pendingDisplayLabelForTile(t) {
+  if (t.effectiveStatus !== PENDING_LABEL_DEFAULT) return t.effectiveStatus;
+
+  // Effective is pending:
+  const isServerPending = (t.status === PENDING_LABEL_DEFAULT);
+  const userHasTapped = toggledThisSession.has(t.ymd);
+
+  if (isServerPending && !userHasTapped) {
+    // Load-time pending and untouched this session -> base wording
+    return PENDING_LABEL_DEFAULT;
+  }
+  // Otherwise (tapped this session, or baseline was non-pending), show wrapped wording
+  return PENDING_LABEL_WRAPPED;
+}
+
+/**
+ * Build the cycle hint shown in the title for accessible guidance.
+ * If the tile is server-pending on load (untouched), include the base wording as the start.
+ * Otherwise, when the cycle hits pending, show the wrapped wording.
+ */
+function buildCycleHint(t) {
+  const pendingVisual =
+    (t.status === PENDING_LABEL_DEFAULT && !toggledThisSession.has(t.ymd))
+      ? PENDING_LABEL_DEFAULT
+      : PENDING_LABEL_WRAPPED;
+
+  const seqFromPending = [pendingVisual, 'N/A', 'LD', 'N', 'LD/N', pendingVisual];
+  const seqFromNonPending = ['N/A', 'LD', 'N', 'LD/N', pendingVisual, 'N/A'];
+
+  const start =
+    (t.status === PENDING_LABEL_DEFAULT && !toggledThisSession.has(t.ymd))
+      ? seqFromPending
+      : [t.effectiveStatus, ...seqFromNonPending];
+
+  return 'Tap to change: ' + start.join(' → ');
+}
+
+/**
  * Fit status text: no mid-word breaks, allow wrapping between words, and
  * only shrink if a single word would overflow even on its own line.
  */
 function fitStatusLabel(el) {
   if (!el) return;
-  // Avoid splitting inside words
   el.style.wordBreak = 'keep-all';
   el.style.overflowWrap = 'normal';
-
-  // Reset any previous scaling
   el.style.fontSize = '';
 
-  // If content overflows horizontally (single word too long), shrink
   const containerWidth = el.clientWidth;
   if (!containerWidth) return;
 
-  const MIN_SCALE = 0.85; // 85% of base size
+  const MIN_SCALE = 0.85;
   let scale = 1.0;
 
-  // Helper to compute if any single word overflows by itself
   const text = el.textContent || '';
   const words = text.split(/\s+/).filter(Boolean);
 
-  // Quick path: if scrollWidth fits, nothing to do (normal wrapping handled by the browser)
   if (el.scrollWidth <= el.clientWidth) return;
 
-  // Only shrink when a single word can't fit the line width
-  // Create a measurer span inside the same element to match font metrics
   const measurer = document.createElement('span');
-  measurer.style.visibility = 'hidden';
-  measurer.style.whiteSpace = 'nowrap';
-  measurer.style.position = 'absolute';
-  measurer.style.pointerEvents = 'none';
-  measurer.style.wordBreak = 'keep-all';
-  measurer.style.overflowWrap = 'normal';
+  Object.assign(measurer.style, {
+    visibility:'hidden', whiteSpace:'nowrap', position:'absolute',
+    pointerEvents:'none', wordBreak:'keep-all', overflowWrap:'normal'
+  });
   el.appendChild(measurer);
 
   const baseSize = parseFloat(getComputedStyle(el).fontSize) || 16;
 
-  // Find the longest word width
-  function longestWordWidth() {
+  const longestWordWidth = () => {
     let max = 0;
     for (const w of words) {
       measurer.textContent = w;
@@ -429,7 +465,7 @@ function fitStatusLabel(el) {
       if (wWidth > max) max = wWidth;
     }
     return max;
-  }
+  };
 
   let longest = longestWordWidth();
   while (longest > containerWidth && scale > MIN_SCALE + 0.001) {
@@ -437,7 +473,6 @@ function fitStatusLabel(el) {
     el.style.fontSize = (baseSize * scale) + 'px';
     longest = longestWordWidth();
   }
-
   measurer.remove();
 }
 
@@ -463,7 +498,6 @@ function scheduleSubmitNudge() {
 }
 function registerUserEdit() {
   lastEditAt = Date.now();
-  // Only schedule a reminder if one hasn't been shown yet this dirty session
   if (!nudgeShown) scheduleSubmitNudge();
 }
 
@@ -560,25 +594,6 @@ async function fetchPastShifts() {
 }
 
 // ---------- Rendering ----------
-function pendingDisplayLabelForTile(t) {
-  // If effective status is the base pending label:
-  if (t.effectiveStatus === PENDING_LABEL_DEFAULT) {
-    // If the user has a draft entry setting this date to pending, show the wrapped variant
-    if (draft.hasOwnProperty(t.ymd) && draft[t.ymd] === PENDING_LABEL_DEFAULT) {
-      return PENDING_LABEL_WRAPPED;
-    }
-    // Otherwise, default
-    return PENDING_LABEL_DEFAULT;
-  }
-  return t.effectiveStatus;
-}
-
-function buildCycleHint(t) {
-  const first = pendingDisplayLabelForTile(t);
-  const seq = [first, 'N/A', 'LD', 'N', 'LD/N', first];
-  return 'Tap to change: ' + seq.join(' → ');
-}
-
 function renderTiles() {
   els.grid.innerHTML = '';
   if (!baseline || !baseline.tiles) return;
@@ -668,7 +683,7 @@ function renderTiles() {
       // Mark pending tiles as needing attention (pulse + thin red border)
       if (!t.booked && t.status !== 'BLOCKED' && t.editable !== false) {
         card.classList.add('needs-attention');
-        card.classList.add('attention-border'); // both base and wrapped should show border while pending
+        card.classList.add('attention-border'); // base and wrapped both show border while pending
       }
 
       if (t.effectiveStatus !== t.status) {
@@ -680,8 +695,7 @@ function renderTiles() {
 
     card.append(header, status, sub);
 
-    // Ensure status text fits rule (no mid-word splits, shrink only if a single word overflows)
-    // Run after it’s in the DOM so measurements are accurate.
+    // Ensure status text fits rule
     els.grid.appendChild(card);
     fitStatusLabel(status);
 
@@ -693,14 +707,17 @@ function renderTiles() {
       card.addEventListener('click', () => {
         const cur = draft[t.ymd] ?? t.status;
         const next = nextStatus(cur);
+
+        toggledThisSession.add(t.ymd); // mark as user-touched this session
+
         if (next === t.status) {
           delete draft[t.ymd];
         } else {
-          // Always store the BASE pending label in draft when wrapping,
-          // never the "wrapped" display variant.
+          // Store BASE pending in draft (blank code) even though we DISPLAY wrapped when appropriate
           draft[t.ymd] = next;
         }
         persistDraft();
+
         // user just edited — (re)start 1-minute reminder window
         registerUserEdit();
 
