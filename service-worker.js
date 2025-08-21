@@ -6,7 +6,7 @@ const ASSETS = [
   './manifest.json',
   './icon-192.png',
   './icon-512.png',
-  './ARMSLOGO.PNG'
+  './ARMSLOGO.png'
 ];
 
 // Install: pre-cache core assets
