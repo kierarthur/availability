@@ -7,136 +7,155 @@
   <link rel="manifest" href="manifest.json" />
   <title>Availability</title>
   <style>
-    :root {
-      --bg: #0f1115;
-      --panel: #161a22;
-      --muted: #a7b0c0;
-      --text: #e7ecf3;
-      --accent: #4f8cff;
-      --danger: #e06666;
-      --ok: #6aa84f;
-      --warn: #c8a94a;
-      --tile: #1b212c;
-      --tile-hover: #222a38;
-      --booked: #4a86e8;
-      --blocked: #6aa84f;
-      --footer-h: 76px; /* reserved dynamically by JS */
+    :root{
+      --bg:#0f1115;
+      --panel:#161a22;
+      --muted:#a7b0c0;
+      --text:#e7ecf3;
+      --accent:#4f8cff;
+      --danger:#e06666;
+      --ok:#6aa84f;
+      --warn:#c8a94a;
+      --tile:#1b212c;
+      --tile-hover:#222a38;
+      --booked:#4a86e8;
+      --blocked:#6aa84f;
+
+      /* Reserved dynamically by JS so content never sits under the fixed footer */
+      --footer-h:76px;
     }
 
-    * { box-sizing: border-box; }
+    *{box-sizing:border-box}
 
-    html, body {
-      margin: 0;
-      padding: 0;
-      background: var(--bg);
-      color: var(--text);
-      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    html,body{
+      margin:0;
+      padding:0;
+      background:var(--bg);
+      color:var(--text);
+      font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
 
-      /* allow vertical scrolling so tiles can grow as needed */
-      height: 100%;
-      overflow-x: hidden;
-      overflow-y: auto;
+      /* Allow vertical scrolling so tiles can grow as needed */
+      height:100%;
+      overflow-x:hidden;
+      overflow-y:auto;
 
-      -webkit-text-size-adjust: 100%;
+      -webkit-text-size-adjust:100%;
     }
 
-    header {
-      position: sticky; top: 0; z-index: 10;
-      display: flex; align-items: center; gap: .6rem; flex-wrap: wrap;
-      padding: .6rem .9rem;
-      background: rgba(15,17,21,.9); backdrop-filter: blur(6px);
-      border-bottom: 1px solid #222936;
-      overflow: visible;
+    header{
+      position:sticky;top:0;z-index:10;
+      display:flex;align-items:center;gap:.6rem;flex-wrap:wrap;
+      padding:.6rem .9rem;
+      background:rgba(15,17,21,.9);backdrop-filter:blur(6px);
+      border-bottom:1px solid #222936;
+      overflow:visible;
     }
 
-    .name-and-logo { position: relative; display: flex; flex-direction: column; align-items: flex-start; gap: .2rem; z-index: 2; }
-    #candidateName { margin: 0; font-size: 1.35rem; line-height: 1.1; font-weight: 800; letter-spacing: .2px; position: relative; z-index: 2; }
-
-    .company-logo-overlay {
-      position: absolute; left: 0; top: calc(100% + 4px); z-index: 1; pointer-events: none; opacity: .25;
-      width: auto; height: auto; max-width: min(65vw, 520px); max-height: 280px;
-    }
-    @media (max-width: 900px) { .company-logo-overlay { max-width: min(70vw, 420px); max-height: 220px; opacity: .22; } }
-    @media (max-width: 560px) { .company-logo-overlay { max-width: 60vw; max-height: 180px; opacity: .20; } }
-
-    header .spacer { flex: 1; }
-
-    button, .btn {
-      appearance: none; border: 0; outline: 0; cursor: pointer;
-      border-radius: 10px; padding: .5rem .7rem; font-weight: 600; font-size: .9rem;
-      background: var(--panel); color: var(--text);
-      transition: background .15s ease, opacity .15s ease;
-      position: relative; z-index: 2;
-    }
-    button:hover { background: #1e2532; }
-    button:disabled { opacity: .55; cursor: not-allowed; }
-    .btn-primary { background: var(--accent); color: #fff; }
-    .btn-ghost { background: transparent; color: var(--muted); }
-
-    main {
-      max-width: 1024px; width: 100%; margin: 0 auto; padding: .6rem .9rem 0; box-sizing: border-box;
-      /* reserve real footer height so content never sits underneath */
-      padding-bottom: calc(var(--footer-h) + env(safe-area-inset-bottom));
-      scroll-padding-bottom: calc(var(--footer-h) + env(safe-area-inset-bottom) + 12px);
+    .name-and-logo{
+      position:relative;
+      display:flex;flex-direction:column;align-items:flex-start;gap:.2rem;
+      z-index:2;
     }
 
-    #helpMsg {
-      display: block; margin: .15rem 0 .6rem; padding: .45rem .6rem;
-      border-radius: 10px; font-size: .9rem; color: var(--muted);
-      border: 1px solid #2a3446; background: #131926; position: relative; z-index: 1;
+    #candidateName{
+      margin:0;font-size:1.35rem;line-height:1.1;font-weight:800;letter-spacing:.2px;position:relative;z-index:2;
     }
 
-    .grid {
-      display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
-      gap: .6rem; width: 100%; max-width: 100%;
+    .company-logo-overlay{
+      position:absolute;left:0;top:calc(100% + 4px);z-index:1;pointer-events:none;opacity:.25;
+      width:auto;height:auto;max-width:min(65vw,520px);max-height:280px;
     }
-    @media (max-width: 900px) { .grid { grid-template-columns: repeat(5, 1fr); } }
-    @media (max-width: 700px) { .grid { grid-template-columns: repeat(4, 1fr); } }
-    @media (max-width: 560px) { .grid { grid-template-columns: repeat(3, 1fr); } }
+    @media (max-width:900px){.company-logo-overlay{max-width:min(70vw,420px);max-height:220px;opacity:.22}}
+    @media (max-width:560px){.company-logo-overlay{max-width:60vw;max-height:180px;opacity:.20}}
 
-    .tile {
-      background: var(--tile); border: 1px solid #222a36; border-radius: 14px; padding: .6rem;
-      display: grid; grid-template-rows: auto auto auto; transition: background .15s ease;
+    header .spacer{flex:1}
+
+    button,.btn{
+      appearance:none;border:0;outline:0;cursor:pointer;
+      border-radius:10px;padding:.5rem .7rem;font-weight:600;font-size:.9rem;
+      background:var(--panel);color:var(--text);
+      transition:background .15s ease,opacity .15s ease;position:relative;z-index:2;
     }
-    .tile:hover { background: var(--tile-hover); }
+    button:hover{background:#1e2532}
+    button:disabled{opacity:.55;cursor:not-allowed}
+    .btn-primary{background:var(--accent);color:#fff}
+    .btn-ghost{background:transparent;color:var(--muted)}
 
-    .tile-header { display: flex; flex-direction: column; align-items: flex-start; gap: .1rem; }
-    .tile-day  { font-weight: 800; letter-spacing: .5px; font-size: .95rem; color: var(--muted); text-transform: uppercase; line-height: 1.2; word-break: break-word; overflow-wrap: anywhere; }
-    .tile-date { font-size: .95rem; color: var(--text); font-weight: 700; margin-left: .05rem; line-height: 1.2; word-break: break-word; overflow-wrap: anywhere; }
+    main{
+      max-width:1024px;width:100%;margin:0 auto;padding:.6rem .9rem 0;box-sizing:border-box;
 
-    .tile-status { margin-top: .3rem; font-size: 1rem; font-weight: 800; line-height: 1.25; word-break: break-word; overflow-wrap: anywhere; }
-    .status-pending { color: var(--muted); }
-    .status-na { color: var(--danger); }
-    .status-ld, .status-n, .status-ldn { color: var(--warn); }
-    .status-booked { color: var(--booked); }
-    .status-blocked { color: var(--blocked); }
-
-    .tile-sub { margin-top: .25rem; color: var(--muted); font-size: .9rem; line-height: 1.25; word-break: break-word; overflow-wrap: anywhere; }
-    .tile .edit-note { color: var(--accent); font-size: .85rem; }
-
-    .footer {
-      position: fixed; left: 0; right: 0; bottom: 0; z-index: 20;
-      background: rgba(15,17,21,.97); backdrop-filter: blur(6px);
-      border-top: 1px solid #222936;
-      padding: .55rem .9rem calc(.55rem + env(safe-area-inset-bottom));
-      box-sizing: border-box; width: 100%;
-    }
-    .footer-inner { max-width: 1024px; margin: 0 auto; display: flex; gap: .6rem; align-items: center; width: 100%; }
-    .footer .spacer { flex: 1; }
-
-    .banner {
-      padding: .5rem .7rem; border-radius: 10px; font-size: .9rem;
-      border: 1px solid #2a3446; background: #131926; color: #a7b0c0;
-      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 50vw;
+      /* Reserve real footer height so content never sits underneath */
+      padding-bottom:calc(var(--footer-h) + env(safe-area-inset-bottom));
+      scroll-padding-bottom:calc(var(--footer-h) + env(safe-area-inset-bottom) + 12px);
     }
 
-    .hidden { visibility: hidden !important; pointer-events: none !important; opacity: 0; }
+    #helpMsg{
+      display:block;margin:.15rem 0 .6rem;padding:.45rem .6rem;border-radius:10px;font-size:.9rem;
+      color:var(--muted);border:1px solid #2a3446;background:#131926;position:relative;z-index:1;
+    }
 
-    .toast {
-      position: fixed; right: .75rem; bottom: calc(5.25rem + env(safe-area-inset-bottom));
-      background: #131926; color: var(--text); border: 1px solid #2a3446;
-      padding: .6rem .75rem; border-radius: 10px; z-index: 25;
-      box-shadow: 0 8px 30px rgba(0,0,0,.35); max-width: 90vw; font-size: .9rem;
+    /* Grid: responsive columns; rows grow to fit tallest tile in that row */
+    .grid{
+      display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:.6rem;width:100%;max-width:100%;
+    }
+    @media (max-width:900px){.grid{grid-template-columns:repeat(5,1fr)}}
+    @media (max-width:700px){.grid{grid-template-columns:repeat(4,1fr)}}
+    @media (max-width:560px){.grid{grid-template-columns:repeat(3,1fr)}}
+
+    /* Tiles: let content dictate height. No clamps, no hidden overflow. */
+    .tile{
+      background:var(--tile);border:1px solid #222a36;border-radius:14px;padding:.6rem;
+      display:grid;grid-template-rows:auto auto auto;transition:background .15s ease;
+    }
+    .tile:hover{background:var(--tile-hover)}
+
+    .tile-header{display:flex;flex-direction:column;align-items:flex-start;gap:.1rem}
+    .tile-day{
+      font-weight:800;letter-spacing:.5px;font-size:.95rem;color:var(--muted);text-transform:uppercase;
+      line-height:1.2;word-break:break-word;overflow-wrap:anywhere;
+    }
+    .tile-date{
+      font-size:.95rem;color:var(--text);font-weight:700;margin-left:.05rem;line-height:1.2;word-break:break-word;overflow-wrap:anywhere;
+    }
+
+    .tile-status{
+      margin-top:.3rem;font-size:1rem;font-weight:800;line-height:1.25;
+      word-break:break-word;overflow-wrap:anywhere;
+    }
+    .status-pending{color:var(--muted)}
+    .status-na{color:var(--danger)}
+    .status-ld,.status-n,.status-ldn{color:var(--warn)}
+    .status-booked{color:var(--booked)}
+    .status-blocked{color:var(--blocked)}
+
+    .tile-sub{
+      margin-top:.25rem;color:var(--muted);font-size:.9rem;line-height:1.25;
+      word-break:break-word;overflow-wrap:anywhere;
+    }
+    .tile .edit-note{color:var(--accent);font-size:.85rem}
+
+    /* Fixed footer; we only read its size, never toggle its class during measurement */
+    .footer{
+      position:fixed;left:0;right:0;bottom:0;z-index:20;
+      background:rgba(15,17,21,.97);backdrop-filter:blur(6px);
+      border-top:1px solid #222936;
+      padding:.55rem .9rem calc(.55rem + env(safe-area-inset-bottom));
+      box-sizing:border-box;width:100%;
+    }
+    .footer-inner{max-width:1024px;margin:0 auto;display:flex;gap:.6rem;align-items:center;width:100%}
+    .footer .spacer{flex:1}
+    .banner{
+      padding:.5rem .7rem;border-radius:10px;font-size:.9rem;border:1px solid #2a3446;background:#131926;color:#a7b0c0;
+      white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:50vw;
+    }
+
+    /* Keep .hidden simple to avoid measurement loops */
+    .hidden{visibility:hidden !important;pointer-events:none !important;opacity:0}
+
+    .toast{
+      position:fixed;right:.75rem;bottom:calc(5.25rem + env(safe-area-inset-bottom));
+      background:#131926;color:var(--text);border:1px solid #2a3446;padding:.6rem .75rem;border-radius:10px;z-index:25;
+      box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:90vw;font-size:.9rem;
     }
   </style>
 </head>
@@ -158,6 +177,7 @@
     <div id="grid" class="grid"></div>
   </main>
 
+  <!-- Fixed footer; we reserve its space in <main> via --footer-h -->
   <div id="footer" class="footer hidden" role="region" aria-label="Submission actions">
     <div class="footer-inner">
       <span id="draftMsg" class="banner">You have unsaved changes.</span>
@@ -169,64 +189,75 @@
 
   <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
 
-  <!-- Your app logic -->
+  <!-- Your app logic (must exist) -->
   <script src="app.js"></script>
 
-  <!-- Footer measurement + Loading overlay fail-safe -->
+  <!-- Stable footer measurement + safe loader cleanup (no mutation loops) -->
   <script>
     (function () {
-      const FOOTER_SEL = '#footer';
-      const GRID_SEL = '#grid';
+      const FOOTER = document.getElementById('footer');
+      const GRID   = document.getElementById('grid');
 
-      function measureFooter() {
-        const footer = document.querySelector(FOOTER_SEL);
-        if (!footer) return;
-        const wasHidden = footer.classList.contains('hidden');
-        if (wasHidden) {
-          footer.style.visibility = 'hidden';
-          footer.classList.remove('hidden');
-        }
-        const h = Math.max(0, Math.round(footer.getBoundingClientRect().height));
+      /* ---------- rAF debounce helper ---------- */
+      let rafId = 0;
+      const rafDebounce = (fn) => {
+        if (rafId) cancelAnimationFrame(rafId);
+        rafId = requestAnimationFrame(() => { rafId = 0; fn(); });
+      };
+
+      /* ---------- Footer height publisher (no class toggles) ---------- */
+      function publishFooterHeight() {
+        if (!FOOTER) return;
+        // Even when .hidden (visibility:hidden), it has a box; this read is safe.
+        const h = Math.max(0, Math.round(FOOTER.getBoundingClientRect().height));
         document.documentElement.style.setProperty('--footer-h', h + 'px');
-        if (wasHidden) {
-          footer.classList.add('hidden');
-          footer.style.visibility = '';
-        }
       }
 
-      // Hide any "Loading…" overlay defensively
-      function hideAnyLoadingOverlay() {
-        const el = document.querySelector('#loading, .loading-overlay');
-        if (el) el.classList.add('hidden');
-      }
-
-      // If grid gets content, hide loading
-      function watchGridForContent() {
-        const grid = document.querySelector(GRID_SEL);
-        if (!grid) return;
-        if (grid.children.length > 0) hideAnyLoadingOverlay();
-        const mo = new MutationObserver(() => {
-          if (grid.children.length > 0) hideAnyLoadingOverlay();
-        });
-        mo.observe(grid, { childList: true });
-      }
-
-      // Measure at key times
+      // One-time on load (plus a delayed pass for mobile UI bars)
       window.addEventListener('load', () => {
-        measureFooter();
-        setTimeout(measureFooter, 250);
-        watchGridForContent();
-        // Final guard in case app.js never adds a loader element
-        setTimeout(hideAnyLoadingOverlay, 1200);
+        publishFooterHeight();
+        setTimeout(publishFooterHeight, 250);
       });
-      window.addEventListener('resize', measureFooter);
-      window.addEventListener('orientationchange', () => setTimeout(measureFooter, 200));
 
-      // React when footer visibility toggles (e.g., unsaved changes)
-      const footer = document.querySelector(FOOTER_SEL);
-      if (footer && window.MutationObserver) {
-        const mo = new MutationObserver(measureFooter);
-        mo.observe(footer, { attributes: true, attributeFilter: ['class', 'style'] });
+      // Resize/orientation (debounced)
+      window.addEventListener('resize', () => rafDebounce(publishFooterHeight), { passive: true });
+      window.addEventListener('orientationchange', () => setTimeout(() => rafDebounce(publishFooterHeight), 200));
+
+      // Observe actual footer size changes (e.g., text wraps, button states)
+      if ('ResizeObserver' in window && FOOTER) {
+        const ro = new ResizeObserver(() => rafDebounce(publishFooterHeight));
+        ro.observe(FOOTER);
+      }
+
+      /* ---------- Safe loader cleanup (doesn't mutate watched attrs) ---------- */
+      function hideLoadersOnce() {
+        const sels = ['#loading','.loading','.loading-overlay','#spinner','#progress'];
+        sels.forEach(sel => document.querySelectorAll(sel).forEach(el => {
+          el.style.display = 'none';
+          el.setAttribute('aria-hidden','true');
+        }));
+      }
+
+      // Hide loaders when DOM is ready and once tiles appear
+      document.addEventListener('DOMContentLoaded', () => {
+        hideLoadersOnce();
+        setTimeout(hideLoadersOnce, 600);
+      });
+
+      if (GRID && 'MutationObserver' in window) {
+        const mo = new MutationObserver(() => {
+          if (GRID.children.length) hideLoadersOnce();
+        });
+        mo.observe(GRID, { childList: true });
+      }
+
+      // If app.js fails to load, warn clearly
+      const appTag = Array.from(document.scripts).find(s => /app\.js(\?|$)/.test(s.src || ''));
+      if (appTag) {
+        appTag.addEventListener('error', () => {
+          console.error('app.js failed to load (404/CORS?).');
+          alert('app.js failed to load. Check its path and that you are serving over http:// or https:// (not file://).');
+        });
       }
     })();
   </script>
