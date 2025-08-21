@@ -83,6 +83,28 @@ let identity = {};            // { k?:string, msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
 const DRAFT_KEY = 'rota_avail_draft_v1';
 const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
+const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // NEW
+
+// Saved-identity helpers (NEW)
+function saveIdentity(id) {
+  try {
+    if (id && (id.k || id.msisdn)) {
+      localStorage.setItem(SAVED_IDENTITY_KEY, JSON.stringify(id));
+    }
+  } catch {}
+}
+function loadSavedIdentity() {
+  try {
+    const raw = localStorage.getItem(SAVED_IDENTITY_KEY);
+    if (!raw) return {};
+    const obj = JSON.parse(raw);
+    if (obj && (obj.k || obj.msisdn)) return obj;
+  } catch {}
+  return {};
+}
+function clearSavedIdentity() {
+  try { localStorage.removeItem(SAVED_IDENTITY_KEY); } catch {}
+}
 
 // ------- Loading overlay (auto-created, no HTML changes required) -------
 let _loadingCount = 0;
@@ -244,8 +266,18 @@ function parseQuery() {
   const k = q.get('k')?.trim();
   const msisdn = q.get('msisdn')?.trim();
   const t = q.get('t')?.trim(); // allow passing t in URL for testing
-  identity = k ? { k } : (msisdn ? { msisdn } : {});
+
   if (t) sessionStorage.setItem('api_t_override', t);
+
+  if (k || msisdn) {
+    identity = k ? { k } : { msisdn };
+    saveIdentity(identity); // NEW: persist latest identity
+    return;
+  }
+
+  // NEW: restore from saved identity when URL has none
+  const saved = loadSavedIdentity();
+  identity = (saved.k || saved.msisdn) ? saved : {};
 }
 
 // ---------- Helpers ----------
@@ -594,6 +626,7 @@ async function loadFromServer({ force=false } = {}) {
         'FORBIDDEN'
       ]);
       if (unauthErrors.has(errCode)) {
+        clearSavedIdentity();          // NEW
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
@@ -676,6 +709,7 @@ async function submitChanges() {
         'FORBIDDEN'
       ]);
       if (json && unauthErrors.has(json.error)) {
+        clearSavedIdentity();          // NEW
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
@@ -743,7 +777,7 @@ window.addEventListener('orientationchange', () => setTimeout(sizeGrid, 250));
 (async function init() {
   parseQuery();
 
-  // If no k or msisdn provided in URL → deny immediately
+  // If no k or msisdn provided in URL → deny immediately (now parseQuery restores from saved identity too)
   if (!identity.k && !identity.msisdn) {
     showAuthError('Not an authorised user');
     return;
