@@ -888,6 +888,9 @@ async function submitChanges() {
     nudgeShown = false;
     lastEditAt = 0;
 
+    // Reset per-session tap memory so post-save render mimics a cold load
+    toggledThisSession.clear();
+
     await loadFromServer({ force: true });
   } catch (err) {
     if (String(err && err.message) !== '__AUTH_STOP__') {
