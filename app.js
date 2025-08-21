@@ -81,7 +81,7 @@ function showAuthError(message = 'Not an authorised user') {
 
 // ---------- State ----------
 let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)
-let draft = {};               // ymd -> status (only diffs from baseline) (stores BASE label for pending)
+let draft = {};               // ymd -> status LABEL (only diffs from baseline). Pending stored as BASE label.
 let identity = {};            // { k?:string, msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
 const DRAFT_KEY = 'rota_avail_draft_v1';
@@ -316,8 +316,8 @@ function parseQuery() {
 }
 
 // ---------- Helpers ----------
-function statusClass(s) {
-  switch (s) {
+function statusClass(label) {
+  switch (label) {
     case 'BOOKED': return 'status-booked';
     case 'BLOCKED': return 'status-blocked';
     case 'NOT AVAILABLE': return 'status-na';
@@ -327,8 +327,8 @@ function statusClass(s) {
     default: return 'status-pending';
   }
 }
-function nextStatus(s) {
-  const idx = STATUS_ORDER.indexOf(s);
+function nextStatus(currentLabel) {
+  const idx = STATUS_ORDER.indexOf(currentLabel);
   return STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
 }
 function showFooterIfNeeded() {
@@ -384,47 +384,41 @@ function getCssVarPx(name) {
   return Number.isFinite(num) ? num : 0;
 }
 
-/**
- * Decide which pending wording to display.
- * - On initial load of a server-pending tile => base wording ("PLEASE PROVIDE...")
- * - After the user has tapped the tile in this session, any time it returns to pending => wrapped wording ("NOT SURE...")
- * - If baseline was non-pending but effective is pending (only reachable via user action), show wrapped wording.
- */
-function pendingDisplayLabelForTile(t) {
-  if (t.effectiveStatus !== PENDING_LABEL_DEFAULT) return t.effectiveStatus;
-
-  // Effective is pending:
-  const isServerPending = (t.status === PENDING_LABEL_DEFAULT);
-  const userHasTapped = toggledThisSession.has(t.ymd);
-
-  if (isServerPending && !userHasTapped) {
-    // Load-time pending and untouched this session -> base wording
-    return PENDING_LABEL_DEFAULT;
-  }
-  // Otherwise (tapped this session, or baseline was non-pending), show wrapped wording
-  return PENDING_LABEL_WRAPPED;
+// ---- Code ↔ Label normalization (CRITICAL FIX) ----
+function codeToLabel(v) {
+  // Already a known label?
+  if (v && STATUS_TO_CODE.hasOwnProperty(v)) return v;
+  if (v === 'BOOKED' || v === 'BLOCKED') return v;
+  // Map codes ('' | 'N/A' | 'LD' | 'N' | 'LD/N') → labels
+  if (v === undefined || v === null) return PENDING_LABEL_DEFAULT;
+  const mapped = CODE_TO_STATUS[v];
+  return mapped !== undefined ? mapped : PENDING_LABEL_DEFAULT;
 }
 
 /**
- * Build the cycle hint shown in the title for accessible guidance.
- * If the tile is server-pending on load (untouched), include the base wording as the start.
- * Otherwise, when the cycle hits pending, show the wrapped wording.
+ * Decide which pending wording to display for a tile.
+ * - If effective label is pending:
+ *   - If baseline was pending AND user hasn't tapped this session → base wording
+ *   - Else → wrapped wording
+ * - Otherwise return the effective non-pending label
+ */
+function displayPendingLabelForTile(t) {
+  if (t.effectiveLabel !== PENDING_LABEL_DEFAULT) return t.effectiveLabel;
+  const serverPending = (t.baselineLabel === PENDING_LABEL_DEFAULT);
+  const touched = toggledThisSession.has(t.ymd);
+  return (serverPending && !touched) ? PENDING_LABEL_DEFAULT : PENDING_LABEL_WRAPPED;
+}
+
+/**
+ * Build the cycle hint. When we show pending in the sequence, use the visual that will appear.
  */
 function buildCycleHint(t) {
   const pendingVisual =
-    (t.status === PENDING_LABEL_DEFAULT && !toggledThisSession.has(t.ymd))
+    (t.baselineLabel === PENDING_LABEL_DEFAULT && !toggledThisSession.has(t.ymd))
       ? PENDING_LABEL_DEFAULT
       : PENDING_LABEL_WRAPPED;
-
-  const seqFromPending = [pendingVisual, 'N/A', 'LD', 'N', 'LD/N', pendingVisual];
-  const seqFromNonPending = ['N/A', 'LD', 'N', 'LD/N', pendingVisual, 'N/A'];
-
-  const start =
-    (t.status === PENDING_LABEL_DEFAULT && !toggledThisSession.has(t.ymd))
-      ? seqFromPending
-      : [t.effectiveStatus, ...seqFromNonPending];
-
-  return 'Tap to change: ' + start.join(' → ');
+  const seq = [pendingVisual, 'N/A', 'LD', 'N', 'LD/N', pendingVisual];
+  return 'Tap to change: ' + seq.join(' → ');
 }
 
 /**
@@ -601,9 +595,12 @@ function renderTiles() {
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
 
-  const tiles = baseline.tiles.map(t => {
-    const effectiveStatus = draft[t.ymd] ?? t.status;
-    return { ...t, effectiveStatus };
+  const tiles = (baseline.tiles || []).map(t => {
+    const baselineLabel = t.booked
+      ? 'BOOKED'
+      : (t.status === 'BLOCKED' ? 'BLOCKED' : codeToLabel(t.status));
+    const effectiveLabel = draft[t.ymd] ?? baselineLabel;
+    return { ...t, baselineLabel, effectiveLabel };
   });
 
   for (const t of tiles) {
@@ -627,7 +624,7 @@ function renderTiles() {
     header.appendChild(dateLine);
 
     const status = document.createElement('div');
-    status.className = `tile-status ${statusClass(t.effectiveStatus)}`;
+    status.className = `tile-status ${statusClass(t.effectiveLabel)}`;
 
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
@@ -655,29 +652,33 @@ function renderTiles() {
       if (refLine) lines.push(refLine);
 
       sub.innerHTML = lines.map(escapeHtml).join('<br>');
-    } else if (t.effectiveStatus === 'BLOCKED') {
+    } else if (t.status === 'BLOCKED' || t.effectiveLabel === 'BLOCKED') {
       status.textContent = 'BLOCKED';
       sub.textContent = 'You cannot work this shift as it will breach the 6 days in a row rule.';
-    } else if (t.effectiveStatus === 'NOT AVAILABLE') {
+    } else if (t.effectiveLabel === 'NOT AVAILABLE') {
       status.textContent = 'NOT AVAILABLE';
-      if (t.effectiveStatus !== t.status) {
+      if (t.effectiveLabel !== t.baselineLabel) {
         sub.innerHTML = `<span class="edit-note">Pending change</span>`;
       } else {
         sub.textContent = '';
       }
-    } else if (t.effectiveStatus === 'LONG DAY' || t.effectiveStatus === 'NIGHT' || t.effectiveStatus === 'LONG DAY/NIGHT') {
+    } else if (
+      t.effectiveLabel === 'LONG DAY' ||
+      t.effectiveLabel === 'NIGHT' ||
+      t.effectiveLabel === 'LONG DAY/NIGHT'
+    ) {
       status.textContent = 'AVAILABLE FOR';
       const availability =
-        t.effectiveStatus === 'LONG DAY' ? 'LONG DAY ONLY' :
-        t.effectiveStatus === 'NIGHT' ? 'NIGHT ONLY' : 'LONG DAY AND NIGHT';
-      if (t.effectiveStatus !== t.status) {
+        t.effectiveLabel === 'LONG DAY' ? 'LONG DAY ONLY' :
+        t.effectiveLabel === 'NIGHT' ? 'NIGHT ONLY' : 'LONG DAY AND NIGHT';
+      if (t.effectiveLabel !== t.baselineLabel) {
         sub.innerHTML = `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`;
       } else {
         sub.textContent = availability;
       }
     } else {
       // Pending variants (display-only swap)
-      const displayLabel = pendingDisplayLabelForTile(t);
+      const displayLabel = displayPendingLabelForTile(t);
       status.textContent = displayLabel;
 
       // Mark pending tiles as needing attention (pulse + thin red border)
@@ -686,7 +687,7 @@ function renderTiles() {
         card.classList.add('attention-border'); // base and wrapped both show border while pending
       }
 
-      if (t.effectiveStatus !== t.status) {
+      if (t.effectiveLabel !== t.baselineLabel) {
         sub.innerHTML = `<span class="edit-note">Pending change</span>`;
       } else {
         sub.textContent = '';
@@ -705,16 +706,16 @@ function renderTiles() {
       card.style.cursor = 'pointer';
       card.title = buildCycleHint(t);
       card.addEventListener('click', () => {
-        const cur = draft[t.ymd] ?? t.status;
-        const next = nextStatus(cur);
+        const curLabel = draft[t.ymd] ?? t.baselineLabel;   // always labels
+        const nextLabel = nextStatus(curLabel);             // always labels
 
         toggledThisSession.add(t.ymd); // mark as user-touched this session
 
-        if (next === t.status) {
+        if (nextLabel === t.baselineLabel) {
           delete draft[t.ymd];
         } else {
-          // Store BASE pending in draft (blank code) even though we DISPLAY wrapped when appropriate
-          draft[t.ymd] = next;
+          // Store BASE pending label in draft (maps to blank code); display logic will wrap when needed
+          draft[t.ymd] = nextLabel;
         }
         persistDraft();
 
@@ -821,8 +822,8 @@ async function submitChanges() {
   if (!baseline) return;
 
   const changes = [];
-  for (const [ymd, newStatus] of Object.entries(draft)) {
-    const code = STATUS_TO_CODE[newStatus];
+  for (const [ymd, newStatusLabel] of Object.entries(draft)) {
+    const code = STATUS_TO_CODE[newStatusLabel];
     if (code === undefined) continue;
     changes.push({ ymd, code });
   }
