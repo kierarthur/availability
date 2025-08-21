@@ -1,6 +1,6 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL    = 'https://script.google.com/macros/s/AKfycbwNwnr9WmkJlq36Fh_fwQynAvl61bbeB5WROYXVHmOf1p3h4RSK43PieYRBpFppKTyIrw/exec'; // <-- REPLACE
-const API_SHARED_TOKEN= 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbwNwnr9WmkJlq36Fh_fwQynAvl61bbeB5WROYXVHmOf1p3h4RSK43PieYRBpFppKTyIrw/exec'; // <-- REPLACE
+const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
 const STATUS_ORDER = [
@@ -26,12 +26,11 @@ const els = {
   submitBtn: document.getElementById('submitBtn'),
   clearBtn: document.getElementById('clearBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
-  lastLoaded: document.getElementById('lastLoaded'),
+  lastLoaded: document.getElementById('lastLoaded'), // optional in HTML
   toast: document.getElementById('toast'),
   installBtn: document.getElementById('installBtn'),
-  // Optional hooks (safe if missing in HTML)
   candidateName: document.getElementById('candidateName'),
-  helpMsg: document.getElementById('helpMsg') // if you add a help banner element
+  helpMsg: document.getElementById('helpMsg')
 };
 
 // ===== Auth guard (fatal overlay) =====
@@ -40,7 +39,6 @@ function showAuthError(message = 'Not an authorised user') {
   if (AUTH_DENIED) return;
   AUTH_DENIED = true;
 
-  // Hide interactive UI
   try { els.footer && els.footer.classList.add('hidden'); } catch {}
   try { els.grid && (els.grid.innerHTML = ''); } catch {}
   try { els.helpMsg && els.helpMsg.classList.add('hidden'); } catch {}
@@ -48,22 +46,17 @@ function showAuthError(message = 'Not an authorised user') {
   try { els.clearBtn && (els.clearBtn.disabled = true); } catch {}
   try { els.refreshBtn && (els.refreshBtn.disabled = true); } catch {}
 
-  // Remove any loading overlay
   hideLoading();
 
-  // Create a full-screen blocking message
   const div = document.createElement('div');
   div.id = 'authErrorOverlay';
   div.setAttribute('role', 'alertdialog');
   div.setAttribute('aria-modal', 'true');
-  div.style.position = 'fixed';
-  div.style.inset = '0';
-  div.style.zIndex = '10000';
-  div.style.display = 'flex';
-  div.style.alignItems = 'center';
-  div.style.justifyContent = 'center';
-  div.style.background = 'rgba(10,12,16,0.85)';
-  div.style.backdropFilter = 'blur(2px)';
+  Object.assign(div.style, {
+    position:'fixed', inset:'0', zIndex:'10000',
+    display:'flex', alignItems:'center', justifyContent:'center',
+    background:'rgba(10,12,16,0.85)', backdropFilter:'blur(2px)'
+  });
   div.innerHTML = `
     <div style="
       border:1px solid #2a3446;
@@ -83,7 +76,7 @@ function showAuthError(message = 'Not an authorised user') {
   document.body.appendChild(div);
 }
 
-// State
+// ---------- State ----------
 let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)
 let draft = {};               // ymd -> status (only diffs from baseline)
 let identity = {};            // { k?:string, msisdn?:string }
@@ -95,13 +88,14 @@ const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
 let _loadingCount = 0;
 function ensureLoadingOverlay() {
   if (document.getElementById('loadingOverlay')) return;
+
   const style = document.createElement('style');
   style.textContent = `
     #loadingOverlay {
       position: fixed; inset: 0; z-index: 9999;
       display: flex; align-items: center; justify-content: center;
       background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
-      color: #e7ecf3; font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      color: #e7ecf3; font-family: system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif;
       transition: opacity .15s ease;
     }
     #loadingOverlay.hidden { opacity: 0; pointer-events: none; }
@@ -177,13 +171,13 @@ function ensureLoadingOverlay() {
         <div id="pastTitle">Past 14 days</div>
         <button id="pastClose" aria-label="Close">✕</button>
       </div>
-        <div id="pastList" tabindex="0"></div>
+      <div id="pastList" tabindex="0"></div>
     </div>
   `;
   document.body.appendChild(pastOverlay);
 
   pastOverlay.addEventListener('click', (e) => {
-    if (e.target === pastOverlay) closePastShifts(); // click backdrop to close
+    if (e.target === pastOverlay) closePastShifts();
   });
   document.getElementById('pastClose').addEventListener('click', closePastShifts);
   document.addEventListener('keydown', (e) => {
@@ -205,7 +199,7 @@ function hideLoading() {
   if (_loadingCount === 0) overlay.classList.add('hidden');
 }
 
-// Install prompt (PWA)
+// ---------- PWA install prompt ----------
 let deferredPrompt = null;
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
@@ -220,14 +214,13 @@ els.installBtn && els.installBtn.addEventListener('click', async () => {
   els.installBtn.classList.add('hidden');
 });
 
-// Visibility handling for auto-clear after 3 minutes away
+// ---------- Visibility handling (auto-clear after 3 minutes away) ----------
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     lastHiddenAt = Date.now();
     persistDraft();
   } else {
     if (lastHiddenAt && Date.now() - lastHiddenAt > 3 * 60 * 1000) {
-      // >3 minutes away → auto clear and reload latest
       if (Object.keys(draft).length) {
         draft = {};
         persistDraft();
@@ -237,29 +230,25 @@ document.addEventListener('visibilitychange', () => {
       loadFromServer({ force: true })
         .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
         .finally(hideLoading);
-    } else {
-      // Auto reload when returning if not making changes
-      if (!Object.keys(draft).length) {
-        showLoading();
-        loadFromServer().catch(()=>{}).finally(hideLoading);
-      }
+    } else if (!Object.keys(draft).length) {
+      showLoading();
+      loadFromServer().catch(()=>{}).finally(hideLoading);
     }
     lastHiddenAt = null;
   }
 });
 
-// Parse query
+// ---------- Query parsing ----------
 function parseQuery() {
   const q = new URLSearchParams(location.search);
   const k = q.get('k')?.trim();
   const msisdn = q.get('msisdn')?.trim();
   const t = q.get('t')?.trim(); // allow passing t in URL for testing
-  // prefer k when present
   identity = k ? { k } : (msisdn ? { msisdn } : {});
   if (t) sessionStorage.setItem('api_t_override', t);
 }
 
-// Helpers
+// ---------- Helpers ----------
 function statusClass(s) {
   switch (s) {
     case 'BOOKED': return 'status-booked';
@@ -273,14 +262,12 @@ function statusClass(s) {
 }
 function nextStatus(s) {
   const idx = STATUS_ORDER.indexOf(s);
-  const next = STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
-  return next;
+  return STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
 }
 function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
   els.footer.classList.toggle('hidden', !dirty);
-  // When footer appears/disappears, recompute sizing (no-scroll layout)
-  sizeGrid();
+  sizeGrid(); // harmless with scrolling layout; keeps CSS vars fresh
 }
 function showToast(msg, ms=2800) {
   if (!els.toast) return;
@@ -301,11 +288,10 @@ function loadDraft() {
     if (i0 && ((i0.k && identity.k && i0.k === identity.k) || (i0.msisdn && identity.msisdn && i0.msisdn === identity.msisdn))) {
       draft = d0 || {};
     } else {
-      // different user -> ignore stale draft
       draft = {};
       localStorage.removeItem(DRAFT_KEY);
     }
-  } catch { /* noop */ }
+  } catch {}
 }
 function saveLastLoaded(tsIso) {
   localStorage.setItem(LAST_LOADED_KEY, tsIso);
@@ -318,8 +304,6 @@ function saveLastLoaded(tsIso) {
     els.lastLoaded.classList.add('hidden');
   }
 }
-
-// Read a CSS variable in px (fallback to 0 on parse issues)
 function getCssVarPx(name) {
   const val = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   const num = parseFloat(val);
@@ -327,54 +311,38 @@ function getCssVarPx(name) {
 }
 
 /**
- * Compute and apply exact sizing so the grid occupies the viewport
- * without any scrollbars, regardless of footer visibility.
- * We publish --header-h, --footer-h, and --rows to CSS.
+ * Light sizing helper: keeps --vh fresh and republishes footer height.
+ * Works fine with the new scrolling layout (no fixed grid math).
  */
 function sizeGrid() {
   if (!els.grid) return;
 
-  // Stabilize mobile address bar changes (optional)
+  // Stabilize mobile address bar changes
   const vh = window.innerHeight * 0.01;
   document.documentElement.style.setProperty('--vh', `${vh}px`);
 
-  // Measure header/footer heights
+  // Measure header/footer heights (footer may be visibility:hidden but measurable)
   const header = document.querySelector('header');
   const headerH = header ? Math.round(header.getBoundingClientRect().height) : 0;
 
-  // If footer is hidden with display:none, its height will be 0 — fall back to CSS var --footer-h
   let footerH = 0;
   if (els.footer) {
     const rectH = Math.round(els.footer.getBoundingClientRect().height);
     footerH = rectH > 0 ? rectH : Math.round(getCssVarPx('--footer-h'));
   }
 
-  // Publish to CSS so main/grid can size themselves
   document.documentElement.style.setProperty('--header-h', `${headerH}px`);
   document.documentElement.style.setProperty('--footer-h', `${footerH}px`);
-
-  // Determine how many columns are actually in use, then rows
-  const cs = getComputedStyle(els.grid);
-  const templateCols = cs.gridTemplateColumns.split(' ').filter(Boolean);
-  const cols = Math.max(1, templateCols.length);
-  const numTiles = (baseline && baseline.tiles) ? baseline.tiles.length : 14;
-  const rows = Math.max(1, Math.ceil(numTiles / cols));
-
-  // Tell CSS the row count so it can compute exact row heights via grid-auto-rows
-  els.grid.style.setProperty('--rows', rows);
 }
 
-/**
- * OPTIONAL: show a one-line instruction above the grid, if your HTML includes #helpMsg.
- * Falls back silently if you haven't added the element yet.
- */
+// ---------- Help banner ----------
 function ensureHelpMessageVisible() {
   if (!els.helpMsg) return;
   els.helpMsg.textContent = "Please tap any date to change your availability — don't forget to tap Submit when done.";
   els.helpMsg.classList.remove('hidden');
 }
 
-// --------- Past Shifts (overlay + fetch) ----------
+// ---------- Past Shifts (overlay + fetch) ----------
 function ensurePastShiftsButton() {
   const header = document.querySelector('header');
   if (!header || document.getElementById('pastBtn')) return;
@@ -406,7 +374,6 @@ function openPastShifts() {
       items.forEach(it => {
         const card = document.createElement('div');
         card.className = 'past-item';
-        // Time line: Notes overrides; else include LONG/NIGHT with canonical times
         const timeLine = (it.notes && it.notes.trim())
           ? it.notes.trim()
           : ((it.shiftType === 'NIGHT') ? 'NIGHT 19:30–08:00' : 'LONG DAY 07:30–20:00');
@@ -460,17 +427,16 @@ async function fetchPastShifts() {
   return json.items || [];
 }
 
-// Rendering
+// ---------- Rendering ----------
 function renderTiles() {
   els.grid.innerHTML = '';
   if (!baseline || !baseline.tiles) return;
 
-  // Ensure help message (if present in DOM) and Past Shifts button
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
 
   const tiles = baseline.tiles.map(t => {
-    const effectiveStatus = draft[t.ymd] ?? t.status; // show draft if exists
+    const effectiveStatus = draft[t.ymd] ?? t.status;
     return { ...t, effectiveStatus };
   });
 
@@ -479,24 +445,19 @@ function renderTiles() {
     card.className = 'tile';
     card.dataset.ymd = t.ymd;
 
-    // Header: single line "MON 1 AUG"
     const header = document.createElement('div');
     header.className = 'tile-header';
 
-    // Safe parse "YYYY-MM-DD" -> local Date
     const [Y, M, D] = t.ymd.split('-').map(Number);
     const d = new Date(Y, M - 1, D);
-
-    // "Mon 1 Aug" (en-GB) -> strip comma -> upper-case
     const formatted = d
       .toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' })
       .replace(/,/g, '')
-      .toUpperCase(); // e.g., "MON 1 AUG"
+      .toUpperCase();
 
     const dateLine = document.createElement('div');
-    dateLine.className = 'tile-day'; // reuse existing styling
+    dateLine.className = 'tile-day';
     dateLine.textContent = formatted;
-
     header.appendChild(dateLine);
 
     const status = document.createElement('div');
@@ -505,17 +466,12 @@ function renderTiles() {
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
-    // ===== Status/Sub content rules =====
+    // Content rules
     if (t.booked) {
-      // BOOKED: show booked label with details in sub
       status.textContent = 'BOOKED';
-
       const line1 = (() => {
         const si = (t.shiftInfo || '').trim();
-        if (si && si.toUpperCase() !== 'LONG DAY' && si.toUpperCase() !== 'NIGHT') {
-          return si; // treat as Notes verbatim
-        }
-        // fallback to canonical with label + times
+        if (si && si.toUpperCase() !== 'LONG DAY' && si.toUpperCase() !== 'NIGHT') return si;
         const shiftType = (t.shiftInfo || '').toUpperCase().includes('NIGHT') ? 'NIGHT' : 'LONG DAY';
         return shiftType === 'NIGHT' ? 'NIGHT 19:30–08:00' : 'LONG DAY 07:30–20:00';
       })();
@@ -538,28 +494,22 @@ function renderTiles() {
       sub.textContent = 'You cannot work this shift as it will breach the 6 days in a row rule.';
     } else if (t.effectiveStatus === 'NOT AVAILABLE') {
       status.textContent = 'NOT AVAILABLE';
-      // keep pending indicator if applicable
       if (t.effectiveStatus !== t.status) {
         sub.innerHTML = `<span class="edit-note">Pending change</span>`;
       } else {
         sub.textContent = '';
       }
     } else if (t.effectiveStatus === 'LONG DAY' || t.effectiveStatus === 'NIGHT' || t.effectiveStatus === 'LONG DAY/NIGHT') {
-      // AVAILABILITY (not booked): "AVAILABLE FOR" + next line with type (no times)
       status.textContent = 'AVAILABLE FOR';
       const availability =
         t.effectiveStatus === 'LONG DAY' ? 'LONG DAY ONLY' :
-        t.effectiveStatus === 'NIGHT' ? 'NIGHT ONLY' :
-        'LONG DAY AND NIGHT';
-
+        t.effectiveStatus === 'NIGHT' ? 'NIGHT ONLY' : 'LONG DAY AND NIGHT';
       if (t.effectiveStatus !== t.status) {
-        // show pending note and the availability below it
         sub.innerHTML = `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`;
       } else {
         sub.textContent = availability;
       }
     } else {
-      // PENDING AVAILABILITY or anything else
       status.textContent = t.effectiveStatus;
       if (t.effectiveStatus !== t.status) {
         sub.innerHTML = `<span class="edit-note">Pending change</span>`;
@@ -567,7 +517,6 @@ function renderTiles() {
         sub.textContent = '';
       }
     }
-    // ===== end rules =====
 
     card.append(header, status, sub);
 
@@ -579,7 +528,6 @@ function renderTiles() {
       card.addEventListener('click', () => {
         const cur = draft[t.ymd] ?? t.status;
         const next = nextStatus(cur);
-        // update draft (store only diffs from baseline)
         if (next === t.status) {
           delete draft[t.ymd];
         } else {
@@ -597,7 +545,6 @@ function renderTiles() {
     els.grid.appendChild(card);
   }
 
-  // After tiles render, compute sizing so the grid fills the viewport precisely
   sizeGrid();
 }
 function escapeHtml(s) {
@@ -607,13 +554,12 @@ function escapeHtml(s) {
     .replace(/>/g,'&gt;');
 }
 
-// API
+// ---------- API ----------
 function authToken() {
   return sessionStorage.getItem('api_t_override') || API_SHARED_TOKEN;
 }
 
 async function loadFromServer({ force=false } = {}) {
-  // If there is no identity at all, deny immediately
   if (!Object.keys(identity).length) {
     showAuthError('Not an authorised user');
     throw new Error('__AUTH_STOP__');
@@ -629,11 +575,9 @@ async function loadFromServer({ force=false } = {}) {
     const url = `${API_BASE_URL}?${params.toString()}`;
     const res = await fetch(url, { method: 'GET', credentials: 'omit' });
 
-    // Best effort JSON
     let json = {};
     try { json = await res.json(); } catch { json = {}; }
 
-    // Unauthorised cases → show fatal message and abort
     const errCode = (json && json.error) || '';
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
@@ -658,7 +602,6 @@ async function loadFromServer({ force=false } = {}) {
 
     baseline = json;
 
-    // Display candidate name if provided (bigger and at the top in HTML)
     const name =
       (json.candidateName && String(json.candidateName).trim()) ||
       (json.candidate && [json.candidate.firstName, json.candidate.surname].filter(Boolean).join(' ').trim()) ||
@@ -675,8 +618,7 @@ async function loadFromServer({ force=false } = {}) {
 
     saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
 
-    // keep only draft keys that still exist in 14-day window
-    const validYmd = new Set(baseline.tiles.map(x => x.ymd));
+    const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
     for (const k of Object.keys(draft)) {
       if (!validYmd.has(k)) delete draft[k];
     }
@@ -689,7 +631,7 @@ async function loadFromServer({ force=false } = {}) {
 }
 
 async function submitChanges() {
-  if (AUTH_DENIED) return; // Block any action after auth failure
+  if (AUTH_DENIED) return;
   if (!baseline) return;
 
   const changes = [];
@@ -706,26 +648,21 @@ async function submitChanges() {
   showLoading('Saving.....');
 
   try {
-    const body = {
-      t: authToken(),
-      changes
-    };
+    const body = { t: authToken(), changes };
     if (identity.k) body.k = identity.k;
     if (identity.msisdn) body.msisdn = identity.msisdn;
 
-    // IMPORTANT: use a "simple" request to avoid CORS preflight (no custom headers beyond simple types)
     const res = await fetch(API_BASE_URL, {
       method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // simple request (no preflight)
       credentials: 'omit',
       body: JSON.stringify(body)
     });
 
     const text = await res.text();
     let json = {};
-    try { json = JSON.parse(text); } catch { /* keep text for diagnostics */ }
+    try { json = JSON.parse(text); } catch {}
 
-    // Handle unauthorised on submit too
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
         showAuthError('Not an authorised user');
@@ -747,7 +684,6 @@ async function submitChanges() {
       throw new Error(msg + extra);
     }
 
-    // Summarise results (server may reject some ymds e.g., BOOKED/BLOCKED)
     const applied = (json.results || []).filter(r => r.applied).length;
     const rejected = (json.results || []).filter(r => !r.applied);
     if (rejected.length) {
@@ -757,11 +693,9 @@ async function submitChanges() {
       showToast(`Saved ${applied} change${applied===1?'':'s'}.`);
     }
 
-    // Clear draft & reload fresh baseline
     draft = {};
     persistDraft();
 
-    // NOTE: Do NOT call showLoading() here (avoids double spinner).
     await loadFromServer({ force: true });
   } catch (err) {
     if (String(err && err.message) !== '__AUTH_STOP__') {
@@ -780,11 +714,10 @@ function clearChanges() {
   showToast('Cleared pending changes.');
 }
 
-// UI events
+// ---------- UI events ----------
 els.submitBtn && els.submitBtn.addEventListener('click', () => {
   els.submitBtn.disabled = true;
-  submitChanges()
-    .finally(() => { els.submitBtn.disabled = false; });
+  submitChanges().finally(() => { els.submitBtn.disabled = false; });
 });
 els.clearBtn && els.clearBtn.addEventListener('click', clearChanges);
 els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
@@ -802,14 +735,11 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
   }
 });
 
-// Resize/orientation handlers to keep grid filling the screen
-window.addEventListener('resize', sizeGrid);
-window.addEventListener('orientationchange', () => {
-  // wait a tick for viewport to settle
-  setTimeout(sizeGrid, 250);
-});
+// ---------- Keep CSS vars fresh ----------
+window.addEventListener('resize', sizeGrid, { passive: true });
+window.addEventListener('orientationchange', () => setTimeout(sizeGrid, 250));
 
-// Boot
+// ---------- Boot ----------
 (async function init() {
   parseQuery();
 
@@ -828,10 +758,8 @@ window.addEventListener('orientationchange', () => {
       showToast('Load failed: ' + e.message, 5000);
     }
   } finally {
-    // Ensure initial sizing even if load fails
-    sizeGrid();
+    sizeGrid();           // ensure initial CSS vars
     hideLoading();
-    // Ensure overlays and Past Shifts button are wired
     ensureLoadingOverlay();
     ensurePastShiftsButton();
   }
