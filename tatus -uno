@@ -1,0 +1,175 @@
+[1mdiff --git a/app.js b/app.js[m
+[1mindex b633739..ce19550 100644[m
+[1m--- a/app.js[m
+[1m+++ b/app.js[m
+[36m@@ -3,19 +3,22 @@[m [mconst API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbwNwnr9WmkJlq3[m
+ const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE[m
+ /* ===================================================== */[m
+ [m
+[32m+[m[32mconst PENDING_LABEL_DEFAULT = 'PLEASE PROVIDE YOUR AVAILABILITY';[m
+[32m+[m[32mconst PENDING_LABEL_WRAPPED = 'NOT SURE OF MY AVAILABILITY YET';[m
+[32m+[m
+ const STATUS_ORDER = [[m
+[31m-  'PENDING AVAILABILITY',[m
+[32m+[m[32m  PENDING_LABEL_DEFAULT,[m
+   'NOT AVAILABLE',[m
+   'LONG DAY',[m
+   'NIGHT',[m
+   'LONG DAY/NIGHT'[m
+ ];[m
+ const STATUS_TO_CODE = {[m
+[31m-  'PENDING AVAILABILITY': '',     // blank (white)[m
+[31m-  'NOT AVAILABLE':        'N/A',  // red[m
+[31m-  'LONG DAY':             'LD',   // yellow[m
+[31m-  'NIGHT':                'N',    // yellow[m
+[31m-  'LONG DAY/NIGHT':       'LD/N'  // yellow[m
+[32m+[m[32m  [PENDING_LABEL_DEFAULT]: '',     // blank (white)[m
+[32m+[m[32m  'NOT AVAILABLE':        'N/A',   // red[m
+[32m+[m[32m  'LONG DAY':             'LD',    // yellow[m
+[32m+[m[32m  'NIGHT':                'N',     // yellow[m
+[32m+[m[32m  'LONG DAY/NIGHT':       'LD/N'   // yellow[m
+ };[m
+ const CODE_TO_STATUS = Object.entries(STATUS_TO_CODE).reduce((acc,[k,v]) => (acc[v]=k, acc), {});[m
+ [m
+[36m@@ -78,14 +81,14 @@[m [mfunction showAuthError(message = 'Not an authorised user') {[m
+ [m
+ // ---------- State ----------[m
+ let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)[m
+[31m-let draft = {};               // ymd -> status (only diffs from baseline)[m
+[32m+[m[32mlet draft = {};               // ymd -> status (only diffs from baseline) (stores BASE labels, not the "wrapped" variant)[m
+ let identity = {};            // { k?:string, msisdn?:string }[m
+ let lastHiddenAt = null;      // timestamp when page becomes hidden[m
+ const DRAFT_KEY = 'rota_avail_draft_v1';[m
+ const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';[m
+[31m-const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // NEW[m
+[32m+[m[32mconst SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // persisted identity[m
+ [m
+[31m-// Saved-identity helpers (NEW)[m
+[32m+[m[32m// Saved-identity helpers[m
+ function saveIdentity(id) {[m
+   try {[m
+     if (id && (id.k || id.msisdn)) {[m
+[36m@@ -106,7 +109,7 @@[m [mfunction clearSavedIdentity() {[m
+   try { localStorage.removeItem(SAVED_IDENTITY_KEY); } catch {}[m
+ }[m
+ [m
+[31m-// ------- Loading overlay (auto-created, no HTML changes required) -------[m
+[32m+[m[32m// ------- Loading overlay + shared styles -------[m
+ let _loadingCount = 0;[m
+ function ensureLoadingOverlay() {[m
+   if (document.getElementById('loadingOverlay')) return;[m
+[36m@@ -170,6 +173,17 @@[m [mfunction ensureLoadingOverlay() {[m
+     }[m
+     .past-date { font-weight:800; margin-bottom:.15rem; color:#e7ecf3; }[m
+     .muted { color:#a7b0c0; }[m
+[32m+[m
+[32m+[m[32m    /* Attention pulses (respect reduced motion) */[m
+[32m+[m[32m    @media (prefers-reduced-motion: no-preference) {[m
+[32m+[m[32m      @keyframes softPulse {[m
+[32m+[m[32m        0%   { opacity: 1; transform: scale(1); }[m
+[32m+[m[32m        50%  { opacity: .78; transform: scale(0.99); }[m
+[32m+[m[32m        100% { opacity: 1; transform: scale(1); }[m
+[32m+[m[32m      }[m
+[32m+[m[32m      .needs-attention { animation: softPulse 1.6s ease-in-out infinite; }[m
+[32m+[m[32m      .btn-attention   { animation: softPulse 1.3s ease-in-out infinite; }[m
+[32m+[m[32m    }[m
+   `;[m
+   document.head.appendChild(style);[m
+ [m
+[36m@@ -271,11 +285,11 @@[m [mfunction parseQuery() {[m
+ [m
+   if (k || msisdn) {[m
+     identity = k ? { k } : { msisdn };[m
+[31m-    saveIdentity(identity); // NEW: persist latest identity[m
+[32m+[m[32m    saveIdentity(identity); // persist latest identity[m
+     return;[m
+   }[m
+ [m
+[31m-  // NEW: restore from saved identity when URL has none[m
+[32m+[m[32m  // restore from saved identity when URL has none[m
+   const saved = loadSavedIdentity();[m
+   identity = (saved.k || saved.msisdn) ? saved : {};[m
+ }[m
+[36m@@ -299,6 +313,13 @@[m [mfunction nextStatus(s) {[m
+ function showFooterIfNeeded() {[m
+   const dirty = Object.keys(draft).length > 0;[m
+   els.footer.classList.toggle('hidden', !dirty);[m
+[32m+[m
+[32m+[m[32m  // Submit button pulse when dirty[m
+[32m+[m[32m  if (els.submitBtn) {[m
+[32m+[m[32m    if (dirty) els.submitBtn.classList.add('btn-attention');[m
+[32m+[m[32m    else els.submitBtn.classList.remove('btn-attention');[m
+[32m+[m[32m  }[m
+[32m+[m
+   sizeGrid(); // harmless with scrolling layout; keeps CSS vars fresh[m
+ }[m
+ function showToast(msg, ms=2800) {[m
+[36m@@ -343,28 +364,64 @@[m [mfunction getCssVarPx(name) {[m
+ }[m
+ [m
+ /**[m
+[31m- * Light sizing helper: keeps --vh fresh and republishes footer height.[m
+[31m- * Works fine with the new scrolling layout (no fixed grid math).[m
+[32m+[m[32m * Fit status text: no mid-word breaks, allow wrapping between words, and[m
+[32m+[m[32m * only shrink if a single word would overflow even on its own line.[m
+  */[m
+[31m-function sizeGrid() {[m
+[31m-  if (!els.grid) return;[m
+[31m-[m
+[31m-  // Stabilize mobile address bar changes[m
+[31m-  const vh = window.innerHeight * 0.01;[m
+[31m-  document.documentElement.style.setProperty('--vh', `${vh}px`);[m
+[31m-[m
+[31m-  // Measure header/footer heights (footer may be visibility:hidden but measurable)[m
+[31m-  const header = document.querySelector('header');[m
+[31m-  const headerH = header ? Math.round(header.getBoundingClientRect().height) : 0;[m
+[32m+[m[32mfunction fitStatusLabel(el) {[m
+[32m+[m[32m  if (!el) return;[m
+[32m+[m[32m  // Avoid splitting inside words[m
+[32m+[m[32m  el.style.wordBreak = 'keep-all';[m
+[32m+[m[32m  el.style.overflowWrap = 'normal';[m
+[32m+[m
+[32m+[m[32m  // Reset any previous scaling[m
+[32m+[m[32m  el.style.fontSize = '';[m
+[32m+[m
+[32m+[m[32m  // If content overflows horizontally (single word too long), shrink[m
+[32m+[m[32m  const containerWidth = el.clientWidth;[m
+[32m+[m[32m  if (!containerWidth) return;[m
+[32m+[m
+[32m+[m[32m  const MIN_SCALE = 0.85; // 85% of base size[m
+[32m+[m[32m  let scale = 1.0;[m
+[32m+[m
+[32m+[m[32m  // Helper to compute if any single word overflows by itself[m
+[32m+[m[32m  const text = el.textContent || '';[m
+[32m+[m[32m  const words = text.split(/\s+/).filter(Boolean);[m
+[32m+[m
+[32m+[m[32m  // Quick path: if scrollWidth fits, nothing to do (normal wrapping handled by the browser)[m
+[32m+[m[32m  if (el.scrollWidth <= el.clientWidth) return;[m
+[32m+[m
+[32m+[m[32m  // Only shrink when a single word can't fit the line width[m
+[32m+[m[32m  // Create a measurer span inside the same element to match font metrics[m
+[32m+[m[32m  const measurer = document.createElement('span');[m
+[32m+[m[32m  measurer.style.visibility = 'hidden';[m
+[32m+[m[32m  measurer.style.whiteSpace = 'nowrap';[m
+[32m+[m[32m  measurer.style.position = 'absolute';[m
+[32m+[m[32m  measurer.style.pointerEvents = 'none';[m
+[32m+[m[32m  measurer.style.wordBreak = 'keep-all';[m
+[32m+[m[32m  measurer.style.overflowWrap = 'normal';[m
+[32m+[m[32m  el.appendChild(measurer);[m
+[32m+[m
+[32m+[m[32m  const baseSize = parseFloat(getComputedStyle(el).fontSize) || 16;[m
+[32m+[m
+[32m+[m[32m  // Find the longest word width[m
+[32m+[m[32m  function longestWordWidth() {[m
+[32m+[m[32m    let max = 0;[m
+[32m+[m[32m    for (const w of words) {[m
+[32m+[m[32m      measurer.textContent = w;[m
+[32m+[m[32m      const wWidth = measurer.getBoundingClientRect().width;[m
+[32m+[m[32m      if (wWidth > max) max = wWidth;[m
+[32m+[m[32m    }[m
+[32m+[m[32m    return max;[m
+[32m+[m[32m  }[m
+ [m
+[31m-  let footerH = 0;[m
+[31m-  if (els.footer) {[m
+[31m-    const rectH = Math.roun

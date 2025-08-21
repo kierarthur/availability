@@ -3,19 +3,22 @@ const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbwNwnr9WmkJlq3
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
+const PENDING_LABEL_DEFAULT = 'PLEASE PROVIDE YOUR AVAILABILITY';
+const PENDING_LABEL_WRAPPED = 'NOT SURE OF MY AVAILABILITY YET';
+
 const STATUS_ORDER = [
-  'PENDING AVAILABILITY',
+  PENDING_LABEL_DEFAULT,
   'NOT AVAILABLE',
   'LONG DAY',
   'NIGHT',
   'LONG DAY/NIGHT'
 ];
 const STATUS_TO_CODE = {
-  'PENDING AVAILABILITY': '',     // blank (white)
-  'NOT AVAILABLE':        'N/A',  // red
-  'LONG DAY':             'LD',   // yellow
-  'NIGHT':                'N',    // yellow
-  'LONG DAY/NIGHT':       'LD/N'  // yellow
+  [PENDING_LABEL_DEFAULT]: '',     // blank (white)
+  'NOT AVAILABLE':        'N/A',   // red
+  'LONG DAY':             'LD',    // yellow
+  'NIGHT':                'N',     // yellow
+  'LONG DAY/NIGHT':       'LD/N'   // yellow
 };
 const CODE_TO_STATUS = Object.entries(STATUS_TO_CODE).reduce((acc,[k,v]) => (acc[v]=k, acc), {});
 
@@ -78,14 +81,14 @@ function showAuthError(message = 'Not an authorised user') {
 
 // ---------- State ----------
 let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)
-let draft = {};               // ymd -> status (only diffs from baseline)
+let draft = {};               // ymd -> status (only diffs from baseline) (stores BASE labels, not the "wrapped" variant)
 let identity = {};            // { k?:string, msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
 const DRAFT_KEY = 'rota_avail_draft_v1';
 const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
-const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // NEW
+const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // persisted identity
 
-// Saved-identity helpers (NEW)
+// Saved-identity helpers
 function saveIdentity(id) {
   try {
     if (id && (id.k || id.msisdn)) {
@@ -106,7 +109,7 @@ function clearSavedIdentity() {
   try { localStorage.removeItem(SAVED_IDENTITY_KEY); } catch {}
 }
 
-// ------- Loading overlay (auto-created, no HTML changes required) -------
+// ------- Loading overlay + shared styles -------
 let _loadingCount = 0;
 function ensureLoadingOverlay() {
   if (document.getElementById('loadingOverlay')) return;
@@ -170,6 +173,17 @@ function ensureLoadingOverlay() {
     }
     .past-date { font-weight:800; margin-bottom:.15rem; color:#e7ecf3; }
     .muted { color:#a7b0c0; }
+
+    /* Attention pulses (respect reduced motion) */
+    @media (prefers-reduced-motion: no-preference) {
+      @keyframes softPulse {
+        0%   { opacity: 1; transform: scale(1); }
+        50%  { opacity: .78; transform: scale(0.99); }
+        100% { opacity: 1; transform: scale(1); }
+      }
+      .needs-attention { animation: softPulse 1.6s ease-in-out infinite; }
+      .btn-attention   { animation: softPulse 1.3s ease-in-out infinite; }
+    }
   `;
   document.head.appendChild(style);
 
@@ -271,11 +285,11 @@ function parseQuery() {
 
   if (k || msisdn) {
     identity = k ? { k } : { msisdn };
-    saveIdentity(identity); // NEW: persist latest identity
+    saveIdentity(identity); // persist latest identity
     return;
   }
 
-  // NEW: restore from saved identity when URL has none
+  // restore from saved identity when URL has none
   const saved = loadSavedIdentity();
   identity = (saved.k || saved.msisdn) ? saved : {};
 }
@@ -299,6 +313,13 @@ function nextStatus(s) {
 function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
   els.footer.classList.toggle('hidden', !dirty);
+
+  // Submit button pulse when dirty
+  if (els.submitBtn) {
+    if (dirty) els.submitBtn.classList.add('btn-attention');
+    else els.submitBtn.classList.remove('btn-attention');
+  }
+
   sizeGrid(); // harmless with scrolling layout; keeps CSS vars fresh
 }
 function showToast(msg, ms=2800) {
@@ -343,28 +364,64 @@ function getCssVarPx(name) {
 }
 
 /**
- * Light sizing helper: keeps --vh fresh and republishes footer height.
- * Works fine with the new scrolling layout (no fixed grid math).
+ * Fit status text: no mid-word breaks, allow wrapping between words, and
+ * only shrink if a single word would overflow even on its own line.
  */
-function sizeGrid() {
-  if (!els.grid) return;
+function fitStatusLabel(el) {
+  if (!el) return;
+  // Avoid splitting inside words
+  el.style.wordBreak = 'keep-all';
+  el.style.overflowWrap = 'normal';
 
-  // Stabilize mobile address bar changes
-  const vh = window.innerHeight * 0.01;
-  document.documentElement.style.setProperty('--vh', `${vh}px`);
+  // Reset any previous scaling
+  el.style.fontSize = '';
 
-  // Measure header/footer heights (footer may be visibility:hidden but measurable)
-  const header = document.querySelector('header');
-  const headerH = header ? Math.round(header.getBoundingClientRect().height) : 0;
+  // If content overflows horizontally (single word too long), shrink
+  const containerWidth = el.clientWidth;
+  if (!containerWidth) return;
 
-  let footerH = 0;
-  if (els.footer) {
-    const rectH = Math.round(els.footer.getBoundingClientRect().height);
-    footerH = rectH > 0 ? rectH : Math.round(getCssVarPx('--footer-h'));
+  const MIN_SCALE = 0.85; // 85% of base size
+  let scale = 1.0;
+
+  // Helper to compute if any single word overflows by itself
+  const text = el.textContent || '';
+  const words = text.split(/\s+/).filter(Boolean);
+
+  // Quick path: if scrollWidth fits, nothing to do (normal wrapping handled by the browser)
+  if (el.scrollWidth <= el.clientWidth) return;
+
+  // Only shrink when a single word can't fit the line width
+  // Create a measurer span inside the same element to match font metrics
+  const measurer = document.createElement('span');
+  measurer.style.visibility = 'hidden';
+  measurer.style.whiteSpace = 'nowrap';
+  measurer.style.position = 'absolute';
+  measurer.style.pointerEvents = 'none';
+  measurer.style.wordBreak = 'keep-all';
+  measurer.style.overflowWrap = 'normal';
+  el.appendChild(measurer);
+
+  const baseSize = parseFloat(getComputedStyle(el).fontSize) || 16;
+
+  // Find the longest word width
+  function longestWordWidth() {
+    let max = 0;
+    for (const w of words) {
+      measurer.textContent = w;
+      const wWidth = measurer.getBoundingClientRect().width;
+      if (wWidth > max) max = wWidth;
+    }
+    return max;
   }
 
-  document.documentElement.style.setProperty('--header-h', `${headerH}px`);
-  document.documentElement.style.setProperty('--footer-h', `${footerH}px`);
+  let longest = longestWordWidth();
+  while (longest > containerWidth && scale > MIN_SCALE + 0.001) {
+    scale = Math.max(MIN_SCALE, scale - 0.05);
+    el.style.fontSize = (baseSize * scale) + 'px';
+    longest = longestWordWidth();
+  }
+
+  measurer.remove();
 }
 
 // ---------- Help banner ----------
@@ -460,6 +517,25 @@ async function fetchPastShifts() {
 }
 
 // ---------- Rendering ----------
+function pendingDisplayLabelForTile(t) {
+  // If effective status is the base pending label:
+  if (t.effectiveStatus === PENDING_LABEL_DEFAULT) {
+    // If the user has a draft entry setting this date to pending, show the wrapped variant
+    if (draft.hasOwnProperty(t.ymd) && draft[t.ymd] === PENDING_LABEL_DEFAULT) {
+      return PENDING_LABEL_WRAPPED;
+    }
+    // Otherwise, default
+    return PENDING_LABEL_DEFAULT;
+  }
+  return t.effectiveStatus;
+}
+
+function buildCycleHint(t) {
+  const first = pendingDisplayLabelForTile(t);
+  const seq = [first, 'N/A', 'LD', 'N', 'LD/N', first];
+  return 'Tap to change: ' + seq.join(' → ');
+}
+
 function renderTiles() {
   els.grid.innerHTML = '';
   if (!baseline || !baseline.tiles) return;
@@ -542,7 +618,15 @@ function renderTiles() {
         sub.textContent = availability;
       }
     } else {
-      status.textContent = t.effectiveStatus;
+      // Pending variants (display-only swap)
+      const displayLabel = pendingDisplayLabelForTile(t);
+      status.textContent = displayLabel;
+
+      // Mark pending tiles as needing attention if editable
+      if (!t.booked && t.status !== 'BLOCKED' && t.editable !== false) {
+        card.classList.add('needs-attention');
+      }
+
       if (t.effectiveStatus !== t.status) {
         sub.innerHTML = `<span class="edit-note">Pending change</span>`;
       } else {
@@ -552,17 +636,24 @@ function renderTiles() {
 
     card.append(header, status, sub);
 
+    // Ensure status text fits rule (no mid-word splits, shrink only if a single word overflows)
+    // Run after it’s in the DOM so measurements are accurate.
+    els.grid.appendChild(card);
+    fitStatusLabel(status);
+
     // Interactions
     const editable = (!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
     if (editable) {
       card.style.cursor = 'pointer';
-      card.title = 'Tap to change: Pending → N/A → LD → N → LD/N → Pending';
+      card.title = buildCycleHint(t);
       card.addEventListener('click', () => {
         const cur = draft[t.ymd] ?? t.status;
         const next = nextStatus(cur);
         if (next === t.status) {
           delete draft[t.ymd];
         } else {
+          // Always store the BASE pending label in draft when wrapping,
+          // never the "wrapped" display variant.
           draft[t.ymd] = next;
         }
         persistDraft();
@@ -573,8 +664,6 @@ function renderTiles() {
       card.title = t.booked ? 'BOOKED (locked)' : (t.status === 'BLOCKED' ? 'BLOCKED by 6-day rule' : 'Not editable');
       card.style.opacity = t.booked || t.status === 'BLOCKED' ? .9 : 1;
     }
-
-    els.grid.appendChild(card);
   }
 
   sizeGrid();
@@ -626,7 +715,7 @@ async function loadFromServer({ force=false } = {}) {
         'FORBIDDEN'
       ]);
       if (unauthErrors.has(errCode)) {
-        clearSavedIdentity();          // NEW
+        clearSavedIdentity();
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
@@ -709,7 +798,7 @@ async function submitChanges() {
         'FORBIDDEN'
       ]);
       if (json && unauthErrors.has(json.error)) {
-        clearSavedIdentity();          // NEW
+        clearSavedIdentity();
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
@@ -773,11 +862,36 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
 window.addEventListener('resize', sizeGrid, { passive: true });
 window.addEventListener('orientationchange', () => setTimeout(sizeGrid, 250));
 
+/**
+ * Light sizing helper: keeps --vh fresh and republishes footer height.
+ * Works fine with the new scrolling layout (no fixed grid math).
+ */
+function sizeGrid() {
+  if (!els.grid) return;
+
+  // Stabilize mobile address bar changes
+  const vh = window.innerHeight * 0.01;
+  document.documentElement.style.setProperty('--vh', `${vh}px`);
+
+  // Measure header/footer heights (footer may be visibility:hidden but measurable)
+  const header = document.querySelector('header');
+  const headerH = header ? Math.round(header.getBoundingClientRect().height) : 0;
+
+  let footerH = 0;
+  if (els.footer) {
+    const rectH = Math.round(els.footer.getBoundingClientRect().height);
+    footerH = rectH > 0 ? rectH : Math.round(getCssVarPx('--footer-h'));
+  }
+
+  document.documentElement.style.setProperty('--header-h', `${headerH}px`);
+  document.documentElement.style.setProperty('--footer-h', `${footerH}px`);
+}
+
 // ---------- Boot ----------
 (async function init() {
   parseQuery();
 
-  // If no k or msisdn provided in URL → deny immediately (now parseQuery restores from saved identity too)
+  // If no k or msisdn provided in URL → deny immediately (parseQuery restores from saved identity too)
   if (!identity.k && !identity.msisdn) {
     showAuthError('Not an authorised user');
     return;
