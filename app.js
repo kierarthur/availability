@@ -87,6 +87,7 @@ let lastHiddenAt = null;      // timestamp when page becomes hidden
 const DRAFT_KEY = 'rota_avail_draft_v1';
 const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
 const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // persisted identity
+const SAVED_TOKEN_KEY = 'rota_avail_token_v1';       // persisted token (for iOS A2HS)
 
 // Per-session memory of tiles the user has tapped at least once this session.
 // Used to decide whether the pending wording should be "wrapped" (NOT SURE...).
@@ -297,22 +298,45 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- Query parsing ----------
 function parseQuery() {
-  const q = new URLSearchParams(location.search);
-  const k = q.get('k')?.trim();
-  const msisdn = q.get('msisdn')?.trim();
-  const t = q.get('t')?.trim(); // allow passing t in URL for testing
+  // Read from both search and hash to support iOS A2HS which often preserves # better than ?.
+  const search = new URLSearchParams(location.search);
+  const hash = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
 
-  if (t) sessionStorage.setItem('api_t_override', t);
+  const pick = (key) => (search.get(key)?.trim() || hash.get(key)?.trim() || '');
+
+  const t = pick('t');
+  const k = pick('k');
+  const msisdn = pick('msisdn');
+
+  // Persist token in BOTH sessionStorage and localStorage (iOS A2HS needs localStorage on first launch).
+  if (t) {
+    try { sessionStorage.setItem('api_t_override', t); } catch {}
+    try { localStorage.setItem(SAVED_TOKEN_KEY, t); } catch {}
+  }
 
   if (k || msisdn) {
     identity = k ? { k } : { msisdn };
     saveIdentity(identity); // persist latest identity
-    return;
+  } else {
+    // restore from saved identity when URL has none
+    const saved = loadSavedIdentity();
+    identity = (saved.k || saved.msisdn) ? saved : {};
   }
+}
 
-  // restore from saved identity when URL has none
-  const saved = loadSavedIdentity();
-  identity = (saved.k || saved.msisdn) ? saved : {};
+// Ensure the current URL (especially when user taps "Add to Home Screen") carries what we need.
+function ensureCanonicalURLWithToken() {
+  try {
+    const token = authToken();
+    const params = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
+    let changed = false;
+    if (token && params.get('t') !== token) { params.set('t', token); changed = true; }
+    if (identity.k && params.get('k') !== identity.k) { params.set('k', identity.k); changed = true; }
+    if (identity.msisdn && params.get('msisdn') !== identity.msisdn) { params.set('msisdn', identity.msisdn); changed = true; }
+    if (changed) {
+      history.replaceState(null, '', location.pathname + location.search + '#' + params.toString());
+    }
+  } catch {}
 }
 
 // ---------- Helpers ----------
@@ -742,7 +766,16 @@ function escapeHtml(s) {
 
 // ---------- API ----------
 function authToken() {
-  return sessionStorage.getItem('api_t_override') || API_SHARED_TOKEN;
+  // NEW: prefer session override, then saved token (localStorage), then shared fallback
+  try {
+    return (
+      sessionStorage.getItem('api_t_override') ||
+      localStorage.getItem(SAVED_TOKEN_KEY) ||
+      API_SHARED_TOKEN
+    );
+  } catch {
+    return API_SHARED_TOKEN;
+  }
 }
 
 async function loadFromServer({ force=false } = {}) {
@@ -967,7 +1000,10 @@ function sizeGrid() {
 (async function init() {
   parseQuery();
 
-  // If no k or msisdn provided in URL → deny immediately (parseQuery restores from saved identity too)
+  // Ensure the URL carries token/identity so A2HS keeps them when added to Home Screen.
+  ensureCanonicalURLWithToken();
+
+  // If no k or msisdn provided in URL or storage → deny immediately
   if (!identity.k && !identity.msisdn) {
     showAuthError('Not an authorised user');
     return;
