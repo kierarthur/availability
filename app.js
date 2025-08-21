@@ -88,6 +88,11 @@ const DRAFT_KEY = 'rota_avail_draft_v1';
 const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
 const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // persisted identity
 
+// Submit-nudge timer state (1-minute reminder)
+let submitNudgeTimer = null;
+let lastEditAt = 0;
+let nudgeShown = false;
+
 // Saved-identity helpers
 function saveIdentity(id) {
   try {
@@ -181,9 +186,17 @@ function ensureLoadingOverlay() {
         50%  { opacity: .78; transform: scale(0.99); }
         100% { opacity: 1; transform: scale(1); }
       }
+      @keyframes strongPulse {
+        0%   { opacity: 1; transform: scale(1); }
+        50%  { opacity: .72; transform: scale(1.03); }
+        100% { opacity: 1; transform: scale(1); }
+      }
       .needs-attention { animation: softPulse 1.6s ease-in-out infinite; }
-      .btn-attention   { animation: softPulse 1.3s ease-in-out infinite; }
+      .btn-attention   { animation: strongPulse 1.0s ease-in-out infinite; }
     }
+
+    /* Thin red border for attention tiles */
+    .attention-border { border-color: var(--danger) !important; }
   `;
   document.head.appendChild(style);
 
@@ -253,6 +266,8 @@ els.installBtn && els.installBtn.addEventListener('click', async () => {
 // ---------- Visibility handling (auto-clear after 3 minutes away) ----------
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    // pause submit-nudge checks while hidden
+    cancelSubmitNudge();
     lastHiddenAt = Date.now();
     persistDraft();
   } else {
@@ -270,6 +285,8 @@ document.addEventListener('visibilitychange', () => {
       showLoading();
       loadFromServer().catch(()=>{}).finally(hideLoading);
     }
+    // If still dirty and no reminder yet, resume countdown
+    if (Object.keys(draft).length) scheduleSubmitNudge();
     lastHiddenAt = null;
   }
 });
@@ -314,7 +331,7 @@ function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
   els.footer.classList.toggle('hidden', !dirty);
 
-  // Submit button pulse when dirty
+  // Submit button pulse when dirty (stronger blink)
   if (els.submitBtn) {
     if (dirty) els.submitBtn.classList.add('btn-attention');
     else els.submitBtn.classList.remove('btn-attention');
@@ -422,6 +439,32 @@ function fitStatusLabel(el) {
   }
 
   measurer.remove();
+}
+
+// ---------- Submit nudge (1-minute reminder) ----------
+function cancelSubmitNudge() {
+  if (submitNudgeTimer) {
+    clearTimeout(submitNudgeTimer);
+    submitNudgeTimer = null;
+  }
+}
+function scheduleSubmitNudge() {
+  if (nudgeShown) return;
+  if (!Object.keys(draft).length) return;
+  cancelSubmitNudge();
+  const elapsed = Date.now() - (lastEditAt || Date.now());
+  const remaining = Math.max(0, 60_000 - elapsed);
+  submitNudgeTimer = window.setTimeout(() => {
+    if (document.visibilityState === 'visible' && Object.keys(draft).length) {
+      showToast('You have unsaved changes — tap Submit to save.', 4200);
+      nudgeShown = true;
+    }
+  }, remaining);
+}
+function registerUserEdit() {
+  lastEditAt = Date.now();
+  // Only schedule a reminder if one hasn't been shown yet this dirty session
+  if (!nudgeShown) scheduleSubmitNudge();
 }
 
 // ---------- Help banner ----------
@@ -622,9 +665,10 @@ function renderTiles() {
       const displayLabel = pendingDisplayLabelForTile(t);
       status.textContent = displayLabel;
 
-      // Mark pending tiles as needing attention if editable
+      // Mark pending tiles as needing attention (pulse + thin red border)
       if (!t.booked && t.status !== 'BLOCKED' && t.editable !== false) {
         card.classList.add('needs-attention');
+        card.classList.add('attention-border'); // both base and wrapped should show border while pending
       }
 
       if (t.effectiveStatus !== t.status) {
@@ -657,6 +701,9 @@ function renderTiles() {
           draft[t.ymd] = next;
         }
         persistDraft();
+        // user just edited — (re)start 1-minute reminder window
+        registerUserEdit();
+
         renderTiles();
         showFooterIfNeeded();
       });
@@ -816,8 +863,12 @@ async function submitChanges() {
       showToast(`Saved ${applied} change${applied===1?'':'s'}.`);
     }
 
+    // Clear draft and any pending nudge state
     draft = {};
     persistDraft();
+    cancelSubmitNudge();
+    nudgeShown = false;
+    lastEditAt = 0;
 
     await loadFromServer({ force: true });
   } catch (err) {
@@ -835,6 +886,10 @@ function clearChanges() {
   renderTiles();
   showFooterIfNeeded();
   showToast('Cleared pending changes.');
+  // Reset submit-nudge state
+  cancelSubmitNudge();
+  nudgeShown = false;
+  lastEditAt = 0;
 }
 
 // ---------- UI events ----------
