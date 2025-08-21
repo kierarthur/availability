@@ -157,6 +157,25 @@
       background:#131926;color:var(--text);border:1px solid #2a3446;padding:.6rem .75rem;border-radius:10px;z-index:25;
       box-shadow:0 8px 30px rgba(0,0,0,.35);max-width:90vw;font-size:.9rem;
     }
+
+    /* Attention pulse for pending tiles and a stronger pulse for Submit (respects reduced motion) */
+    @media (prefers-reduced-motion: no-preference) {
+      @keyframes softPulse {
+        0%   { opacity: 1; transform: scale(1); }
+        50%  { opacity: .78; transform: scale(0.99); }
+        100% { opacity: 1; transform: scale(1); }
+      }
+      @keyframes strongPulse {
+        0%   { opacity: 1; transform: scale(1); }
+        50%  { opacity: .72; transform: scale(1.03); }
+        100% { opacity: 1; transform: scale(1); }
+      }
+      .needs-attention { animation: softPulse 1.6s ease-in-out infinite; }
+      .btn-attention   { animation: strongPulse 1s ease-in-out infinite; }
+    }
+
+    /* Thin red border highlight for attention tiles */
+    .attention-border { border-color: var(--danger) !important; }
   </style>
 </head>
 <body>
