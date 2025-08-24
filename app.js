@@ -1,5 +1,5 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbysRkNN9LRTKDV_M71PjM9iFaDU9oSvt0e0uEhvt2aIdIxiFwRBFLQzbymbtD1_oHw2Yg/exec'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbxEZIaMHuP6-QUe7ITk68JNLEE9W-DlYhs-BWimkYyqmPHk0z3R7ZD9OrxNbEf7lgo2Qw/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
@@ -80,7 +80,7 @@ function showAuthError(message = 'Not an authorised user') {
 }
 
 // ---------- State ----------
-let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate)
+let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate, newUserHint?, hadK?)
 let draft = {};               // ymd -> status LABEL (only diffs from baseline). Pending stored as BASE label.
 let identity = {};            // { k?:string, msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
@@ -97,6 +97,34 @@ const toggledThisSession = new Set();
 let submitNudgeTimer = null;
 let lastEditAt = 0;
 let nudgeShown = false;
+
+// ---------- Simple API helpers ----------
+async function apiGET(paramsObj) {
+  const params = new URLSearchParams({ t: authToken(), ...(paramsObj || {}) });
+  if (identity.k) params.set('k', identity.k);
+  if (identity.msisdn) params.set('msisdn', identity.msisdn);
+  const url = `${API_BASE_URL}?${params.toString()}`;
+  const res = await fetch(url, { method: 'GET', credentials: 'omit' });
+  const text = await res.text();
+  let json = {};
+  try { json = JSON.parse(text); } catch {}
+  return { res, json, text };
+}
+async function apiPOST(bodyObj) {
+  const body = { t: authToken(), ...(bodyObj || {}) };
+  if (identity.k) body.k = identity.k;
+  if (identity.msisdn) body.msisdn = identity.msisdn;
+  const res = await fetch(API_BASE_URL, {
+    method: 'POST',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // simple request (no preflight)
+    credentials: 'omit',
+    body: JSON.stringify(body)
+  });
+  const text = await res.text();
+  let json = {};
+  try { json = JSON.parse(text); } catch {}
+  return { res, json, text };
+}
 
 // Saved-identity helpers
 function saveIdentity(id) {
@@ -117,6 +145,8 @@ function loadSavedIdentity() {
 }
 function clearSavedIdentity() {
   try { localStorage.removeItem(SAVED_IDENTITY_KEY); } catch {}
+  try { localStorage.removeItem(SAVED_TOKEN_KEY); } catch {}
+  try { sessionStorage.removeItem('api_t_override'); } catch {}
 }
 
 // ------- Loading overlay + shared styles -------
@@ -148,33 +178,33 @@ function ensureLoadingOverlay() {
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Past Shifts overlay */
-    #pastOverlay {
+    #pastOverlay, #contentOverlay, #tokenOverlay, #welcomeOverlay {
       position: fixed; inset: 0; z-index: 9998;
       display: none; align-items: stretch; justify-content: center;
       background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
     }
-    #pastOverlay.show { display: flex; }
-    #pastSheet {
+    #pastOverlay.show, #contentOverlay.show, #tokenOverlay.show, #welcomeOverlay.show { display: flex; }
+    .sheet {
       background: #0f1115; color: #e7ecf3;
       border-top-left-radius: 16px; border-top-right-radius: 16px;
-      width: min(720px, 96vw);
+      width: min(820px, 96vw);
       margin-top: min(8vh, 80px);
       margin-bottom: 0;
       box-shadow: 0 10px 30px rgba(0,0,0,.45);
       display: flex; flex-direction: column; max-height: calc(100vh - 12vh);
       border: 1px solid #222936;
     }
-    #pastHeader {
+    .sheet-header {
       display:flex; align-items:center; gap:.6rem; padding:.7rem .9rem;
       border-bottom:1px solid #222936; background: rgba(15,17,21,.9); backdrop-filter: blur(6px);
     }
-    #pastTitle { font-weight:800; font-size:1.05rem; margin:0; }
-    #pastClose {
+    .sheet-title { font-weight:800; font-size:1.05rem; margin:0; }
+    .sheet-close {
       margin-left:auto; appearance:none; border:0; background:transparent; color:#a7b0c0;
       font-weight:700; font-size:1rem; cursor:pointer; padding:.25rem .5rem; border-radius:8px;
     }
-    #pastClose:hover { background:#1e2532; color:#fff; }
-    #pastList {
+    .sheet-close:hover { background:#1e2532; color:#fff; }
+    .sheet-body {
       overflow:auto; padding:.7rem .9rem 1rem; display:flex; flex-direction:column; gap:.6rem;
     }
     .past-item {
@@ -183,6 +213,26 @@ function ensureLoadingOverlay() {
     }
     .past-date { font-weight:800; margin-bottom:.15rem; color:#e7ecf3; }
     .muted { color:#a7b0c0; }
+
+    /* Menu dropdown */
+    #menuWrap { position: relative; margin-left: auto; }
+    #menuBtn {
+      appearance: none; border: 1px solid #2a3446; background: #131926; color: #e7ecf3;
+      border-radius: 8px; padding: .35rem .6rem; cursor: pointer; font-weight: 700;
+    }
+    #menuList {
+      position: absolute; right: 0; top: calc(100% + 6px); z-index: 9997;
+      background: #0f1115; border: 1px solid #222936; border-radius: 10px;
+      min-width: 220px; padding: .35rem; display: none;
+      box-shadow: 0 10px 24px rgba(0,0,0,.45);
+    }
+    #menuList.show { display: block; }
+    .menu-item {
+      display: block; width: 100%; text-align: left; background: transparent; border: 0;
+      color: #e7ecf3; padding: .45rem .6rem; border-radius: 8px; cursor: pointer;
+      font-weight: 600;
+    }
+    .menu-item:hover { background: #1b2331; }
 
     /* Attention pulses (respect reduced motion) */
     @media (prefers-reduced-motion: no-preference) {
@@ -220,23 +270,136 @@ function ensureLoadingOverlay() {
   const pastOverlay = document.createElement('div');
   pastOverlay.id = 'pastOverlay';
   pastOverlay.innerHTML = `
-    <div id="pastSheet" role="dialog" aria-modal="true" aria-label="Past 14 days of shifts">
-      <div id="pastHeader">
-        <div id="pastTitle">Past 14 days</div>
-        <button id="pastClose" aria-label="Close">✕</button>
+    <div id="pastSheet" class="sheet" role="dialog" aria-modal="true" aria-label="Past 14 days of shifts">
+      <div class="sheet-header">
+        <div class="sheet-title">Past 14 days</div>
+        <button id="pastClose" class="sheet-close" aria-label="Close">✕</button>
       </div>
-        <div id="pastList" tabindex="0"></div>
+      <div id="pastList" class="sheet-body" tabindex="0"></div>
     </div>
   `;
   document.body.appendChild(pastOverlay);
 
-  pastOverlay.addEventListener('click', (e) => {
-    if (e.target === pastOverlay) closePastShifts();
+  // Content overlay for server HTML (addresses, accommodation)
+  const contentOverlay = document.createElement('div');
+  contentOverlay.id = 'contentOverlay';
+  contentOverlay.innerHTML = `
+    <div id="contentSheet" class="sheet" role="dialog" aria-modal="true" aria-label="Information">
+      <div class="sheet-header">
+        <div id="contentTitle" class="sheet-title">Info</div>
+        <button id="contentClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div id="contentBody" class="sheet-body" tabindex="0"></div>
+    </div>
+  `;
+  document.body.appendChild(contentOverlay);
+
+  // Token claim overlay (iPhone paste flow)
+  const tokenOverlay = document.createElement('div');
+  tokenOverlay.id = 'tokenOverlay';
+  tokenOverlay.innerHTML = `
+    <div id="tokenSheet" class="sheet" role="dialog" aria-modal="true" aria-label="iPhone Token Claim">
+      <div class="sheet-header">
+        <div class="sheet-title">Unlock your link on iPhone</div>
+        <button id="tokenClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div class="sheet-body">
+        <p>If you opened this from an iPhone “Add to Home Screen” app, the security token may be missing.</p>
+        <p>Please paste the <strong>full URL</strong> from the secure text/email you received:</p>
+        <textarea id="tokenTextarea" rows="4" style="width:100%;resize:vertical;border-radius:8px;border:1px solid #222936;background:#0b0e14;color:#e7ecf3;padding:.6rem;"></textarea>
+        <div style="display:flex;gap:.6rem;margin-top:.6rem;">
+          <button id="tokenSubmit" class="menu-item" style="border:1px solid #2a3446;">Claim Token</button>
+          <button id="tokenHelp" class="menu-item" style="border:1px solid #2a3446;">What is this?</button>
+        </div>
+        <div id="tokenError" class="muted" role="alert" style="margin-top:.4rem;"></div>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(tokenOverlay);
+
+  // Welcome/Alert overlay for newUserHint
+  const welcomeOverlay = document.createElement('div');
+  welcomeOverlay.id = 'welcomeOverlay';
+  welcomeOverlay.innerHTML = `
+    <div id="welcomeSheet" class="sheet" role="dialog" aria-modal="true" aria-label="Welcome">
+      <div class="sheet-header">
+        <div id="welcomeTitle" class="sheet-title">Welcome</div>
+        <button id="welcomeClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div id="welcomeBody" class="sheet-body" tabindex="0"></div>
+      <div style="display:flex;justify-content:flex-end;gap:.5rem;padding:.5rem .9rem 1rem;">
+        <button id="welcomeDismiss" class="menu-item" style="border:1px solid #2a3446;">Got it</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(welcomeOverlay);
+
+  // Shared overlay wiring (click-outside & esc)
+  ;[
+    { overlayId:'pastOverlay', closeId:'pastClose' },
+    { overlayId:'contentOverlay', closeId:'contentClose' },
+    { overlayId:'tokenOverlay', closeId:'tokenClose' },
+    { overlayId:'welcomeOverlay', closeId:'welcomeClose' },
+  ].forEach(({overlayId, closeId}) => {
+    const overlay = document.getElementById(overlayId);
+    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(overlayId); });
+    document.getElementById(closeId).addEventListener('click', () => closeOverlay(overlayId));
   });
-  document.getElementById('pastClose').addEventListener('click', closePastShifts);
   document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape' && pastOverlay.classList.contains('show')) closePastShifts();
+    if (e.key === 'Escape') {
+      ['pastOverlay','contentOverlay','tokenOverlay','welcomeOverlay'].forEach(id => {
+        const ov = document.getElementById(id);
+        if (ov && ov.classList.contains('show')) closeOverlay(id);
+      });
+    }
   });
+}
+function openOverlay(overlayId, focusSel) {
+  ensureLoadingOverlay();
+  const overlay = document.getElementById(overlayId);
+  if (!overlay) return;
+  overlay.classList.add('show');
+  overlay.dataset.prevFocus = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
+  const focusEl = focusSel ? overlay.querySelector(focusSel) : overlay.querySelector('.sheet-close');
+  focusEl && focusEl.focus();
+  trapFocus(overlay);
+}
+function closeOverlay(overlayId) {
+  const overlay = document.getElementById(overlayId);
+  if (!overlay) return;
+  overlay.classList.remove('show');
+  releaseFocusTrap(overlay);
+  const prev = overlay.dataset.prevFocus;
+  if (prev) {
+    const el = document.getElementById(prev);
+    if (el) el.focus();
+  }
+}
+function trapFocus(container) {
+  const selectors = [
+    'a[href]','area[href]','input:not([disabled])','select:not([disabled])','textarea:not([disabled])',
+    'button:not([disabled])','iframe','[tabindex]:not([tabindex="-1"])','[contenteditable="true"]'
+  ];
+  const focusables = Array.from(container.querySelectorAll(selectors.join(','))).filter(el => el.offsetParent !== null);
+  if (!focusables.length) return;
+  function loop(e) {
+    if (e.key !== 'Tab') return;
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    if (e.shiftKey) {
+      if (document.activeElement === first) { last.focus(); e.preventDefault(); }
+    } else {
+      if (document.activeElement === last) { first.focus(); e.preventDefault(); }
+    }
+  }
+  container._focusHandler = loop;
+  container.addEventListener('keydown', loop);
+}
+function releaseFocusTrap(container) {
+  if (container && container._focusHandler) {
+    container.removeEventListener('keydown', container._focusHandler);
+    container._focusHandler = null;
+  }
 }
 function showLoading(msg = 'Loading...') {
   ensureLoadingOverlay();
@@ -371,6 +534,7 @@ function showToast(msg, ms=2800) {
   if (!els.toast) return;
   els.toast.textContent = msg;
   els.toast.classList.remove('hidden');
+  els.toast.setAttribute('aria-live','polite');
   window.clearTimeout(showToast._t);
   showToast._t = window.setTimeout(() => els.toast.classList.add('hidden'), ms);
 }
@@ -529,24 +693,27 @@ function ensureHelpMessageVisible() {
 // ---------- Past Shifts (overlay + fetch) ----------
 function ensurePastShiftsButton() {
   const header = document.querySelector('header');
-  if (!header || document.getElementById('pastBtn')) return;
-  const btn = document.createElement('button');
-  btn.id = 'pastBtn';
-  btn.textContent = 'Past Shifts';
-  btn.setAttribute('aria-haspopup', 'dialog');
-  header.insertBefore(btn, els.refreshBtn || header.lastChild);
-  btn.addEventListener('click', openPastShifts);
+  if (!header) return;
+  // Ensure menu exists (top-right actions)
+  ensureMenu();
+
+  // Also keep the dedicated Past Shifts button if desired (optional)
+  if (!document.getElementById('pastBtn')) {
+    const btn = document.createElement('button');
+    btn.id = 'pastBtn';
+    btn.textContent = 'Past Shifts';
+    btn.setAttribute('aria-haspopup', 'dialog');
+    header.insertBefore(btn, els.refreshBtn || header.lastChild);
+    btn.addEventListener('click', openPastShifts);
+  }
 }
 function openPastShifts() {
   ensureLoadingOverlay();
-  const overlay = document.getElementById('pastOverlay');
   const list = document.getElementById('pastList');
-  if (!overlay || !list) return;
+  if (!list) return;
 
   list.innerHTML = '';
-  overlay.classList.add('show');
-  overlay.dataset.prevFocus = document.activeElement && document.activeElement.id;
-  document.getElementById('pastClose').focus();
+  openOverlay('pastOverlay', '#pastClose');
 
   fetchPastShifts()
     .then(items => {
@@ -582,33 +749,185 @@ function openPastShifts() {
       list.innerHTML = `<div class="muted">Could not load past shifts: ${err.message || err}</div>`;
     });
 }
-function closePastShifts() {
-  const overlay = document.getElementById('pastOverlay');
-  if (!overlay) return;
-  overlay.classList.remove('show');
-  const prev = overlay.dataset.prevFocus;
-  if (prev) {
-    const el = document.getElementById(prev);
-    if (el) el.focus();
-  } else {
-    const btn = document.getElementById('pastBtn');
-    if (btn) btn.focus();
-  }
-}
 async function fetchPastShifts() {
   if (!Object.keys(identity).length) throw new Error('Missing identity');
-  const params = new URLSearchParams({ t: authToken(), view: 'past14' });
-  if (identity.k) params.set('k', identity.k);
-  if (identity.msisdn) params.set('msisdn', identity.msisdn);
-
-  const url = `${API_BASE_URL}?${params.toString()}`;
-  const res = await fetch(url, { method: 'GET', credentials: 'omit' });
-  const json = await res.json().catch(() => ({}));
+  const { res, json } = await apiGET({ view: 'past14' });
   if (!res.ok || !json || json.ok === false) {
     const msg = (json && json.error) || `HTTP ${res.status}`;
     throw new Error(msg);
   }
   return json.items || [];
+}
+
+// ---------- Content overlay (Addresses / Accommodation) ----------
+async function openContent(kind, titleFallback) {
+  ensureLoadingOverlay();
+  const titleEl = document.getElementById('contentTitle');
+  const bodyEl  = document.getElementById('contentBody');
+  if (!titleEl || !bodyEl) return;
+  bodyEl.innerHTML = `<div class="muted">Loading...</div>`;
+  titleEl.textContent = titleFallback || 'Information';
+  openOverlay('contentOverlay', '#contentClose');
+
+  try {
+    const { res, json } = await apiGET({ view:'content', kind });
+    if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
+      bodyEl.innerHTML = `<div class="muted">Server is busy, please try again shortly.</div>`;
+      return;
+    }
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && json.error) || `HTTP ${res.status}`;
+      bodyEl.innerHTML = `<div class="muted">Could not load content: ${msg}</div>`;
+      return;
+    }
+    titleEl.textContent = json.title || titleFallback || 'Information';
+    // Server returns sanitized HTML
+    bodyEl.innerHTML = json.html || '<div class="muted">No content.</div>';
+  } catch (e) {
+    bodyEl.innerHTML = `<div class="muted">Could not load content: ${e.message || e}</div>`;
+  }
+}
+
+// ---------- Menu (top-right) ----------
+function ensureMenu() {
+  const header = document.querySelector('header');
+  if (!header) return;
+  if (document.getElementById('menuWrap')) return;
+
+  const wrap = document.createElement('div');
+  wrap.id = 'menuWrap';
+  const btn = document.createElement('button');
+  btn.id = 'menuBtn';
+  btn.type = 'button';
+  btn.textContent = 'Menu';
+  const list = document.createElement('div');
+  list.id = 'menuList';
+  list.innerHTML = `
+    <button class="menu-item" id="miPast">Past Shifts</button>
+    <button class="menu-item" id="miHosp">Hospital Addresses</button>
+    <button class="menu-item" id="miAccom">Accommodation Contacts</button>
+    <button class="menu-item" id="miTimesheet">Send Timesheet</button>
+    <button class="menu-item" id="miLogout">Log out</button>
+  `;
+  wrap.append(btn, list);
+  header.appendChild(wrap);
+
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    list.classList.toggle('show');
+  });
+  document.addEventListener('click', () => list.classList.remove('show'));
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') list.classList.remove('show');
+  });
+
+  document.getElementById('miPast').addEventListener('click', () => { list.classList.remove('show'); openPastShifts(); });
+  document.getElementById('miHosp').addEventListener('click', () => { list.classList.remove('show'); openContent('HOSPITAL','Hospital Addresses'); });
+  document.getElementById('miAccom').addEventListener('click', () => { list.classList.remove('show'); openContent('ACCOMMODATION','Accommodation Contacts'); });
+  document.getElementById('miTimesheet').addEventListener('click', async () => {
+    list.classList.remove('show');
+    try {
+      showLoading('Sending timesheet...');
+      const { res, json } = await apiPOST({ action:'SEND_TIMESHEET' });
+      if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
+        showToast('Server is busy, please try again.');
+        return;
+      }
+      if (!res.ok || !json || json.ok === false) {
+        const err = (json && json.error) || `HTTP ${res.status}`;
+        showToast(err);
+        return;
+      }
+      showToast('Timesheet sent.');
+    } catch (e) {
+      showToast('Failed to send: ' + (e.message || e));
+    } finally { hideLoading(); }
+  });
+  document.getElementById('miLogout').addEventListener('click', () => {
+    list.classList.remove('show');
+    clearSavedIdentity();
+    showAuthError('Logged out. Please reopen your secure link.');
+  });
+}
+
+// ---------- Welcome / newUserHint ----------
+function maybeShowWelcome() {
+  if (!baseline || !baseline.newUserHint) return;
+  const hint = baseline.newUserHint; // { title, html }
+  const titleEl = document.getElementById('welcomeTitle');
+  const bodyEl  = document.getElementById('welcomeBody');
+  if (!titleEl || !bodyEl) return;
+
+  titleEl.textContent = (hint.title || 'Welcome').trim();
+  bodyEl.innerHTML = hint.html || '';
+  openOverlay('welcomeOverlay', '#welcomeDismiss');
+
+  const dismiss = document.getElementById('welcomeDismiss');
+  dismiss.onclick = async () => {
+    try {
+      await apiPOST({ action:'MARK_MESSAGE_SEEN' });
+    } catch {}
+    closeOverlay('welcomeOverlay');
+  };
+}
+
+// ---------- Token claim (iPhone paste full URL flow) ----------
+function openTokenClaimDialog(prefillText='') {
+  const textarea = document.getElementById('tokenTextarea');
+  const errorEl  = document.getElementById('tokenError');
+  const helpBtn  = document.getElementById('tokenHelp');
+  const submit   = document.getElementById('tokenSubmit');
+  if (!textarea || !errorEl || !helpBtn || !submit) return;
+  textarea.value = prefillText;
+  errorEl.textContent = '';
+  openOverlay('tokenOverlay', '#tokenTextarea');
+
+  helpBtn.onclick = () => {
+    errorEl.innerHTML = 'Tip: Open the original secure SMS or email, press and hold the link, choose “Copy”, then paste it above.';
+  };
+  submit.onclick = async () => {
+    const userText = textarea.value.trim();
+    if (!userText) {
+      errorEl.textContent = 'Please paste the full secure URL first.';
+      return;
+    }
+    try {
+      showLoading('Claiming token...');
+      const { res, json } = await apiPOST({ action:'TOKEN_CLAIM', userText });
+      if (!res.ok || !json || json.ok === false) {
+        const msg = (json && json.error) || `HTTP ${res.status}`;
+        if (msg === 'TOKEN_NOT_FOUND_IN_TEXT') {
+          errorEl.textContent = 'We could not find a token in that text. Please paste the full URL.';
+        } else if (msg === 'TOKEN_NOT_ACTIVE_OR_UNKNOWN') {
+          errorEl.textContent = 'That token is not active or unknown. Please check the link and try again.';
+        } else {
+          errorEl.textContent = msg;
+        }
+        return;
+      }
+      // Success: server returns { ok:true, token, msisdn }
+      if (json.token) {
+        try { localStorage.setItem(SAVED_TOKEN_KEY, json.token); } catch {}
+        try { sessionStorage.setItem('api_t_override', json.token); } catch {}
+      }
+      identity = { msisdn: json.msisdn };
+      saveIdentity(identity);
+
+      // Clear any bad k
+      const params = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
+      params.delete('k');
+      params.set('t', authToken());
+      params.set('msisdn', identity.msisdn);
+      history.replaceState(null, '', location.pathname + location.search + '#' + params.toString());
+
+      closeOverlay('tokenOverlay');
+
+      // Reload tiles with new token
+      loadFromServer({ force: true }).catch(e => showToast(e.message || e));
+    } catch (e) {
+      errorEl.textContent = e.message || String(e);
+    } finally { hideLoading(); }
+  };
 }
 
 // ---------- Rendering ----------
@@ -720,9 +1039,14 @@ function renderTiles() {
 
     card.append(header, status, sub);
 
-    // Ensure status text fits rule
     els.grid.appendChild(card);
+    // Fit status text
     fitStatusLabel(status);
+
+    // Ensure non-attention tiles get a white border, per design
+    if (!card.classList.contains('attention-border')) {
+      card.style.borderColor = '#ffffff';
+    }
 
     // Interactions
     const editable = (!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
@@ -755,7 +1079,18 @@ function renderTiles() {
     }
   }
 
+  // Equal heights: match tallest tile
+  equalizeTileHeights();
+
   sizeGrid();
+}
+function equalizeTileHeights() {
+  const tiles = Array.from(els.grid.querySelectorAll('.tile'));
+  if (!tiles.length) return;
+  tiles.forEach(t => t.style.minHeight = ''); // reset
+  let max = 0;
+  tiles.forEach(t => { max = Math.max(max, Math.ceil(t.getBoundingClientRect().height)); });
+  tiles.forEach(t => { t.style.minHeight = max + 'px'; });
 }
 function escapeHtml(s) {
   return String(s || '')
@@ -787,31 +1122,38 @@ async function loadFromServer({ force=false } = {}) {
   showLoading();
 
   try {
-    const params = new URLSearchParams({ t: authToken() });
-    if (identity.k) params.set('k', identity.k);
-    if (identity.msisdn) params.set('msisdn', identity.msisdn);
-
-    const url = `${API_BASE_URL}?${params.toString()}`;
-    const res = await fetch(url, { method: 'GET', credentials: 'omit' });
-
-    let json = {};
-    try { json = await res.json(); } catch { json = {}; }
+    const { res, json } = await apiGET({});
+    // Dedicated busy handling
+    if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
+      showToast('Server is busy, please try again.');
+      return;
+    }
 
     const errCode = (json && json.error) || '';
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
+        // Special: UNAUTHORIZED_TOKEN → iPhone paste flow (only if server hints hadK true)
+        if (errCode === 'UNAUTHORIZED_TOKEN' || (json && json.error === 'UNAUTHORIZED_TOKEN')) {
+          openTokenClaimDialog();
+          return;
+        }
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
       const msg = errCode || `HTTP ${res.status}`;
       throw new Error(msg);
     }
+
     if (json && json.ok === false) {
       const unauthErrors = new Set([
         'INVALID_OR_UNKNOWN_IDENTITY',
         'NOT_IN_CANDIDATE_LIST',
         'FORBIDDEN'
       ]);
+      if (json.error === 'UNAUTHORIZED_TOKEN') {
+        openTokenClaimDialog();
+        return;
+      }
       if (unauthErrors.has(errCode)) {
         clearSavedIdentity();
         showAuthError('Not an authorised user');
@@ -845,6 +1187,9 @@ async function loadFromServer({ force=false } = {}) {
 
     renderTiles();
     showFooterIfNeeded();
+
+    // Show welcome/alert banner if provided
+    maybeShowWelcome();
   } finally {
     hideLoading();
   }
@@ -865,26 +1210,22 @@ async function submitChanges() {
     return;
   }
 
-  showLoading('Saving.....');
+  showLoading('Saving...');
 
   try {
-    const body = { t: authToken(), changes };
-    if (identity.k) body.k = identity.k;
-    if (identity.msisdn) body.msisdn = identity.msisdn;
+    const { res, json, text } = await apiPOST({ changes });
 
-    const res = await fetch(API_BASE_URL, {
-      method: 'POST',
-      headers: { 'Content-Type': 'text/plain;charset=utf-8' }, // simple request (no preflight)
-      credentials: 'omit',
-      body: JSON.stringify(body)
-    });
-
-    const text = await res.text();
-    let json = {};
-    try { json = JSON.parse(text); } catch {}
+    if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
+      showToast('Server is busy, please try again.');
+      return;
+    }
 
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
+        if (json && json.error === 'UNAUTHORIZED_TOKEN') {
+          openTokenClaimDialog();
+          return;
+        }
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
@@ -905,8 +1246,9 @@ async function submitChanges() {
       throw new Error(msg + extra);
     }
 
-    const applied = (json.results || []).filter(r => r.applied).length;
-    const rejected = (json.results || []).filter(r => !r.applied);
+    const results = json.results || [];
+    const applied = results.filter(r => r.applied).length;
+    const rejected = results.filter(r => !r.applied);
     if (rejected.length) {
       const reasons = rejected.slice(0,3).map(r => `${r.ymd}: ${r.reason}`).join(', ');
       showToast(`Saved ${applied}. Skipped ${rejected.length} (${reasons}${rejected.length>3?', …':''}).`, 4200);
@@ -968,8 +1310,8 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
 });
 
 // ---------- Keep CSS vars fresh ----------
-window.addEventListener('resize', sizeGrid, { passive: true });
-window.addEventListener('orientationchange', () => setTimeout(sizeGrid, 250));
+window.addEventListener('resize', () => { sizeGrid(); equalizeTileHeights(); }, { passive: true });
+window.addEventListener('orientationchange', () => setTimeout(() => { sizeGrid(); equalizeTileHeights(); }, 250));
 
 /**
  * Light sizing helper: keeps --vh fresh and republishes footer height.
@@ -1009,6 +1351,9 @@ function sizeGrid() {
     return;
   }
 
+  ensureLoadingOverlay(); // build overlays & menu styles early
+  ensureMenu();           // add top-right menu
+
   loadDraft();
   showLoading(); // show immediately on first load
   try {
@@ -1019,8 +1364,12 @@ function sizeGrid() {
     }
   } finally {
     sizeGrid();           // ensure initial CSS vars
+    equalizeTileHeights();
     hideLoading();
-    ensureLoadingOverlay();
     ensurePastShiftsButton();
   }
+
+  // Wire token dialog buttons (created in ensureLoadingOverlay)
+  const tokenClose = document.getElementById('tokenClose');
+  if (tokenClose) tokenClose.addEventListener('click', () => closeOverlay('tokenOverlay'));
 })();
