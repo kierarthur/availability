@@ -203,7 +203,7 @@ function ensureLoadingOverlay() {
       margin-left:auto; appearance:none; border:0; background:transparent; color:#a7b0c0;
       font-weight:700; font-size:1rem; cursor:pointer; padding:.25rem .5rem; border-radius:8px;
     }
-    .sheet-close:hover { background:#1e2532; color:#fff; }
+    .sheet-close:hover { background: #1e2532; color:#fff; }
     .sheet-body {
       overflow:auto; padding:.7rem .9rem 1rem; display:flex; flex-direction:column; gap:.6rem;
     }
@@ -508,7 +508,6 @@ function ensureCanonicalURLWithToken() {
   } catch {}
 }
 
-
 // ---------- Helpers ----------
 function statusClass(label) {
   switch (label) {
@@ -698,9 +697,7 @@ function ensureHelpMessageVisible() {
 }
 
 // ---------- Past Shifts (overlay + fetch) ----------
-// Updated: keep Past Shifts accessible via the Menu only (no separate header button)
 function ensurePastShiftsButton() {
-  // Ensure menu exists (top-right actions); no standalone "Past Shifts" header button anymore
   ensureMenu();
 }
 function openPastShifts() {
@@ -746,7 +743,6 @@ function openPastShifts() {
     });
 }
 async function fetchPastShifts() {
-  if (!Object.keys(identity).length) throw new Error('Missing identity');
   const { res, json } = await apiGET({ view: 'past14' });
   if (!res.ok || !json || json.ok === false) {
     const msg = (json && json.error) || `HTTP ${res.status}`;
@@ -839,7 +835,6 @@ function ensureMenu() {
       showToast('Failed to send: ' + (e.message || e));
     } finally { hideLoading(); }
   });
-  
 }
 
 // ---------- Welcome / newUserHint ----------
@@ -926,6 +921,10 @@ function openTokenClaimDialog(prefillText='') {
 
 // ---------- Rendering ----------
 function renderTiles() {
+  if (!els.grid) {
+    console.warn('renderTiles(): #grid not found');
+    return;
+  }
   els.grid.innerHTML = '';
   if (!baseline || !baseline.tiles) return;
 
@@ -1132,15 +1131,16 @@ async function autoClaimFromCurrentURLIfPossible() {
 }
 
 async function loadFromServer({ force=false } = {}) {
-  if (!Object.keys(identity).length) {
-    showAuthError('Not an authorised user');
+  // IMPORTANT: allow token-only operation, but require a token
+  if (!authToken()) {
+    showAuthError('Missing or invalid token');
     throw new Error('__AUTH_STOP__');
   }
 
   showLoading();
 
   try {
-    const { res, json, text } = await apiGET({});
+    const { res, json } = await apiGET({});
     // Dedicated busy handling
     if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
       showToast('Server is busy, please try again.');
@@ -1182,7 +1182,7 @@ async function loadFromServer({ force=false } = {}) {
             }
           }
         }
-        // Special: UNAUTHORIZED_TOKEN → iPhone paste flow (only if server hints hadK true)
+        // Special: UNAUTHORIZED_TOKEN → iPhone paste flow
         if (errCode === 'UNAUTHORIZED_TOKEN' || (json && json.error === 'UNAUTHORIZED_TOKEN')) {
           openTokenClaimDialog();
           return;
@@ -1432,12 +1432,6 @@ async function bootstrapTryClaimIfNeeded() {
     await autoClaimFromCurrentURLIfPossible();
   }
 
-  // If still no identity, block
-  if (!identity.k && !identity.msisdn) {
-    showAuthError('Not an authorised user');
-    return;
-  }
-
   // Build overlays/menu early
   ensureLoadingOverlay();
   ensureMenu();
@@ -1462,4 +1456,3 @@ async function bootstrapTryClaimIfNeeded() {
   const tokenClose = document.getElementById('tokenClose');
   if (tokenClose) tokenClose.addEventListener('click', () => closeOverlay('tokenOverlay'));
 })();
-```0
