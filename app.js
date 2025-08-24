@@ -460,12 +460,12 @@ function parseQuery() {
   const search = new URLSearchParams(location.search);
   const hash   = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
 
-  // Gather candidates
-  const qK      = (search.get('k') || '').trim();                // query k (often the BAD one)
-  const hK      = (hash.get('k')   || hash.get('t') || '').trim(); // hash k or t
+  // Gather candidates — keep k and t strictly separate
+  const qK      = (search.get('k') || '').trim();       // query k (often the BAD one)
+  const hK      = (hash.get('k') || '').trim();         // hash k ONLY (never read t as k)
   const hMsisdn = (hash.get('msisdn') || '').trim();
 
-  // Persist API token `t` if present anywhere
+  // Persist API token `t` if present anywhere (but never treat it as k)
   const t = (search.get('t') || hash.get('t') || '').trim();
   if (t) {
     try { sessionStorage.setItem('api_t_override', t); } catch {}
@@ -918,7 +918,9 @@ function openTokenClaimDialog(prefillText='') {
       loadFromServer({ force: true }).catch(e => showToast(e.message || e));
     } catch (e) {
       errorEl.textContent = e.message || String(e);
-    } finally { hideLoading(); }
+    } finally {
+      hideLoading();
+    }
   };
 }
 
@@ -1460,3 +1462,4 @@ async function bootstrapTryClaimIfNeeded() {
   const tokenClose = document.getElementById('tokenClose');
   if (tokenClose) tokenClose.addEventListener('click', () => closeOverlay('tokenOverlay'));
 })();
+```0
