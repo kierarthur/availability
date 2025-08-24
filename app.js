@@ -461,46 +461,62 @@ document.addEventListener('visibilitychange', () => {
 
 // ---------- Query parsing ----------
 function parseQuery() {
-  // Read from both search and hash to support iOS A2HS which often preserves # better than ?.
+  // Read both places
   const search = new URLSearchParams(location.search);
-  const hash = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
+  const hash   = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
 
-  const pick = (key) => (search.get(key)?.trim() || hash.get(key)?.trim() || '');
+  // Gather candidates
+  const qK      = (search.get('k') || '').trim();         // query k (often the BAD one)
+  const hK      = (hash.get('k')   || hash.get('t') || '').trim(); // hash k or t
+  const hMsisdn = (hash.get('msisdn') || '').trim();
 
-  const t = pick('t');
-  const k = pick('k');
-  const msisdn = pick('msisdn');
-
-  // Persist token in BOTH sessionStorage and localStorage (iOS A2HS needs localStorage on first launch).
+  // Persist API token `t` if present anywhere
+  const t = (search.get('t') || hash.get('t') || '').trim();
   if (t) {
     try { sessionStorage.setItem('api_t_override', t); } catch {}
     try { localStorage.setItem(SAVED_TOKEN_KEY, t); } catch {}
   }
 
-  if (k || msisdn) {
-    identity = k ? { k } : { msisdn };
-    saveIdentity(identity); // persist latest identity
+  // Choose the most trustworthy identity:
+  // 1) If we have msisdn in hash, use it.
+  // 2) Else if we have a hash token (k/t), use that.
+  // 3) Else fall back to query k.
+  if (hMsisdn) {
+    identity = { msisdn: hMsisdn };
+  } else if (hK) {
+    identity = { k: hK };
+  } else if (qK) {
+    identity = { k: qK };
   } else {
-    // restore from saved identity when URL has none
+    // No identity in URL → try saved identity
     const saved = loadSavedIdentity();
     identity = (saved.k || saved.msisdn) ? saved : {};
   }
+
+  // Persist what we chose
+  saveIdentity(identity);
 }
 
 // Ensure the current URL (especially when user taps "Add to Home Screen") carries what we need.
+
+
 function ensureCanonicalURLWithToken() {
   try {
-    const token = authToken();
-    const params = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
-    let changed = false;
-    if (token && params.get('t') !== token) { params.set('t', token); changed = true; }
-    if (identity.k && params.get('k') !== identity.k) { params.set('k', identity.k); changed = true; }
-    if (identity.msisdn && params.get('msisdn') !== identity.msisdn) { params.set('msisdn', identity.msisdn); changed = true; }
-    if (changed) {
-      history.replaceState(null, '', location.pathname + location.search + '#' + params.toString());
+    // Build canonical hash params only
+    const params = new URLSearchParams();
+    const token  = authToken();
+    if (token)               params.set('t', token);
+    if (identity.k)          params.set('k', identity.k);
+    if (identity.msisdn)     params.set('msisdn', identity.msisdn);
+
+    // IMPORTANT: remove the querystring entirely (drops bad ?k=…)
+    const newUrl = location.pathname + (params.toString() ? ('#' + params.toString()) : '');
+    if (location.search || location.hash !== ('#' + params.toString())) {
+      history.replaceState(null, '', newUrl);
     }
   } catch {}
 }
+
 
 // ---------- Helpers ----------
 function statusClass(label) {
@@ -520,16 +536,16 @@ function nextStatus(currentLabel) {
 }
 function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
-  els.footer.classList.toggle('hidden', !dirty);
+  if (els.footer) els.footer.classList.toggle('hidden', !dirty);
 
-  // Submit button pulse when dirty (stronger blink)
   if (els.submitBtn) {
     if (dirty) els.submitBtn.classList.add('btn-attention');
     else els.submitBtn.classList.remove('btn-attention');
   }
 
-  sizeGrid(); // harmless with scrolling layout; keeps CSS vars fresh
+  sizeGrid();
 }
+
 function showToast(msg, ms=2800) {
   if (!els.toast) return;
   els.toast.textContent = msg;
@@ -1323,24 +1339,58 @@ function sizeGrid() {
   document.documentElement.style.setProperty('--footer-h', `${footerH}px`);
 }
 
+// ---------- Bootstrap: auto-claim k → msisdn (once) ----------
+async function bootstrapTryClaimIfNeeded() {
+  // If we already have msisdn, nothing to do
+  if (identity && identity.msisdn) return;
+
+  // If we have a token k, try to claim it to get msisdn
+  const k = identity && identity.k;
+  if (!k) return;
+
+  try {
+    const { res, json } = await apiPOST({ action: 'TOKEN_CLAIM', k });
+    if (res.ok && json && json.ok && json.msisdn) {
+      // Prefer msisdn going forward
+      identity = { msisdn: json.msisdn };
+      saveIdentity(identity);
+
+      // After success: strip k and normalise URL to just #t & msisdn
+      const params = new URLSearchParams();
+      const t = authToken();
+      if (t)               params.set('t', t);
+      if (identity.msisdn) params.set('msisdn', identity.msisdn);
+      history.replaceState(null, '', location.pathname + (params.toString() ? '#' + params.toString() : ''));
+    }
+  } catch (e) {
+    // Optional: openTokenClaimDialog(location.href);
+  }
+}
+
 // ---------- Boot ----------
 (async function init() {
+  // Parse URL (prefers #t/#msisdn over ?k) and persist identity/token
   parseQuery();
 
-  // Ensure the URL carries token/identity so A2HS keeps them when added to Home Screen.
+  // Canonicalise URL early (drops any bad ?k=…; keeps only #t & msisdn &/or k if still needed)
   ensureCanonicalURLWithToken();
 
-  // If no k or msisdn provided in URL or storage → deny immediately
+  // Try to claim k→msisdn BEFORE first load (avoids unauthorised loop on mixed URLs)
+  await bootstrapTryClaimIfNeeded();
+
+  // If still no identity, block
   if (!identity.k && !identity.msisdn) {
     showAuthError('Not an authorised user');
     return;
   }
 
-  ensureLoadingOverlay(); // build overlays & menu styles early
-  ensureMenu();           // add top-right menu
+  // Build overlays/menu early
+  ensureLoadingOverlay();
+  ensureMenu();
 
+  // Draft + initial load
   loadDraft();
-  showLoading(); // show immediately on first load
+  showLoading();
   try {
     await loadFromServer({ force: true });
   } catch (e) {
@@ -1348,13 +1398,13 @@ function sizeGrid() {
       showToast('Load failed: ' + e.message, 5000);
     }
   } finally {
-    sizeGrid();           // ensure initial CSS vars
+    sizeGrid();
     equalizeTileHeights();
     hideLoading();
     ensurePastShiftsButton();
   }
 
-  // Wire token dialog buttons (created in ensureLoadingOverlay)
+  // Wire token dialog close (created in ensureLoadingOverlay)
   const tokenClose = document.getElementById('tokenClose');
   if (tokenClose) tokenClose.addEventListener('click', () => closeOverlay('tokenOverlay'));
 })();
