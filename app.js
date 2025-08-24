@@ -794,10 +794,8 @@ function ensureMenu() {
   list.innerHTML = `
     <button class="menu-item" id="miPast">Past Shifts</button>
     <button class="menu-item" id="miHosp">Hospital Addresses</button>
-    <button class="menu-item" id="miAccom">Accommodation Contacts</button>
-    <button class="menu-item" id="miAppInfo">App info</button>
-    <button class="menu-item" id="miTimesheet">Send a timesheet by email</button>
-    <button class="menu-item" id="miLogout">Log out</button>
+    <button class="menu-item" id="miAccom">Accommodation Contacts</button>    
+    <button class="menu-item" id="miTimesheet">Send a timesheet by email</button>    
   `;
   wrap.append(btn, list);
   header.appendChild(wrap);
@@ -814,7 +812,7 @@ function ensureMenu() {
   document.getElementById('miPast').addEventListener('click', () => { list.classList.remove('show'); openPastShifts(); });
   document.getElementById('miHosp').addEventListener('click', () => { list.classList.remove('show'); openContent('HOSPITAL','Hospital Addresses'); });
   document.getElementById('miAccom').addEventListener('click', () => { list.classList.remove('show'); openContent('ACCOMMODATION','Accommodation Contacts'); });
-  document.getElementById('miAppInfo').addEventListener('click', () => { list.classList.remove('show'); openContent('APP_INFO','App info'); });
+  
   document.getElementById('miTimesheet').addEventListener('click', async () => {
     list.classList.remove('show');
     try {
@@ -834,11 +832,7 @@ function ensureMenu() {
       showToast('Failed to send: ' + (e.message || e));
     } finally { hideLoading(); }
   });
-  document.getElementById('miLogout').addEventListener('click', () => {
-    list.classList.remove('show');
-    clearSavedIdentity();
-    showAuthError('Logged out. Please reopen your secure link.');
-  });
+  
 }
 
 // ---------- Welcome / newUserHint ----------
