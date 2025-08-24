@@ -241,11 +241,6 @@ function ensureLoadingOverlay() {
         50%  { opacity: .78; transform: scale(0.99); }
         100% { opacity: 1; transform: scale(1); }
       }
-      @keyframes strongPulse {
-        0%   { opacity: 1; transform: scale(1); }
-        50%  { opacity: .72; transform: scale(1.03); }
-        100% { opacity: 1; transform: scale(1); }
-      }
       .needs-attention { animation: softPulse 1.6s ease-in-out infinite; }
       .btn-attention   { animation: strongPulse 1.0s ease-in-out infinite; }
     }
@@ -466,7 +461,7 @@ function parseQuery() {
   const hash   = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
 
   // Gather candidates
-  const qK      = (search.get('k') || '').trim();         // query k (often the BAD one)
+  const qK      = (search.get('k') || '').trim();                // query k (often the BAD one)
   const hK      = (hash.get('k')   || hash.get('t') || '').trim(); // hash k or t
   const hMsisdn = (hash.get('msisdn') || '').trim();
 
@@ -477,16 +472,14 @@ function parseQuery() {
     try { localStorage.setItem(SAVED_TOKEN_KEY, t); } catch {}
   }
 
-  // Choose the most trustworthy identity:
-  // 1) If we have msisdn in hash, use it.
-  // 2) Else if we have a hash token (k/t), use that.
-  // 3) Else fall back to query k.
-  if (hMsisdn) {
-    identity = { msisdn: hMsisdn };
-  } else if (hK) {
+  // UPDATED PRIORITY:
+  // Prefer a token we can claim, then msisdn, then saved identity.
+  if (hK) {
     identity = { k: hK };
   } else if (qK) {
     identity = { k: qK };
+  } else if (hMsisdn) {
+    identity = { msisdn: hMsisdn };
   } else {
     // No identity in URL → try saved identity
     const saved = loadSavedIdentity();
@@ -498,8 +491,6 @@ function parseQuery() {
 }
 
 // Ensure the current URL (especially when user taps "Add to Home Screen") carries what we need.
-
-
 function ensureCanonicalURLWithToken() {
   try {
     // Build canonical hash params only
@@ -1114,6 +1105,30 @@ function authToken() {
   }
 }
 
+// NEW: auto-claim using the full current URL when we only have #t/#msisdn
+async function autoClaimFromCurrentURLIfPossible() {
+  const full = location.href;
+  try {
+    const { res, json } = await apiPOST({ action: 'TOKEN_CLAIM', userText: full });
+    if (res.ok && json && json.ok && json.msisdn) {
+      if (json.token) {
+        try { localStorage.setItem(SAVED_TOKEN_KEY, json.token); } catch {}
+        try { sessionStorage.setItem('api_t_override', json.token); } catch {}
+      }
+      identity = { msisdn: json.msisdn };
+      saveIdentity(identity);
+      // Canonicalise to #t + msisdn (no ?k)
+      const params = new URLSearchParams();
+      const t = authToken();
+      if (t) params.set('t', t);
+      params.set('msisdn', json.msisdn);
+      history.replaceState(null, '', location.pathname + '#' + params.toString());
+      return true;
+    }
+  } catch {}
+  return false;
+}
+
 async function loadFromServer({ force=false } = {}) {
   if (!Object.keys(identity).length) {
     showAuthError('Not an authorised user');
@@ -1123,7 +1138,7 @@ async function loadFromServer({ force=false } = {}) {
   showLoading();
 
   try {
-    const { res, json } = await apiGET({});
+    const { res, json, text } = await apiGET({});
     // Dedicated busy handling
     if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
       showToast('Server is busy, please try again.');
@@ -1133,6 +1148,38 @@ async function loadFromServer({ force=false } = {}) {
     const errCode = (json && json.error) || '';
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
+        // Attempt recovery if we only have msisdn (hash) and no k
+        if (identity.msisdn && !identity.k) {
+          const healed = await autoClaimFromCurrentURLIfPossible();
+          if (healed) {
+            const retry = await apiGET({});
+            if (retry.res.ok && retry.json && retry.json.ok !== false) {
+              baseline = retry.json;
+              const name =
+                (baseline.candidateName && String(baseline.candidateName).trim()) ||
+                (baseline.candidate && [baseline.candidate.firstName, baseline.candidate.surname].filter(Boolean).join(' ').trim()) ||
+                '';
+              if (els.candidateName) {
+                if (name) {
+                  els.candidateName.textContent = name;
+                  els.candidateName.classList.remove('hidden');
+                } else {
+                  els.candidateName.textContent = '';
+                  els.candidateName.classList.add('hidden');
+                }
+              }
+              saveLastLoaded(baseline.lastLoadedAt || new Date().toISOString());
+              const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
+              for (const k of Object.keys(draft)) {
+                if (!validYmd.has(k)) delete draft[k];
+              }
+              renderTiles();
+              showFooterIfNeeded();
+              maybeShowWelcome();
+              return;
+            }
+          }
+        }
         // Special: UNAUTHORIZED_TOKEN → iPhone paste flow (only if server hints hadK true)
         if (errCode === 'UNAUTHORIZED_TOKEN' || (json && json.error === 'UNAUTHORIZED_TOKEN')) {
           openTokenClaimDialog();
@@ -1369,7 +1416,7 @@ async function bootstrapTryClaimIfNeeded() {
 
 // ---------- Boot ----------
 (async function init() {
-  // Parse URL (prefers #t/#msisdn over ?k) and persist identity/token
+  // Parse URL (now prefers token over msisdn) and persist identity/token
   parseQuery();
 
   // Canonicalise URL early (drops any bad ?k=…; keeps only #t & msisdn &/or k if still needed)
@@ -1377,6 +1424,11 @@ async function bootstrapTryClaimIfNeeded() {
 
   // Try to claim k→msisdn BEFORE first load (avoids unauthorised loop on mixed URLs)
   await bootstrapTryClaimIfNeeded();
+
+  // If we only have msisdn (from #msisdn) and no saved API token yet, try to auto-claim from the full URL
+  if (identity.msisdn && !identity.k && !localStorage.getItem(SAVED_TOKEN_KEY)) {
+    await autoClaimFromCurrentURLIfPossible();
+  }
 
   // If still no identity, block
   if (!identity.k && !identity.msisdn) {
