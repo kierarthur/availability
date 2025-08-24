@@ -280,7 +280,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(pastOverlay);
 
-  // Content overlay for server HTML (addresses, accommodation)
+  // Content overlay for server HTML (addresses, accommodation, app info)
   const contentOverlay = document.createElement('div');
   contentOverlay.id = 'contentOverlay';
   contentOverlay.innerHTML = `
@@ -691,21 +691,10 @@ function ensureHelpMessageVisible() {
 }
 
 // ---------- Past Shifts (overlay + fetch) ----------
+// Updated: keep Past Shifts accessible via the Menu only (no separate header button)
 function ensurePastShiftsButton() {
-  const header = document.querySelector('header');
-  if (!header) return;
-  // Ensure menu exists (top-right actions)
+  // Ensure menu exists (top-right actions); no standalone "Past Shifts" header button anymore
   ensureMenu();
-
-  // Also keep the dedicated Past Shifts button if desired (optional)
-  if (!document.getElementById('pastBtn')) {
-    const btn = document.createElement('button');
-    btn.id = 'pastBtn';
-    btn.textContent = 'Past Shifts';
-    btn.setAttribute('aria-haspopup', 'dialog');
-    header.insertBefore(btn, els.refreshBtn || header.lastChild);
-    btn.addEventListener('click', openPastShifts);
-  }
 }
 function openPastShifts() {
   ensureLoadingOverlay();
@@ -759,7 +748,7 @@ async function fetchPastShifts() {
   return json.items || [];
 }
 
-// ---------- Content overlay (Addresses / Accommodation) ----------
+// ---------- Content overlay (Addresses / Accommodation / App info) ----------
 async function openContent(kind, titleFallback) {
   ensureLoadingOverlay();
   const titleEl = document.getElementById('contentTitle');
@@ -806,7 +795,8 @@ function ensureMenu() {
     <button class="menu-item" id="miPast">Past Shifts</button>
     <button class="menu-item" id="miHosp">Hospital Addresses</button>
     <button class="menu-item" id="miAccom">Accommodation Contacts</button>
-    <button class="menu-item" id="miTimesheet">Send Timesheet</button>
+    <button class="menu-item" id="miAppInfo">App info</button>
+    <button class="menu-item" id="miTimesheet">Send a timesheet by email</button>
     <button class="menu-item" id="miLogout">Log out</button>
   `;
   wrap.append(btn, list);
@@ -824,6 +814,7 @@ function ensureMenu() {
   document.getElementById('miPast').addEventListener('click', () => { list.classList.remove('show'); openPastShifts(); });
   document.getElementById('miHosp').addEventListener('click', () => { list.classList.remove('show'); openContent('HOSPITAL','Hospital Addresses'); });
   document.getElementById('miAccom').addEventListener('click', () => { list.classList.remove('show'); openContent('ACCOMMODATION','Accommodation Contacts'); });
+  document.getElementById('miAppInfo').addEventListener('click', () => { list.classList.remove('show'); openContent('APP_INFO','App info'); });
   document.getElementById('miTimesheet').addEventListener('click', async () => {
     list.classList.remove('show');
     try {
