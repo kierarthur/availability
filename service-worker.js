@@ -1,6 +1,7 @@
 // sw.js
 // PWA service worker for Availability app
 
+
 // Bump this any time you change assets or caching logic
 const CACHE_NAME = 'rota-avail-v3';
 
