@@ -1,5 +1,5 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbzRLn5a8U3UptUHoFYGJnU1KOsd46KBtlfXgCPjo0v1Iv1KyzO0fZUwx64_cZL_J1iJOA/exec'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbykreZJimZMNThWJ0HBfIruhHVbnV-kubtYjwkchPXjpAM4G0Jefz5pYNg4sq1dmyGTXA/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
@@ -165,6 +165,23 @@ function getRememberedEmail() {
   try { return localStorage.getItem(LAST_EMAIL_KEY) || ''; } catch { return ''; }
 }
 
+// ===== Overlay config (dismiss/blocks-other) =====
+const OVERLAY_CONFIG = {
+  pastOverlay:     { dismissible: true,  blocking: false },
+  contentOverlay:  { dismissible: true,  blocking: false },
+  welcomeOverlay:  { dismissible: false, blocking: true  }, // MUST press “Got it”
+  loginOverlay:    { dismissible: true,  blocking: false },
+  forgotOverlay:   { dismissible: true,  blocking: false },
+  resetOverlay:    { dismissible: false, blocking: true  }  // MUST complete/reset flow
+};
+function isBlockingOverlayOpen() {
+  const ids = Object.keys(OVERLAY_CONFIG).filter(id => OVERLAY_CONFIG[id].blocking === true);
+  return ids.some(id => {
+    const el = document.getElementById(id);
+    return el && el.classList.contains('show');
+  });
+}
+
 // ------- Loading overlay + shared styles -------
 let _loadingCount = 0;
 function ensureLoadingOverlay() {
@@ -298,7 +315,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(wrap);
 
-  // Past Shifts overlay
+  // Past Shifts overlay (dismissible)
   const pastOverlay = document.createElement('div');
   pastOverlay.id = 'pastOverlay';
   pastOverlay.innerHTML = `
@@ -312,7 +329,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(pastOverlay);
 
-  // Content overlay
+  // Content overlay (dismissible)
   const contentOverlay = document.createElement('div');
   contentOverlay.id = 'contentOverlay';
   contentOverlay.innerHTML = `
@@ -326,14 +343,13 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(contentOverlay);
 
-  // Welcome/Alert overlay
+  // Welcome/Alert overlay (NON‑dismissable: no close button)
   const welcomeOverlay = document.createElement('div');
   welcomeOverlay.id = 'welcomeOverlay';
   welcomeOverlay.innerHTML = `
     <div id="welcomeSheet" class="sheet" role="dialog" aria-modal="true" aria-label="Welcome">
       <div class="sheet-header">
         <div id="welcomeTitle" class="sheet-title">Welcome</div>
-        <button id="welcomeClose" class="sheet-close" aria-label="Close">✕</button>
       </div>
       <div id="welcomeBody" class="sheet-body" tabindex="0"></div>
       <div style="display:flex;justify-content:flex-end;gap:.5rem;padding:.5rem .9rem 1rem;">
@@ -343,7 +359,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(welcomeOverlay);
 
-  // Login overlay
+  // Login overlay (dismissible)
   const loginOverlay = document.createElement('div');
   loginOverlay.id = 'loginOverlay';
   loginOverlay.innerHTML = `
@@ -375,7 +391,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(loginOverlay);
 
-  // Forgot overlay
+  // Forgot overlay (dismissible)
   const forgotOverlay = document.createElement('div');
   forgotOverlay.id = 'forgotOverlay';
   forgotOverlay.innerHTML = `
@@ -400,14 +416,13 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(forgotOverlay);
 
-  // Reset overlay (for ?k=… links) — UPDATED with confirm + eye toggles
+  // Reset overlay (NON‑dismissable: no close button)
   const resetOverlay = document.createElement('div');
   resetOverlay.id = 'resetOverlay';
   resetOverlay.innerHTML = `
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Set new password">
       <div class="sheet-header">
         <div class="sheet-title">Set a new password</div>
-        <button id="resetClose" class="sheet-close" aria-label="Close">✕</button>
       </div>
       <div class="sheet-body">
         <form id="resetForm" autocomplete="on">
@@ -436,53 +451,88 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(resetOverlay);
 
-  // Shared overlay wiring (click-outside & esc)
-  ;[
-    { overlayId:'pastOverlay', closeId:'pastClose' },
+  // Shared overlay wiring — respect dismissibility
+  [
+    { overlayId:'pastOverlay',    closeId:'pastClose' },
     { overlayId:'contentOverlay', closeId:'contentClose' },
-    { overlayId:'welcomeOverlay', closeId:'welcomeClose' },
-    { overlayId:'loginOverlay', closeId:'loginClose' },
-    { overlayId:'forgotOverlay', closeId:'forgotClose' },
-    { overlayId:'resetOverlay', closeId:'resetClose' },
+    // welcomeOverlay: NO closeId (non‑dismissable)
+    { overlayId:'loginOverlay',   closeId:'loginClose' },
+    { overlayId:'forgotOverlay',  closeId:'forgotClose' }
+    // resetOverlay: NO closeId (non‑dismissable)
   ].forEach(({overlayId, closeId}) => {
     const overlay = document.getElementById(overlayId);
-    overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(overlayId); });
-    document.getElementById(closeId).addEventListener('click', () => closeOverlay(overlayId));
-  });
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      ['pastOverlay','contentOverlay','welcomeOverlay','loginOverlay','forgotOverlay','resetOverlay'].forEach(id => {
-        const ov = document.getElementById(id);
-        if (ov && ov.classList.contains('show')) closeOverlay(id);
-      });
+    const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
+    if (!overlay) return;
+
+    // Backdrop click → only if dismissible
+    overlay.addEventListener('click', (e) => {
+      if (e.target !== overlay) return;
+      if (!cfg.dismissible) { e.stopPropagation(); return; }
+      closeOverlay(overlayId);
+    });
+
+    // Close button → only wired if exists and dismissible
+    if (closeId) {
+      const btn = document.getElementById(closeId);
+      if (btn) {
+        btn.addEventListener('click', () => {
+          if (!cfg.dismissible) return;
+          closeOverlay(overlayId);
+        });
+      }
     }
+  });
+
+  // Global Escape → only closes dismissible overlays
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    ['pastOverlay','contentOverlay','welcomeOverlay','loginOverlay','forgotOverlay','resetOverlay'].forEach(id => {
+      const ov = document.getElementById(id);
+      const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
+      if (ov && ov.classList.contains('show') && cfg.dismissible) closeOverlay(id);
+    });
   });
 
   // Wire auth forms
   wireAuthForms();
 }
 
+// ----- Overlay open/close with config awareness -----
 function openOverlay(overlayId, focusSel) {
   ensureLoadingOverlay();
   const overlay = document.getElementById(overlayId);
   if (!overlay) return;
+
+  const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
+  overlay.dataset.dismissible = String(!!cfg.dismissible);
+  overlay.dataset.blocking = String(!!cfg.blocking);
+
   overlay.classList.add('show');
   overlay.dataset.prevFocus = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
-  const focusEl = focusSel ? overlay.querySelector(focusSel) : overlay.querySelector('.sheet-close');
+  const focusEl = focusSel ? overlay.querySelector(focusSel) : overlay.querySelector('.sheet-close') || overlay.querySelector('[tabindex],input,button,select,textarea');
   focusEl && focusEl.focus();
+
+  // When blocking is active, prevent other overlays from opening later
   trapFocus(overlay);
 }
-function closeOverlay(overlayId) {
+
+function closeOverlay(overlayId, force=false) {
   const overlay = document.getElementById(overlayId);
   if (!overlay) return;
+
+  const dismissible = overlay.dataset.dismissible !== 'false';
+  if (!dismissible && !force) return; // honor non‑dismissable unless force=true (e.g., Got it)
+
   overlay.classList.remove('show');
   releaseFocusTrap(overlay);
+
   const prev = overlay.dataset.prevFocus;
   if (prev) {
     const el = document.getElementById(prev);
     if (el) el.focus();
   }
 }
+
 function trapFocus(container) {
   const selectors = [
     'a[href]','area[href]','input:not([disabled])','select:not([disabled])','textarea:not([disabled])',
@@ -702,7 +752,6 @@ function fitStatusLabel(el) {
   }
   measurer.remove();
 }
-
 // ---------- Submit nudge ----------
 function cancelSubmitNudge() {
   if (submitNudgeTimer) {
@@ -740,6 +789,7 @@ function ensurePastShiftsButton() {
   ensureMenu();
 }
 function openPastShifts() {
+  if (isBlockingOverlayOpen()) return; // guard against blocking modals
   ensureLoadingOverlay();
   const list = document.getElementById('pastList');
   if (!list) return;
@@ -792,6 +842,7 @@ async function fetchPastShifts() {
 
 // ---------- Content overlay ----------
 async function openContent(kind, titleFallback) {
+  if (isBlockingOverlayOpen()) return; // guard against blocking modals
   ensureLoadingOverlay();
   const titleEl = document.getElementById('contentTitle');
   const bodyEl  = document.getElementById('contentBody');
@@ -846,6 +897,7 @@ function ensureMenu() {
 
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
+    if (isBlockingOverlayOpen()) return; // don't open dropdown over blocking modal
     list.classList.toggle('show');
   });
   document.addEventListener('click', () => list.classList.remove('show'));
@@ -859,6 +911,7 @@ function ensureMenu() {
 
   document.getElementById('miTimesheet').addEventListener('click', async () => {
     list.classList.remove('show');
+    if (isBlockingOverlayOpen()) return;
     try {
       showLoading('Sending timesheet...');
       const { res, json } = await apiPOST({ action:'SEND_TIMESHEET' });
@@ -880,10 +933,10 @@ function ensureMenu() {
   // Change password: send a reset link to the known email
   document.getElementById('miChangePw').addEventListener('click', async () => {
     list.classList.remove('show');
+    if (isBlockingOverlayOpen()) return;
     const email = (baseline && baseline.candidate && baseline.candidate.email) ||
                   getRememberedEmail();
     if (!email) {
-      // If we don’t know the email, open the Forgot flow
       openForgotOverlay();
       return;
     }
@@ -900,6 +953,7 @@ function ensureMenu() {
 
   document.getElementById('miLogout').addEventListener('click', () => {
     list.classList.remove('show');
+    if (isBlockingOverlayOpen()) return;
     clearSavedIdentity();
     draft = {}; persistDraft();
     baseline = null;
@@ -921,22 +975,32 @@ function maybeShowWelcome() {
   openOverlay('welcomeOverlay', '#welcomeDismiss');
 
   const dismiss = document.getElementById('welcomeDismiss');
+  // Make CTA more prominent
+  dismiss.style.background = '#1b2331';
+  dismiss.style.fontWeight = '800';
+  dismiss.style.border = '1px solid #2a3446';
+  dismiss.style.padding = '.6rem 1rem';
+  dismiss.style.borderRadius = '10px';
+
   dismiss.onclick = async () => {
     try { await apiPOST({ action:'MARK_MESSAGE_SEEN' }); } catch {}
-    closeOverlay('welcomeOverlay');
+    closeOverlay('welcomeOverlay', /* force */ true);
   };
 }
 
 // ---------- Auth overlays logic ----------
 function openLoginOverlay() {
+  if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
   const email = getRememberedEmail();
   const le = document.getElementById('loginEmail');
+  const lp = document.getElementById('loginPassword');
   const lerr = document.getElementById('loginErr');
   if (le) le.value = email;
   if (lerr) lerr.textContent = '';
-  openOverlay('loginOverlay', '#loginEmail');
+  openOverlay('loginOverlay', email ? '#loginPassword' : '#loginEmail');
 }
 function openForgotOverlay() {
+  if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
   const fe = document.getElementById('forgotEmail');
   const fmsg = document.getElementById('forgotMsg');
   if (fe) fe.value = getRememberedEmail();
@@ -944,6 +1008,7 @@ function openForgotOverlay() {
   openOverlay('forgotOverlay', '#forgotEmail');
 }
 function openResetOverlay() {
+  // Non-dismissable by config; keep user inside until completion
   const rerr = document.getElementById('resetErr');
   const rp = document.getElementById('resetPassword');
   const rc = document.getElementById('resetConfirm');
@@ -1019,7 +1084,7 @@ function wireAuthForms() {
     }
   });
 
-  // Reset — UPDATED with confirm + validation + reveal toggles
+  // Reset — confirm + validation + reveal toggles
   const rf   = document.getElementById('resetForm');
   const rp   = document.getElementById('resetPassword');
   const rc   = document.getElementById('resetConfirm');
@@ -1108,7 +1173,9 @@ function wireAuthForms() {
       // Strip ?k=… from URL (reset is one-time)
       const clean = location.pathname + (location.hash || '');
       history.replaceState(null, '', clean);
-      closeOverlay('resetOverlay');
+
+      // Force-close non-dismissable overlay after success
+      closeOverlay('resetOverlay', /* force */ true);
       showToast('Password updated. Please sign in.');
       openLoginOverlay();
 
@@ -1305,6 +1372,7 @@ function escapeHtml(s) {
     .replace(/</g,'&lt;')
     .replace(/>/g,'&gt;');
 }
+
 // ---------- API shared token ----------
 function authToken() {
   // Allow override via #t or ?t if you ever need it, else fallback to shared token.
@@ -1324,8 +1392,8 @@ async function loadFromServer({ force=false } = {}) {
     throw new Error('__AUTH_STOP__');
   }
   if (!identity || !identity.msisdn) {
-    // Not signed in yet; show login if not already visible
-    openLoginOverlay();
+    // Not signed in yet; show login if not already visible (but not over blocking modals)
+    if (!isBlockingOverlayOpen()) openLoginOverlay();
     return;
   }
 
@@ -1356,7 +1424,7 @@ async function loadFromServer({ force=false } = {}) {
       ]);
       if (unauthErrors.has(errCode)) {
         clearSavedIdentity();
-        openLoginOverlay();
+        if (!isBlockingOverlayOpen()) openLoginOverlay();
         return;
       }
       throw new Error(errCode || 'SERVER_ERROR');
@@ -1431,7 +1499,7 @@ async function submitChanges() {
       ]);
       if (json && unauthErrors.has(json.error)) {
         clearSavedIdentity();
-        openLoginOverlay();
+        if (!isBlockingOverlayOpen()) openLoginOverlay();
         throw new Error('__AUTH_STOP__');
       }
       const msg = (json && json.error) || `HTTP ${res.status}`;
@@ -1525,6 +1593,9 @@ function routeFromURL() {
   const hash = location.hash || '';
   const hasMsisdn = !!(identity && identity.msisdn);
 
+  // If a blocking overlay is active, ignore route changes
+  if (isBlockingOverlayOpen()) return;
+
   // If a reset token is present in the QUERY (?k=...), show reset
   const k = new URLSearchParams(location.search).get('k');
   if (k) { openResetOverlay(); return; }
@@ -1546,14 +1617,14 @@ window.addEventListener('hashchange', routeFromURL);
   ensureLoadingOverlay();
   ensureMenu();
 
-  // If reset link present, show reset
+  // If reset link present, show reset (blocking)
   const hasK = new URLSearchParams(location.search).has('k');
   if (hasK) {
     openResetOverlay();
   } else if (!identity.msisdn) {
     // Attempt silent auto‑sign‑in on Android/Chrome
     const autoOK = await tryAutoLoginViaCredentialsAPI();
-    if (!autoOK) openLoginOverlay();
+    if (!autoOK && !isBlockingOverlayOpen()) openLoginOverlay();
   }
 
   // Draft + initial load (only if already signed in)
