@@ -1,7 +1,7 @@
 {
-  "name": "Availability (14 days)",
-  "short_name": "Availability",
-  "start_url": "./",
+  "name": "Arthur Rai",
+  "short_name": "Arthur Rai",
+  "start_url": "./?v=2",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
