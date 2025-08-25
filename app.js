@@ -1,4 +1,3 @@
-<script>
 /* ====== CONFIG — replace these with your values ====== */
 const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbzHThxQpC4_TKYXcW4R4MP7yWLSL3EirMfsOZNpw5_92CPr4NYCg30Ef-0IK7VbilaKiA/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
@@ -1577,4 +1576,3 @@ window.addEventListener('hashchange', routeFromURL);
 
   routeFromURL();
 })();
-</script>
