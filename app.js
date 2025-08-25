@@ -1,5 +1,5 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbyv4fFIQPT09RvmD9Iar4ZGweuW3CVPN-JfOnhktAtHfbphAtB3oxcozbBHgrV7jdes7A/exec'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbztdWnm2db9aRRFz2zfXSgcIbKRtlYSbA87pYbJ-ZvDZLFFz4HZBiStHk5UW8KV4ITAdQ/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
