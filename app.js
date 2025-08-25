@@ -1,5 +1,6 @@
+<script>
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbztdWnm2db9aRRFz2zfXSgcIbKRtlYSbA87pYbJ-ZvDZLFFz4HZBiStHk5UW8KV4ITAdQ/exec'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbzHThxQpC4_TKYXcW4R4MP7yWLSL3EirMfsOZNpw5_92CPr4NYCg30Ef-0IK7VbilaKiA/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
@@ -271,6 +272,19 @@ function ensureLoadingOverlay() {
       border-radius:8px; border:1px solid #222936; background:#0b0e14; color:#e7ecf3;
       padding:.6rem; width:100%;
     }
+
+    /* Input-with-button row for reveal eye */
+    .input-row {
+      display:flex; gap:.4rem; align-items:center;
+    }
+    .input-row input {
+      flex:1 1 auto;
+    }
+    .icon-btn {
+      appearance:none; border:1px solid #2a3446; background:#131926; color:#e7ecf3;
+      border-radius:8px; padding:.45rem .6rem; font-weight:700; cursor:pointer;
+    }
+    .icon-btn[aria-pressed="true"] { background:#1b2331; }
   `;
   document.head.appendChild(style);
 
@@ -387,7 +401,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(forgotOverlay);
 
-  // Reset overlay (for ?k=… links)
+  // Reset overlay (for ?k=… links) — UPDATED with confirm + eye toggles
   const resetOverlay = document.createElement('div');
   resetOverlay.id = 'resetOverlay';
   resetOverlay.innerHTML = `
@@ -399,12 +413,21 @@ function ensureLoadingOverlay() {
       <div class="sheet-body">
         <form id="resetForm" autocomplete="on">
           <label for="resetPassword">New password</label>
-          <input id="resetPassword" type="password" autocomplete="new-password"
-                 minlength="8" required />
+          <div class="input-row">
+            <input id="resetPassword" type="password" autocomplete="new-password" minlength="8" required />
+            <button id="resetPwReveal" type="button" class="icon-btn" aria-pressed="false" aria-label="Show password" title="Show password">👁</button>
+          </div>
           <div class="muted" style="margin:.2rem 0 .6rem">
             Use at least 8 characters with uppercase, lowercase, and a number.
           </div>
-          <div style="display:flex;gap:.6rem;">
+
+          <label for="resetConfirm">Confirm new password</label>
+          <div class="input-row">
+            <input id="resetConfirm" type="password" autocomplete="new-password" minlength="8" required />
+            <button id="resetConfirmReveal" type="button" class="icon-btn" aria-pressed="false" aria-label="Show password" title="Show password">👁</button>
+          </div>
+
+          <div style="display:flex;gap:.6rem;margin-top:.8rem;">
             <button id="resetSubmit" class="menu-item" style="border:1px solid #2a3446;">Update password</button>
           </div>
           <div id="resetErr" class="muted" role="alert" style="margin-top:.4rem;"></div>
@@ -923,8 +946,20 @@ function openForgotOverlay() {
 }
 function openResetOverlay() {
   const rerr = document.getElementById('resetErr');
+  const rp = document.getElementById('resetPassword');
+  const rc = document.getElementById('resetConfirm');
+  const rs = document.getElementById('resetSubmit');
   if (rerr) rerr.textContent = '';
+  if (rp) rp.value = '';
+  if (rc) rc.value = '';
+  if (rs) rs.disabled = true; // disabled until validated
   openOverlay('resetOverlay', '#resetPassword');
+
+  // If token is missing, inform the user and keep button disabled
+  const k = new URLSearchParams(location.search).get('k');
+  if (!k && rerr) {
+    rerr.textContent = 'This reset link is invalid or missing.';
+  }
 }
 
 function wireAuthForms() {
@@ -985,20 +1020,77 @@ function wireAuthForms() {
     }
   });
 
-  // Reset
+  // Reset — UPDATED with confirm + validation + reveal toggles
   const rf   = document.getElementById('resetForm');
   const rp   = document.getElementById('resetPassword');
+  const rc   = document.getElementById('resetConfirm');
   const rs   = document.getElementById('resetSubmit');
   const rerr = document.getElementById('resetErr');
+  const pwEye = document.getElementById('resetPwReveal');
+  const cfEye = document.getElementById('resetConfirmReveal');
+
+  function meetsPolicy(pw) {
+    return !!(pw && pw.length >= 8 && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw));
+  }
+  function same(p, c) {
+    return p === c && p.length > 0;
+  }
+  function validateReset() {
+    const k = new URLSearchParams(location.search).get('k') || '';
+    const p = rp ? rp.value : '';
+    const c = rc ? rc.value : '';
+    let ok = true;
+    let msg = '';
+
+    if (!k) {
+      ok = false;
+      msg = 'This reset link is invalid or missing.';
+    } else if (!meetsPolicy(p)) {
+      ok = false;
+      msg = 'Use at least 8 chars with uppercase, lowercase, and a number.';
+    } else if (!same(p, c)) {
+      ok = false;
+      msg = "Passwords don't match.";
+    }
+
+    if (rerr) rerr.textContent = msg;
+    if (rs) rs.disabled = !ok;
+    return ok;
+  }
+
+  // Live validation on input
+  rp?.addEventListener('input', validateReset);
+  rc?.addEventListener('input', validateReset);
+
+  // Eye toggles
+  pwEye?.addEventListener('click', () => {
+    const isText = rp.type === 'text';
+    rp.type = isText ? 'password' : 'text';
+    pwEye.setAttribute('aria-pressed', String(!isText));
+    pwEye.setAttribute('aria-label', isText ? 'Show password' : 'Hide password');
+    pwEye.title = isText ? 'Show password' : 'Hide password';
+    rp.focus({ preventScroll: true });
+  });
+  cfEye?.addEventListener('click', () => {
+    const isText = rc.type === 'text';
+    rc.type = isText ? 'password' : 'text';
+    cfEye.setAttribute('aria-pressed', String(!isText));
+    cfEye.setAttribute('aria-label', isText ? 'Show password' : 'Hide password');
+    cfEye.title = isText ? 'Show password' : 'Hide password';
+    rc.focus({ preventScroll: true });
+  });
+
+  // Submit handler
   rf?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    if (!validateReset()) return;
+
     const pw = rp.value || '';
-    if (!pw || pw.length < 8 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) {
-      rerr.textContent = 'Use at least 8 chars with uppercase, lowercase, and a number.';
+    const k = new URLSearchParams(location.search).get('k') || '';
+    if (!k) {
+      if (rerr) rerr.textContent = 'This reset link is invalid or missing.';
       return;
     }
-    const k = new URLSearchParams(location.search).get('k') || '';
-    if (!k) { rerr.textContent = 'This reset link is invalid or missing.'; return; }
 
     try {
       rs.disabled = true; showLoading('Updating...');
@@ -1007,6 +1099,8 @@ function wireAuthForms() {
         const msg = (json && json.error) || `HTTP ${res.status}`;
         if (msg === 'INVALID_OR_EXPIRED_RESET') {
           rerr.textContent = 'This link has expired. Please request a new one.';
+        } else if (msg === 'WEAK_PASSWORD') {
+          rerr.textContent = 'Use at least 8 chars with uppercase, lowercase, and a number.';
         } else {
           rerr.textContent = msg || 'Could not update password.';
         }
@@ -1018,6 +1112,11 @@ function wireAuthForms() {
       closeOverlay('resetOverlay');
       showToast('Password updated. Please sign in.');
       openLoginOverlay();
+
+      // Clear fields
+      rp.value = '';
+      rc.value = '';
+      rs.disabled = true;
     } finally {
       hideLoading(); rs.disabled = false;
     }
@@ -1207,7 +1306,6 @@ function escapeHtml(s) {
     .replace(/</g,'&lt;')
     .replace(/>/g,'&gt;');
 }
-
 // ---------- API shared token ----------
 function authToken() {
   // Allow override via #t or ?t if you ever need it, else fallback to shared token.
@@ -1479,3 +1577,4 @@ window.addEventListener('hashchange', routeFromURL);
 
   routeFromURL();
 })();
+</script>
