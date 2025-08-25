@@ -14,7 +14,7 @@ const STATUS_ORDER = [
   'LONG DAY/NIGHT'
 ];
 const STATUS_TO_CODE = {
-  [PENDING_LABEL_DEFAULT]: '',     // blank (white)D
+  [PENDING_LABEL_DEFAULT]: '',     // blank (white)
   'NOT AVAILABLE':        'N/A',   // red
   'LONG DAY':             'LD',    // yellow
   'NIGHT':                'N',     // yellow
@@ -80,7 +80,7 @@ function showAuthError(message = 'Not an authorised user') {
 }
 
 // ---------- State ----------
-let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate, newUserHint?)
+let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate, newUserHint? / iOS/Android variants)
 let draft = {};               // ymd -> status LABEL (diffs from baseline)
 let identity = {};            // { msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
@@ -170,7 +170,8 @@ const OVERLAY_CONFIG = {
   pastOverlay:     { dismissible: true,  blocking: false },
   contentOverlay:  { dismissible: true,  blocking: false },
   welcomeOverlay:  { dismissible: false, blocking: true  }, // MUST press “Got it”
-  loginOverlay:    { dismissible: true,  blocking: false },
+  // Login is truly blocking & non‑dismissable
+  loginOverlay:    { dismissible: false, blocking: true  },
   forgotOverlay:   { dismissible: true,  blocking: false },
   resetOverlay:    { dismissible: false, blocking: true  }  // MUST complete/reset flow
 };
@@ -189,6 +190,15 @@ function ensureLoadingOverlay() {
 
   const style = document.createElement('style');
   style.textContent = `
+    :root{
+      /* Brand theming for login + reset */
+      --brand-blue-dk: #0b254a;        /* adjust to your logo blue */
+      --brand-blue-dk-95: #0d2b56;     /* slightly lighter for headers/bands */
+      --border-white: #ffffff;
+      --text-on-blue: #eaf0f7;
+      --muted-on-blue: #c7d3e5;
+    }
+
     #loadingOverlay {
       position: fixed; inset: 0; z-index: 9999;
       display: flex; align-items: center; justify-content: center;
@@ -250,6 +260,62 @@ function ensureLoadingOverlay() {
     .past-date { font-weight:800; margin-bottom:.15rem; color:#e7ecf3; }
     .muted { color:#a7b0c0; }
 
+    /* ===== Themed look for LOGIN + RESET sheets (dark blue + white borders) ===== */
+    #loginOverlay .sheet,
+    #resetOverlay .sheet {
+      background: var(--brand-blue-dk);
+      color: var(--text-on-blue);
+      border: 2px solid var(--border-white);
+      box-shadow: 0 16px 40px rgba(0,0,0,.5);
+    }
+    #loginOverlay .sheet-header,
+    #resetOverlay .sheet-header {
+      background: var(--brand-blue-dk-95);
+      border-bottom: 1px solid rgba(255,255,255,0.4);
+    }
+    #loginOverlay .sheet-title,
+    #resetOverlay .sheet-title {
+      color: #ffffff;
+    }
+    #loginOverlay .sheet-body,
+    #resetOverlay .sheet-body {
+      color: var(--text-on-blue);
+    }
+    #loginOverlay .muted,
+    #resetOverlay .muted {
+      color: var(--muted-on-blue);
+    }
+    #loginOverlay .sheet-body label,
+    #resetOverlay .sheet-body label {
+      color: var(--text-on-blue);
+    }
+    #loginOverlay .sheet-body input,
+    #resetOverlay .sheet-body input {
+      background: rgba(0,0,0,0.25);
+      border: 1px solid rgba(255,255,255,0.55);
+      color: #ffffff;
+    }
+    #loginOverlay .sheet-body input:focus,
+    #resetOverlay .sheet-body input:focus {
+      outline: 2px solid #ffffff;
+      outline-offset: 1px;
+      border-color: #ffffff;
+    }
+    #loginOverlay .icon-btn,
+    #resetOverlay .icon-btn,
+    #loginOverlay .menu-item,
+    #resetOverlay .menu-item {
+      border-color: #ffffff !important;
+      color: #ffffff !important;
+      background: transparent;
+    }
+    #loginOverlay .menu-item:hover,
+    #resetOverlay .menu-item:hover,
+    #loginOverlay .icon-btn[aria-pressed="true"],
+    #resetOverlay .icon-btn[aria-pressed="true"] {
+      background: rgba(255,255,255,0.12) !important;
+    }
+
     /* Menu dropdown */
     #menuWrap { position: relative; margin-left: auto; }
     #menuBtn {
@@ -282,7 +348,7 @@ function ensureLoadingOverlay() {
 
     .attention-border { border-color: var(--danger) !important; }
 
-    /* Simple form inputs */
+    /* Simple form inputs (default look for non-themed sheets) */
     .sheet-body label { font-weight:700; font-size:.9rem; margin-top:.2rem; }
     .sheet-body input {
       border-radius:8px; border:1px solid #222936; background:#0b0e14; color:#e7ecf3;
@@ -359,14 +425,13 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(welcomeOverlay);
 
-  // Login overlay (dismissible)
+  // Login overlay (NON‑dismissable + BLOCKING) — NO close button
   const loginOverlay = document.createElement('div');
   loginOverlay.id = 'loginOverlay';
   loginOverlay.innerHTML = `
     <div class="sheet" role="dialog" aria-modal="true" aria-label="Sign in">
       <div class="sheet-header">
         <div class="sheet-title">Sign in</div>
-        <button id="loginClose" class="sheet-close" aria-label="Close">✕</button>
       </div>
       <div class="sheet-body">
         <form id="loginForm" autocomplete="on">
@@ -456,7 +521,7 @@ function ensureLoadingOverlay() {
     { overlayId:'pastOverlay',    closeId:'pastClose' },
     { overlayId:'contentOverlay', closeId:'contentClose' },
     // welcomeOverlay: NO closeId (non‑dismissable)
-    { overlayId:'loginOverlay',   closeId:'loginClose' },
+    // loginOverlay: NON‑dismissable (no close button, do NOT wire)
     { overlayId:'forgotOverlay',  closeId:'forgotClose' }
     // resetOverlay: NO closeId (non‑dismissable)
   ].forEach(({overlayId, closeId}) => {
@@ -574,19 +639,107 @@ function hideLoading() {
   if (_loadingCount === 0) overlay.classList.add('hidden');
 }
 
-// ---------- PWA install prompt ----------
+/* ---------- PWA install prompt (improved) ---------- */
 let deferredPrompt = null;
+
+function isStandalone() {
+  try {
+    return (window.matchMedia && window.matchMedia('(display-mode: standalone)').matches) ||
+           (typeof navigator !== 'undefined' && 'standalone' in navigator && navigator.standalone === true);
+  } catch { return false; }
+}
+
+function isiOS() {
+  const ua = navigator.userAgent || navigator.vendor || window.opera || '';
+  return /iphone|ipad|ipod/i.test(ua);
+}
+function isAndroid() {
+  const ua = navigator.userAgent || navigator.vendor || window.opera || '';
+  return /android/i.test(ua);
+}
+
+// Fallback overlay with quick instructions (iOS / no BIP event)
+function openInstallInstructions() {
+  if (isBlockingOverlayOpen()) return;
+  ensureLoadingOverlay();
+  const titleEl = document.getElementById('contentTitle');
+  const bodyEl  = document.getElementById('contentBody');
+  if (!titleEl || !bodyEl) return;
+  titleEl.textContent = 'Install this app';
+  const iosSteps = `
+    <ol>
+      <li>Tap the <strong>Share</strong> icon in Safari.</li>
+      <li>Choose <strong>Add to Home Screen</strong>.</li>
+      <li>Tap <strong>Add</strong>.</li>
+    </ol>
+  `;
+  const androidSteps = `
+    <ol>
+      <li>Open browser menu (⋮).</li>
+      <li>Tap <strong>Install app</strong> or <strong>Add to Home screen</strong>.</li>
+      <li>Confirm.</li>
+    </ol>
+  `;
+  bodyEl.innerHTML = `
+    <div class="muted">${isiOS()
+      ? 'On iPhone/iPad, install by adding to Home Screen:'
+      : 'Install this app from your browser:'}</div>
+    ${isiOS() ? iosSteps : androidSteps}
+  `;
+  openOverlay('contentOverlay', '#contentClose');
+}
+
+// Listen for the installability event (Android/Chrome)
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
-  els.installBtn && els.installBtn.classList.remove('hidden');
+  if (els.installBtn && !isStandalone()) {
+    els.installBtn.classList.remove('hidden');
+    els.installBtn.disabled = false;
+  }
 });
+
+// Click handler for Install button
 els.installBtn && els.installBtn.addEventListener('click', async () => {
-  if (!deferredPrompt) return;
-  deferredPrompt.prompt();
-  await deferredPrompt.userChoice;
-  deferredPrompt = null;
-  els.installBtn.classList.add('hidden');
+  if (isStandalone()) { els.installBtn.classList.add('hidden'); return; }
+  if (deferredPrompt) {
+    try {
+      deferredPrompt.prompt();
+      await deferredPrompt.userChoice;
+    } catch {}
+    deferredPrompt = null;
+    els.installBtn.classList.add('hidden');
+    return;
+  }
+  // Fallback path (iOS or no prompt available)
+  openInstallInstructions();
+});
+
+// Hide CTA if already installed; show fallback if not
+function syncInstallCTAVisibility() {
+  if (!els.installBtn) return;
+  if (isStandalone()) {
+    els.installBtn.classList.add('hidden');
+    els.installBtn.disabled = true;
+  } else {
+    els.installBtn.classList.remove('hidden');
+    els.installBtn.disabled = false;
+  }
+}
+
+// When the app gets installed
+window.addEventListener('appinstalled', () => {
+  if (els.installBtn) els.installBtn.classList.add('hidden');
+  showToast('Installed — open it from your Home Screen.');
+});
+
+// Initial CTA sync (in case BIP never fires, e.g., iOS)
+document.addEventListener('DOMContentLoaded', () => {
+  setTimeout(() => {
+    if (!deferredPrompt && els.installBtn) {
+      syncInstallCTAVisibility();
+    }
+  }, 400);
 });
 
 // ---------- Visibility handling (auto-clear after 3 minutes away) ----------
@@ -962,10 +1115,22 @@ function ensureMenu() {
   });
 }
 
-// ---------- Welcome / newUserHint ----------
+// ---------- Welcome / newUserHint with platform targeting ----------
 function maybeShowWelcome() {
-  if (!baseline || !baseline.newUserHint) return;
-  const hint = baseline.newUserHint; // { title, html }
+  if (!baseline) return;
+
+  // Server can provide device-specific hints; we pick best match.
+  const isIOS = isiOS();
+  const isAnd = isAndroid();
+
+  // Priority: platform-specific → generic fallback
+  const hint =
+    (isIOS && baseline.newUserHintIos) ? baseline.newUserHintIos :
+    (isAnd && baseline.newUserHintAndroid) ? baseline.newUserHintAndroid :
+    baseline.newUserHint;
+
+  if (!hint) return;
+
   const titleEl = document.getElementById('welcomeTitle');
   const bodyEl  = document.getElementById('welcomeBody');
   if (!titleEl || !bodyEl) return;
@@ -1188,7 +1353,6 @@ function wireAuthForms() {
     }
   });
 }
-
 // ---------- Credential Management API (Android/Chrome) ----------
 async function storeCredentialIfSupported(email, password) {
   try {
@@ -1333,6 +1497,9 @@ function renderTiles() {
       card.style.cursor = 'pointer';
       card.title = buildCycleHint(t);
       card.addEventListener('click', () => {
+        // --- Scroll-stability fix: preserve relative position of tapped tile ---
+        const prevTop = card.getBoundingClientRect().top;
+
         const curLabel = draft[t.ymd] ?? t.baselineLabel;
         const nextLabel = nextStatus(curLabel);
 
@@ -1348,6 +1515,17 @@ function renderTiles() {
 
         renderTiles();
         showFooterIfNeeded();
+
+        // Re-anchor to the same tile to prevent jump
+        requestAnimationFrame(() => {
+          const newCard = document.querySelector(`.tile[data-ymd="${t.ymd}"]`);
+          if (!newCard) return;
+          const newTop = newCard.getBoundingClientRect().top;
+          const delta = newTop - prevTop;
+          if (Math.abs(delta) > 1) {
+            window.scrollBy({ top: delta, left: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
+          }
+        });
       });
     } else {
       card.title = t.booked ? 'BOOKED (locked)' : (t.status === 'BLOCKED' ? 'BLOCKED by 6-day rule' : 'Not editable');
@@ -1432,6 +1610,7 @@ async function loadFromServer({ force=false } = {}) {
 
     baseline = json;
 
+    // Update UI name
     const name =
       (json.candidateName && String(json.candidateName).trim()) ||
       (json.candidate && [json.candidate.firstName, json.candidate.surname].filter(Boolean).join(' ').trim()) ||
@@ -1451,8 +1630,10 @@ async function loadFromServer({ force=false } = {}) {
       rememberEmailLocal(String(baseline.candidate.email).trim().toLowerCase());
     }
 
+    // Last loaded
     saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
 
+    // Drop draft for unknown tiles
     const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
     for (const k of Object.keys(draft)) {
       if (!validYmd.has(k)) delete draft[k];
@@ -1460,7 +1641,7 @@ async function loadFromServer({ force=false } = {}) {
 
     renderTiles();
     showFooterIfNeeded();
-    maybeShowWelcome();
+    maybeShowWelcome(); // uses ios/android-specific messages if provided
   } finally {
     hideLoading();
   }
