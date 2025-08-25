@@ -1,5 +1,5 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbzG7897NuR1fLBApqMfRgQX5SEm0Tiyrb1mPffoFga-lPjRWvfyOpJEpTnERiCDGP2TAg/exec'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbzRLn5a8U3UptUHoFYGJnU1KOsd46KBtlfXgCPjo0v1Iv1KyzO0fZUwx64_cZL_J1iJOA/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
@@ -14,7 +14,7 @@ const STATUS_ORDER = [
   'LONG DAY/NIGHT'
 ];
 const STATUS_TO_CODE = {
-  [PENDING_LABEL_DEFAULT]: '',     // blank (white)
+  [PENDING_LABEL_DEFAULT]: '',     // blank (white)D
   'NOT AVAILABLE':        'N/A',   // red
   'LONG DAY':             'LD',    // yellow
   'NIGHT':                'N',     // yellow
