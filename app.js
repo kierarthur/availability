@@ -80,17 +80,18 @@ function showAuthError(message = 'Not an authorised user') {
 }
 
 // ---------- State ----------
-let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate, newUserHint?, hadK?)
-let draft = {};               // ymd -> status LABEL (only diffs from baseline). Pending stored as BASE label.
-let identity = {};            // { k?:string, msisdn?:string }
+let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate, newUserHint?)
+let draft = {};               // ymd -> status LABEL (diffs from baseline)
+let identity = {};            // { msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
+
 const DRAFT_KEY = 'rota_avail_draft_v1';
 const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
-const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1'; // persisted identity
-const SAVED_TOKEN_KEY = 'rota_avail_token_v1';       // persisted token (for iOS A2HS)
+const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1';
+const LAST_EMAIL_KEY = 'rota_last_login_email_v1';     // for prefilling login/forgot
+// Note: we do NOT store passwords. Password managers handle that with biometrics.
 
 // Per-session memory of tiles the user has tapped at least once this session.
-// Used to decide whether the pending wording should be "wrapped" (NOT SURE...).
 const toggledThisSession = new Set();
 
 // Submit-nudge timer state (1-minute reminder)
@@ -101,7 +102,6 @@ let nudgeShown = false;
 // ---------- Simple API helpers ----------
 async function apiGET(paramsObj) {
   const params = new URLSearchParams({ t: authToken(), ...(paramsObj || {}) });
-  if (identity.k) params.set('k', identity.k);
   if (identity.msisdn) params.set('msisdn', identity.msisdn);
   const url = `${API_BASE_URL}?${params.toString()}`;
   const res = await fetch(url, { method: 'GET', credentials: 'omit' });
@@ -112,7 +112,6 @@ async function apiGET(paramsObj) {
 }
 async function apiPOST(bodyObj) {
   const body = { t: authToken(), ...(bodyObj || {}) };
-  if (identity.k) body.k = identity.k;
   if (identity.msisdn) body.msisdn = identity.msisdn;
   const res = await fetch(API_BASE_URL, {
     method: 'POST',
@@ -126,10 +125,21 @@ async function apiPOST(bodyObj) {
   return { res, json, text };
 }
 
+// ---- Auth API wrappers ----
+async function apiAuthLogin(email, password) {
+  return apiPOST({ action: 'AUTH_LOGIN', email, password });
+}
+async function apiForgotPassword(email) {
+  return apiPOST({ action: 'AUTH_FORGOT_PASSWORD', email });
+}
+async function apiResetPassword(k, newPassword) {
+  return apiPOST({ action: 'AUTH_RESET_PASSWORD', k, newPassword });
+}
+
 // Saved-identity helpers
 function saveIdentity(id) {
   try {
-    if (id && (id.k || id.msisdn)) {
+    if (id && id.msisdn) {
       localStorage.setItem(SAVED_IDENTITY_KEY, JSON.stringify(id));
     }
   } catch {}
@@ -139,14 +149,20 @@ function loadSavedIdentity() {
     const raw = localStorage.getItem(SAVED_IDENTITY_KEY);
     if (!raw) return {};
     const obj = JSON.parse(raw);
-    if (obj && (obj.k || obj.msisdn)) return obj;
+    if (obj && obj.msisdn) return obj;
   } catch {}
   return {};
 }
 function clearSavedIdentity() {
   try { localStorage.removeItem(SAVED_IDENTITY_KEY); } catch {}
-  try { localStorage.removeItem(SAVED_TOKEN_KEY); } catch {}
-  try { sessionStorage.removeItem('api_t_override'); } catch {}
+  // Keep LAST_EMAIL_KEY to help with login UX.
+}
+
+function rememberEmailLocal(email) {
+  try { localStorage.setItem(LAST_EMAIL_KEY, email || ''); } catch {}
+}
+function getRememberedEmail() {
+  try { return localStorage.getItem(LAST_EMAIL_KEY) || ''; } catch { return ''; }
 }
 
 // ------- Loading overlay + shared styles -------
@@ -177,13 +193,16 @@ function ensureLoadingOverlay() {
     }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Past Shifts overlay */
-    #pastOverlay, #contentOverlay, #tokenOverlay, #welcomeOverlay {
+    /* Overlays */
+    #pastOverlay, #contentOverlay, #welcomeOverlay,
+    #loginOverlay, #forgotOverlay, #resetOverlay {
       position: fixed; inset: 0; z-index: 9998;
       display: none; align-items: stretch; justify-content: center;
       background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
     }
-    #pastOverlay.show, #contentOverlay.show, #tokenOverlay.show, #welcomeOverlay.show { display: flex; }
+    #pastOverlay.show, #contentOverlay.show, #welcomeOverlay.show,
+    #loginOverlay.show, #forgotOverlay.show, #resetOverlay.show { display: flex; }
+
     .sheet {
       background: #0f1115; color: #e7ecf3;
       border-top-left-radius: 16px; border-top-right-radius: 16px;
@@ -234,7 +253,6 @@ function ensureLoadingOverlay() {
     }
     .menu-item:hover { background: #1b2331; }
 
-    /* Attention pulses (respect reduced motion) */
     @media (prefers-reduced-motion: no-preference) {
       @keyframes softPulse {
         0%   { opacity: 1; transform: scale(1); }
@@ -245,8 +263,14 @@ function ensureLoadingOverlay() {
       .btn-attention   { animation: strongPulse 1.0s ease-in-out infinite; }
     }
 
-    /* Thin red border for attention tiles */
     .attention-border { border-color: var(--danger) !important; }
+
+    /* Simple form inputs */
+    .sheet-body label { font-weight:700; font-size:.9rem; margin-top:.2rem; }
+    .sheet-body input {
+      border-radius:8px; border:1px solid #222936; background:#0b0e14; color:#e7ecf3;
+      padding:.6rem; width:100%;
+    }
   `;
   document.head.appendChild(style);
 
@@ -261,7 +285,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(wrap);
 
-  // Past Shifts overlay container
+  // Past Shifts overlay
   const pastOverlay = document.createElement('div');
   pastOverlay.id = 'pastOverlay';
   pastOverlay.innerHTML = `
@@ -275,7 +299,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(pastOverlay);
 
-  // Content overlay for server HTML (addresses, accommodation, app info)
+  // Content overlay
   const contentOverlay = document.createElement('div');
   contentOverlay.id = 'contentOverlay';
   contentOverlay.innerHTML = `
@@ -289,30 +313,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(contentOverlay);
 
-  // Token claim overlay (iPhone paste flow)
-  const tokenOverlay = document.createElement('div');
-  tokenOverlay.id = 'tokenOverlay';
-  tokenOverlay.innerHTML = `
-    <div id="tokenSheet" class="sheet" role="dialog" aria-modal="true" aria-label="iPhone Token Claim">
-      <div class="sheet-header">
-        <div class="sheet-title">Unlock your link on iPhone</div>
-        <button id="tokenClose" class="sheet-close" aria-label="Close">✕</button>
-      </div>
-      <div class="sheet-body">
-        <p>If you opened this from an iPhone “Add to Home Screen” app, the security token may be missing.</p>
-        <p>Please paste the <strong>full URL</strong> from the secure text/email you received:</p>
-        <textarea id="tokenTextarea" rows="4" style="width:100%;resize:vertical;border-radius:8px;border:1px solid #222936;background:#0b0e14;color:#e7ecf3;padding:.6rem;"></textarea>
-        <div style="display:flex;gap:.6rem;margin-top:.6rem;">
-          <button id="tokenSubmit" class="menu-item" style="border:1px solid #2a3446;">Claim Token</button>
-          <button id="tokenHelp" class="menu-item" style="border:1px solid #2a3446;">What is this?</button>
-        </div>
-        <div id="tokenError" class="muted" role="alert" style="margin-top:.4rem;"></div>
-      </div>
-    </div>
-  `;
-  document.body.appendChild(tokenOverlay);
-
-  // Welcome/Alert overlay for newUserHint
+  // Welcome/Alert overlay
   const welcomeOverlay = document.createElement('div');
   welcomeOverlay.id = 'welcomeOverlay';
   welcomeOverlay.innerHTML = `
@@ -329,12 +330,98 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(welcomeOverlay);
 
+  // Login overlay
+  const loginOverlay = document.createElement('div');
+  loginOverlay.id = 'loginOverlay';
+  loginOverlay.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Sign in">
+      <div class="sheet-header">
+        <div class="sheet-title">Sign in</div>
+        <button id="loginClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div class="sheet-body">
+        <form id="loginForm" autocomplete="on">
+          <label for="loginEmail">Email</label>
+          <input id="loginEmail" name="username" type="email"
+                 inputmode="email" autocapitalize="none" spellcheck="false"
+                 autocomplete="username" required />
+
+          <label for="loginPassword" style="margin-top:.6rem">Password</label>
+          <input id="loginPassword" name="password" type="password"
+                 autocomplete="current-password" required enterkeyhint="go" />
+
+          <div style="display:flex;gap:.6rem;margin-top:.8rem;">
+            <button id="loginSubmit" class="menu-item" style="border:1px solid #2a3446;">Sign in</button>
+            <button id="loginForgot" type="button" class="menu-item" style="border:1px solid #2a3446;">Forgot password?</button>
+          </div>
+
+          <div id="loginErr" class="muted" role="alert" style="margin-top:.4rem;"></div>
+        </form>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(loginOverlay);
+
+  // Forgot overlay
+  const forgotOverlay = document.createElement('div');
+  forgotOverlay.id = 'forgotOverlay';
+  forgotOverlay.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Forgot password">
+      <div class="sheet-header">
+        <div class="sheet-title">Forgot password</div>
+        <button id="forgotClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div class="sheet-body">
+        <form id="forgotForm" autocomplete="on">
+          <label for="forgotEmail">Email</label>
+          <input id="forgotEmail" name="username" type="email"
+                 inputmode="email" autocapitalize="none" spellcheck="false"
+                 autocomplete="username" required />
+          <div style="display:flex;gap:.6rem;margin-top:.8rem;">
+            <button id="forgotSubmit" class="menu-item" style="border:1px solid #2a3446;">Send reset link</button>
+          </div>
+          <div id="forgotMsg" class="muted" role="status" style="margin-top:.4rem;"></div>
+        </form>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(forgotOverlay);
+
+  // Reset overlay (for ?k=… links)
+  const resetOverlay = document.createElement('div');
+  resetOverlay.id = 'resetOverlay';
+  resetOverlay.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Set new password">
+      <div class="sheet-header">
+        <div class="sheet-title">Set a new password</div>
+        <button id="resetClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div class="sheet-body">
+        <form id="resetForm" autocomplete="on">
+          <label for="resetPassword">New password</label>
+          <input id="resetPassword" type="password" autocomplete="new-password"
+                 minlength="8" required />
+          <div class="muted" style="margin:.2rem 0 .6rem">
+            Use at least 8 characters with uppercase, lowercase, and a number.
+          </div>
+          <div style="display:flex;gap:.6rem;">
+            <button id="resetSubmit" class="menu-item" style="border:1px solid #2a3446;">Update password</button>
+          </div>
+          <div id="resetErr" class="muted" role="alert" style="margin-top:.4rem;"></div>
+        </form>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(resetOverlay);
+
   // Shared overlay wiring (click-outside & esc)
   ;[
     { overlayId:'pastOverlay', closeId:'pastClose' },
     { overlayId:'contentOverlay', closeId:'contentClose' },
-    { overlayId:'tokenOverlay', closeId:'tokenClose' },
     { overlayId:'welcomeOverlay', closeId:'welcomeClose' },
+    { overlayId:'loginOverlay', closeId:'loginClose' },
+    { overlayId:'forgotOverlay', closeId:'forgotClose' },
+    { overlayId:'resetOverlay', closeId:'resetClose' },
   ].forEach(({overlayId, closeId}) => {
     const overlay = document.getElementById(overlayId);
     overlay.addEventListener('click', (e) => { if (e.target === overlay) closeOverlay(overlayId); });
@@ -342,13 +429,17 @@ function ensureLoadingOverlay() {
   });
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      ['pastOverlay','contentOverlay','tokenOverlay','welcomeOverlay'].forEach(id => {
+      ['pastOverlay','contentOverlay','welcomeOverlay','loginOverlay','forgotOverlay','resetOverlay'].forEach(id => {
         const ov = document.getElementById(id);
         if (ov && ov.classList.contains('show')) closeOverlay(id);
       });
     }
   });
+
+  // Wire auth forms
+  wireAuthForms();
 }
+
 function openOverlay(overlayId, focusSel) {
   ensureLoadingOverlay();
   const overlay = document.getElementById(overlayId);
@@ -429,7 +520,6 @@ els.installBtn && els.installBtn.addEventListener('click', async () => {
 // ---------- Visibility handling (auto-clear after 3 minutes away) ----------
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
-    // pause submit-nudge checks while hidden
     cancelSubmitNudge();
     lastHiddenAt = Date.now();
     persistDraft();
@@ -448,65 +538,10 @@ document.addEventListener('visibilitychange', () => {
       showLoading();
       loadFromServer().catch(()=>{}).finally(hideLoading);
     }
-    // If still dirty and no reminder yet, resume countdown
     if (Object.keys(draft).length) scheduleSubmitNudge();
     lastHiddenAt = null;
   }
 });
-
-// ---------- Query parsing ----------
-function parseQuery() {
-  // Read both places
-  const search = new URLSearchParams(location.search);
-  const hash   = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
-
-  // Gather candidates — keep k and t strictly separate
-  const qK      = (search.get('k') || '').trim();       // query k (often the BAD one)
-  const hK      = (hash.get('k') || '').trim();         // hash k ONLY (never read t as k)
-  const hMsisdn = (hash.get('msisdn') || '').trim();
-
-  // Persist API token `t` if present anywhere (but never treat it as k)
-  const t = (search.get('t') || hash.get('t') || '').trim();
-  if (t) {
-    try { sessionStorage.setItem('api_t_override', t); } catch {}
-    try { localStorage.setItem(SAVED_TOKEN_KEY, t); } catch {}
-  }
-
-  // UPDATED PRIORITY:
-  // Prefer a token we can claim, then msisdn, then saved identity.
-  if (hK) {
-    identity = { k: hK };
-  } else if (qK) {
-    identity = { k: qK };
-  } else if (hMsisdn) {
-    identity = { msisdn: hMsisdn };
-  } else {
-    // No identity in URL → try saved identity
-    const saved = loadSavedIdentity();
-    identity = (saved.k || saved.msisdn) ? saved : {};
-  }
-
-  // Persist what we chose
-  saveIdentity(identity);
-}
-
-// Ensure the current URL (especially when user taps "Add to Home Screen") carries what we need.
-function ensureCanonicalURLWithToken() {
-  try {
-    // Build canonical hash params only
-    const params = new URLSearchParams();
-    const token  = authToken();
-    if (token)               params.set('t', token);
-    if (identity.k)          params.set('k', identity.k);
-    if (identity.msisdn)     params.set('msisdn', identity.msisdn);
-
-    // IMPORTANT: remove the querystring entirely (drops bad ?k=…)
-    const newUrl = location.pathname + (params.toString() ? ('#' + params.toString()) : '');
-    if (location.search || location.hash !== ('#' + params.toString())) {
-      history.replaceState(null, '', newUrl);
-    }
-  } catch {}
-}
 
 // ---------- Helpers ----------
 function statusClass(label) {
@@ -553,7 +588,7 @@ function loadDraft() {
     const raw = localStorage.getItem(DRAFT_KEY);
     if (!raw) return;
     const { draft: d0, identity: i0 } = JSON.parse(raw);
-    if (i0 && ((i0.k && identity.k && i0.k === identity.k) || (i0.msisdn && identity.msisdn && i0.msisdn === identity.msisdn))) {
+    if (i0 && (i0.msisdn && identity.msisdn && i0.msisdn === identity.msisdn)) {
       draft = d0 || {};
     } else {
       draft = {};
@@ -578,34 +613,21 @@ function getCssVarPx(name) {
   return Number.isFinite(num) ? num : 0;
 }
 
-// ---- Code ↔ Label normalization (CRITICAL FIX) ----
+// ---- Code ↔ Label normalization ----
 function codeToLabel(v) {
-  // Already a known label?
   if (v && STATUS_TO_CODE.hasOwnProperty(v)) return v;
   if (v === 'BOOKED' || v === 'BLOCKED') return v;
-  // Map codes ('' | 'N/A' | 'LD' | 'N' | 'LD/N') → labels
   if (v === undefined || v === null) return PENDING_LABEL_DEFAULT;
   const mapped = CODE_TO_STATUS[v];
   return mapped !== undefined ? mapped : PENDING_LABEL_DEFAULT;
 }
 
-/**
- * Decide which pending wording to display for a tile.
- * - If effective label is pending:
- *   - If baseline was pending AND user hasn't tapped this session → base wording
- *   - Else → wrapped wording
- * - Otherwise return the effective non-pending label
- */
 function displayPendingLabelForTile(t) {
   if (t.effectiveLabel !== PENDING_LABEL_DEFAULT) return t.effectiveLabel;
   const serverPending = (t.baselineLabel === PENDING_LABEL_DEFAULT);
   const touched = toggledThisSession.has(t.ymd);
   return (serverPending && !touched) ? PENDING_LABEL_DEFAULT : PENDING_LABEL_WRAPPED;
 }
-
-/**
- * Build the cycle hint. When we show pending in the sequence, use the visual that will appear.
- */
 function buildCycleHint(t) {
   const pendingVisual =
     (t.baselineLabel === PENDING_LABEL_DEFAULT && !toggledThisSession.has(t.ymd))
@@ -614,11 +636,6 @@ function buildCycleHint(t) {
   const seq = [pendingVisual, 'N/A', 'LD', 'N', 'LD/N', pendingVisual];
   return 'Tap to change: ' + seq.join(' → ');
 }
-
-/**
- * Fit status text: no mid-word breaks, allow wrapping between words, and
- * only shrink if a single word would overflow even on its own line.
- */
 function fitStatusLabel(el) {
   if (!el) return;
   el.style.wordBreak = 'keep-all';
@@ -664,7 +681,7 @@ function fitStatusLabel(el) {
   measurer.remove();
 }
 
-// ---------- Submit nudge (1-minute reminder) ----------
+// ---------- Submit nudge ----------
 function cancelSubmitNudge() {
   if (submitNudgeTimer) {
     clearTimeout(submitNudgeTimer);
@@ -696,7 +713,7 @@ function ensureHelpMessageVisible() {
   els.helpMsg.classList.remove('hidden');
 }
 
-// ---------- Past Shifts (overlay + fetch) ----------
+// ---------- Past Shifts ----------
 function ensurePastShiftsButton() {
   ensureMenu();
 }
@@ -751,7 +768,7 @@ async function fetchPastShifts() {
   return json.items || [];
 }
 
-// ---------- Content overlay (Addresses / Accommodation / App info) ----------
+// ---------- Content overlay ----------
 async function openContent(kind, titleFallback) {
   ensureLoadingOverlay();
   const titleEl = document.getElementById('contentTitle');
@@ -773,7 +790,6 @@ async function openContent(kind, titleFallback) {
       return;
     }
     titleEl.textContent = json.title || titleFallback || 'Information';
-    // Server returns sanitized HTML
     bodyEl.innerHTML = json.html || '<div class="muted">No content.</div>';
   } catch (e) {
     bodyEl.innerHTML = `<div class="muted">Could not load content: ${e.message || e}</div>`;
@@ -797,8 +813,11 @@ function ensureMenu() {
   list.innerHTML = `
     <button class="menu-item" id="miPast">Past Shifts</button>
     <button class="menu-item" id="miHosp">Hospital Addresses</button>
-    <button class="menu-item" id="miAccom">Accommodation Contacts</button>    
-    <button class="menu-item" id="miTimesheet">Send a timesheet by email</button>    
+    <button class="menu-item" id="miAccom">Accommodation Contacts</button>
+    <button class="menu-item" id="miTimesheet">Send a timesheet by email</button>
+    <hr style="border:none;border-top:1px solid #222936;margin:.35rem 0;">
+    <button class="menu-item" id="miChangePw">Change password</button>
+    <button class="menu-item" id="miLogout">Logout</button>
   `;
   wrap.append(btn, list);
   header.appendChild(wrap);
@@ -815,7 +834,7 @@ function ensureMenu() {
   document.getElementById('miPast').addEventListener('click', () => { list.classList.remove('show'); openPastShifts(); });
   document.getElementById('miHosp').addEventListener('click', () => { list.classList.remove('show'); openContent('HOSPITAL','Hospital Addresses'); });
   document.getElementById('miAccom').addEventListener('click', () => { list.classList.remove('show'); openContent('ACCOMMODATION','Accommodation Contacts'); });
-  
+
   document.getElementById('miTimesheet').addEventListener('click', async () => {
     list.classList.remove('show');
     try {
@@ -835,6 +854,36 @@ function ensureMenu() {
       showToast('Failed to send: ' + (e.message || e));
     } finally { hideLoading(); }
   });
+
+  // Change password: send a reset link to the known email
+  document.getElementById('miChangePw').addEventListener('click', async () => {
+    list.classList.remove('show');
+    const email = (baseline && baseline.candidate && baseline.candidate.email) ||
+                  getRememberedEmail();
+    if (!email) {
+      // If we don’t know the email, open the Forgot flow
+      openForgotOverlay();
+      return;
+    }
+    try {
+      showLoading('Requesting password reset link...');
+      await apiForgotPassword(email); // always returns ok UX
+      showToast('If your email exists, a reset link has been sent.');
+    } catch (e) {
+      showToast('Could not start password change: ' + (e.message || e));
+    } finally {
+      hideLoading();
+    }
+  });
+
+  document.getElementById('miLogout').addEventListener('click', () => {
+    list.classList.remove('show');
+    clearSavedIdentity();
+    draft = {}; persistDraft();
+    baseline = null;
+    els.grid && (els.grid.innerHTML = '');
+    openLoginOverlay();
+  });
 }
 
 // ---------- Welcome / newUserHint ----------
@@ -851,80 +900,159 @@ function maybeShowWelcome() {
 
   const dismiss = document.getElementById('welcomeDismiss');
   dismiss.onclick = async () => {
-    try {
-      await apiPOST({ action:'MARK_MESSAGE_SEEN' });
-    } catch {}
+    try { await apiPOST({ action:'MARK_MESSAGE_SEEN' }); } catch {}
     closeOverlay('welcomeOverlay');
   };
 }
 
-// ---------- Token claim (iPhone paste full URL flow) ----------
-function openTokenClaimDialog(prefillText='') {
-  const textarea = document.getElementById('tokenTextarea');
-  const errorEl  = document.getElementById('tokenError');
-  const helpBtn  = document.getElementById('tokenHelp');
-  const submit   = document.getElementById('tokenSubmit');
-  if (!textarea || !errorEl || !helpBtn || !submit) return;
-  textarea.value = prefillText;
-  errorEl.textContent = '';
-  openOverlay('tokenOverlay', '#tokenTextarea');
+// ---------- Auth overlays logic ----------
+function openLoginOverlay() {
+  const email = getRememberedEmail();
+  const le = document.getElementById('loginEmail');
+  const lerr = document.getElementById('loginErr');
+  if (le) le.value = email;
+  if (lerr) lerr.textContent = '';
+  openOverlay('loginOverlay', '#loginEmail');
+}
+function openForgotOverlay() {
+  const fe = document.getElementById('forgotEmail');
+  const fmsg = document.getElementById('forgotMsg');
+  if (fe) fe.value = getRememberedEmail();
+  if (fmsg) fmsg.textContent = '';
+  openOverlay('forgotOverlay', '#forgotEmail');
+}
+function openResetOverlay() {
+  const rerr = document.getElementById('resetErr');
+  if (rerr) rerr.textContent = '';
+  openOverlay('resetOverlay', '#resetPassword');
+}
 
-  helpBtn.onclick = () => {
-    errorEl.innerHTML = 'Tip: Open the original secure SMS or email, press and hold the link, choose “Copy”, then paste it above.';
-  };
-  submit.onclick = async () => {
-    const userText = textarea.value.trim();
-    if (!userText) {
-      errorEl.textContent = 'Please paste the full secure URL first.';
-      return;
-    }
+function wireAuthForms() {
+  // Login
+  const lf  = document.getElementById('loginForm');
+  const le  = document.getElementById('loginEmail');
+  const lp  = document.getElementById('loginPassword');
+  const ls  = document.getElementById('loginSubmit');
+  const lfg = document.getElementById('loginForgot');
+  const lerr= document.getElementById('loginErr');
+
+  lf?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = (le.value || '').trim().toLowerCase();
+    const pw    = lp.value || '';
+    if (!email || !pw) return;
+
     try {
-      showLoading('Claiming token...');
-      const { res, json } = await apiPOST({ action:'TOKEN_CLAIM', userText });
+      ls.disabled = true; showLoading('Signing in...');
+      const { res, json } = await apiAuthLogin(email, pw);
       if (!res.ok || !json || json.ok === false) {
         const msg = (json && json.error) || `HTTP ${res.status}`;
-        if (msg === 'TOKEN_NOT_FOUND_IN_TEXT') {
-          errorEl.textContent = 'We could not find a token in that text. Please paste the full URL.';
-        } else if (msg === 'TOKEN_NOT_ACTIVE_OR_UNKNOWN') {
-          errorEl.textContent = 'That token is not active or unknown. Please check the link and try again.';
+        lerr.textContent = (msg === 'INVALID_CREDENTIALS') ? 'Email or password is incorrect.' : (msg || 'Sign-in failed.');
+        return;
+      }
+      identity = { msisdn: json.msisdn }; saveIdentity(identity);
+      rememberEmailLocal(email);
+      await storeCredentialIfSupported(email, pw); // Chrome/Android
+
+      // Clear password field
+      lp.value = '';
+      closeOverlay('loginOverlay');
+
+      await loadFromServer({ force: true });
+    } finally {
+      hideLoading(); ls.disabled = false;
+    }
+  });
+  lfg?.addEventListener('click', () => { closeOverlay('loginOverlay'); openForgotOverlay(); });
+
+  // Forgot
+  const ff   = document.getElementById('forgotForm');
+  const fe   = document.getElementById('forgotEmail');
+  const fs   = document.getElementById('forgotSubmit');
+  const fmsg = document.getElementById('forgotMsg');
+  ff?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = (fe.value || '').trim().toLowerCase();
+    if (!email) return;
+    try {
+      fs.disabled = true; showLoading('Sending link...');
+      await apiForgotPassword(email); // always ok UX
+      rememberEmailLocal(email);
+      fmsg.textContent = 'If your email exists, a reset link has been sent.';
+      setTimeout(() => { closeOverlay('forgotOverlay'); openLoginOverlay(); }, 1200);
+    } finally {
+      hideLoading(); fs.disabled = false;
+    }
+  });
+
+  // Reset
+  const rf   = document.getElementById('resetForm');
+  const rp   = document.getElementById('resetPassword');
+  const rs   = document.getElementById('resetSubmit');
+  const rerr = document.getElementById('resetErr');
+  rf?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const pw = rp.value || '';
+    if (!pw || pw.length < 8 || !/[a-z]/.test(pw) || !/[A-Z]/.test(pw) || !/[0-9]/.test(pw)) {
+      rerr.textContent = 'Use at least 8 chars with uppercase, lowercase, and a number.';
+      return;
+    }
+    const k = new URLSearchParams(location.search).get('k') || '';
+    if (!k) { rerr.textContent = 'This reset link is invalid or missing.'; return; }
+
+    try {
+      rs.disabled = true; showLoading('Updating...');
+      const { res, json } = await apiResetPassword(k, pw);
+      if (!res.ok || !json || json.ok === false) {
+        const msg = (json && json.error) || `HTTP ${res.status}`;
+        if (msg === 'INVALID_OR_EXPIRED_RESET') {
+          rerr.textContent = 'This link has expired. Please request a new one.';
         } else {
-          errorEl.textContent = msg;
+          rerr.textContent = msg || 'Could not update password.';
         }
         return;
       }
-      // Success: server returns { ok:true, token, msisdn }
-      if (json.token) {
-        try { localStorage.setItem(SAVED_TOKEN_KEY, json.token); } catch {}
-        try { sessionStorage.setItem('api_t_override', json.token); } catch {}
-      }
-      identity = { msisdn: json.msisdn };
-      saveIdentity(identity);
-
-      // Clear any bad k
-      const params = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
-      params.delete('k');
-      params.set('t', authToken());
-      params.set('msisdn', identity.msisdn);
-      history.replaceState(null, '', location.pathname + location.search + '#' + params.toString());
-
-      closeOverlay('tokenOverlay');
-
-      // Reload tiles with new token
-      loadFromServer({ force: true }).catch(e => showToast(e.message || e));
-    } catch (e) {
-      errorEl.textContent = e.message || String(e);
+      // Strip ?k=… from URL (reset is one-time)
+      const clean = location.pathname + (location.hash || '');
+      history.replaceState(null, '', clean);
+      closeOverlay('resetOverlay');
+      showToast('Password updated. Please sign in.');
+      openLoginOverlay();
     } finally {
-      hideLoading();
+      hideLoading(); rs.disabled = false;
     }
-  };
+  });
+}
+
+// ---------- Credential Management API (Android/Chrome) ----------
+async function storeCredentialIfSupported(email, password) {
+  try {
+    if ('credentials' in navigator && 'PasswordCredential' in window) {
+      const cred = new PasswordCredential({ id: email, password, name: email });
+      await navigator.credentials.store(cred);
+    }
+  } catch {}
+}
+async function tryAutoLoginViaCredentialsAPI() {
+  try {
+    if (!('credentials' in navigator)) return false;
+    const cred = await navigator.credentials.get({ password: true, mediation: 'optional' });
+    if (cred && cred.id && cred.password) {
+      const { res, json } = await apiAuthLogin(cred.id, cred.password);
+      if (res.ok && json && json.ok && json.msisdn) {
+        identity = { msisdn: json.msisdn }; saveIdentity(identity);
+        rememberEmailLocal(cred.id);
+        await loadFromServer({ force: true });
+        return true;
+      }
+    }
+  } catch {}
+  return false;
 }
 
 // ---------- Rendering ----------
 function renderTiles() {
-  if (!els.grid) {
-    console.warn('renderTiles(): #grid not found');
-    return;
-  }
+  if (!els.grid) { console.warn('renderTiles(): #grid not found'); return; }
   els.grid.innerHTML = '';
   if (!baseline || !baseline.tiles) return;
 
@@ -965,7 +1093,6 @@ function renderTiles() {
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
-    // Content rules
     if (t.booked) {
       status.textContent = 'BOOKED';
       const line1 = (() => {
@@ -1013,14 +1140,12 @@ function renderTiles() {
         sub.textContent = availability;
       }
     } else {
-      // Pending variants (display-only swap)
       const displayLabel = displayPendingLabelForTile(t);
       status.textContent = displayLabel;
 
-      // Mark pending tiles as needing attention (pulse + thin red border)
       if (!t.booked && t.status !== 'BLOCKED' && t.editable !== false) {
         card.classList.add('needs-attention');
-        card.classList.add('attention-border'); // base and wrapped both show border while pending
+        card.classList.add('attention-border');
       }
 
       if (t.effectiveLabel !== t.baselineLabel) {
@@ -1031,36 +1156,29 @@ function renderTiles() {
     }
 
     card.append(header, status, sub);
-
     els.grid.appendChild(card);
-    // Fit status text
     fitStatusLabel(status);
 
-    // Ensure non-attention tiles get a white border, per design
     if (!card.classList.contains('attention-border')) {
       card.style.borderColor = '#ffffff';
     }
 
-    // Interactions
     const editable = (!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
     if (editable) {
       card.style.cursor = 'pointer';
       card.title = buildCycleHint(t);
       card.addEventListener('click', () => {
-        const curLabel = draft[t.ymd] ?? t.baselineLabel;   // always labels
-        const nextLabel = nextStatus(curLabel);             // always labels
+        const curLabel = draft[t.ymd] ?? t.baselineLabel;
+        const nextLabel = nextStatus(curLabel);
 
-        toggledThisSession.add(t.ymd); // mark as user-touched this session
+        toggledThisSession.add(t.ymd);
 
         if (nextLabel === t.baselineLabel) {
           delete draft[t.ymd];
         } else {
-          // Store BASE pending label in draft (maps to blank code); display logic will wrap when needed
           draft[t.ymd] = nextLabel;
         }
         persistDraft();
-
-        // user just edited — (re)start 1-minute reminder window
         registerUserEdit();
 
         renderTiles();
@@ -1072,15 +1190,13 @@ function renderTiles() {
     }
   }
 
-  // Equal heights: match tallest tile
   equalizeTileHeights();
-
   sizeGrid();
 }
 function equalizeTileHeights() {
   const tiles = Array.from(els.grid.querySelectorAll('.tile'));
   if (!tiles.length) return;
-  tiles.forEach(t => t.style.minHeight = ''); // reset
+  tiles.forEach(t => t.style.minHeight = '');
   let max = 0;
   tiles.forEach(t => { max = Math.max(max, Math.ceil(t.getBoundingClientRect().height)); });
   tiles.forEach(t => { t.style.minHeight = max + 'px'; });
@@ -1092,56 +1208,34 @@ function escapeHtml(s) {
     .replace(/>/g,'&gt;');
 }
 
-// ---------- API ----------
+// ---------- API shared token ----------
 function authToken() {
-  // NEW: prefer session override, then saved token (localStorage), then shared fallback
+  // Allow override via #t or ?t if you ever need it, else fallback to shared token.
   try {
-    return (
-      sessionStorage.getItem('api_t_override') ||
-      localStorage.getItem(SAVED_TOKEN_KEY) ||
-      API_SHARED_TOKEN
-    );
+    const search = new URLSearchParams(location.search);
+    const hash   = new URLSearchParams(location.hash && location.hash.startsWith('#') ? location.hash.slice(1) : '');
+    return search.get('t') || hash.get('t') || API_SHARED_TOKEN;
   } catch {
     return API_SHARED_TOKEN;
   }
 }
 
-// NEW: auto-claim using the full current URL when we only have #t/#msisdn
-async function autoClaimFromCurrentURLIfPossible() {
-  const full = location.href;
-  try {
-    const { res, json } = await apiPOST({ action: 'TOKEN_CLAIM', userText: full });
-    if (res.ok && json && json.ok && json.msisdn) {
-      if (json.token) {
-        try { localStorage.setItem(SAVED_TOKEN_KEY, json.token); } catch {}
-        try { sessionStorage.setItem('api_t_override', json.token); } catch {}
-      }
-      identity = { msisdn: json.msisdn };
-      saveIdentity(identity);
-      // Canonicalise to #t + msisdn (no ?k)
-      const params = new URLSearchParams();
-      const t = authToken();
-      if (t) params.set('t', t);
-      params.set('msisdn', json.msisdn);
-      history.replaceState(null, '', location.pathname + '#' + params.toString());
-      return true;
-    }
-  } catch {}
-  return false;
-}
-
+// ---------- Load + Submit ----------
 async function loadFromServer({ force=false } = {}) {
-  // IMPORTANT: allow token-only operation, but require a token
   if (!authToken()) {
     showAuthError('Missing or invalid token');
     throw new Error('__AUTH_STOP__');
+  }
+  if (!identity || !identity.msisdn) {
+    // Not signed in yet; show login if not already visible
+    openLoginOverlay();
+    return;
   }
 
   showLoading();
 
   try {
     const { res, json } = await apiGET({});
-    // Dedicated busy handling
     if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
       showToast('Server is busy, please try again.');
       return;
@@ -1150,48 +1244,11 @@ async function loadFromServer({ force=false } = {}) {
     const errCode = (json && json.error) || '';
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
-        // Attempt recovery if we only have msisdn (hash) and no k
-        if (identity.msisdn && !identity.k) {
-          const healed = await autoClaimFromCurrentURLIfPossible();
-          if (healed) {
-            const retry = await apiGET({});
-            if (retry.res.ok && retry.json && retry.json.ok !== false) {
-              baseline = retry.json;
-              const name =
-                (baseline.candidateName && String(baseline.candidateName).trim()) ||
-                (baseline.candidate && [baseline.candidate.firstName, baseline.candidate.surname].filter(Boolean).join(' ').trim()) ||
-                '';
-              if (els.candidateName) {
-                if (name) {
-                  els.candidateName.textContent = name;
-                  els.candidateName.classList.remove('hidden');
-                } else {
-                  els.candidateName.textContent = '';
-                  els.candidateName.classList.add('hidden');
-                }
-              }
-              saveLastLoaded(baseline.lastLoadedAt || new Date().toISOString());
-              const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
-              for (const k of Object.keys(draft)) {
-                if (!validYmd.has(k)) delete draft[k];
-              }
-              renderTiles();
-              showFooterIfNeeded();
-              maybeShowWelcome();
-              return;
-            }
-          }
-        }
-        // Special: UNAUTHORIZED_TOKEN → iPhone paste flow
-        if (errCode === 'UNAUTHORIZED_TOKEN' || (json && json.error === 'UNAUTHORIZED_TOKEN')) {
-          openTokenClaimDialog();
-          return;
-        }
+        clearSavedIdentity();
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
       }
-      const msg = errCode || `HTTP ${res.status}`;
-      throw new Error(msg);
+      throw new Error(errCode || `HTTP ${res.status}`);
     }
 
     if (json && json.ok === false) {
@@ -1200,14 +1257,10 @@ async function loadFromServer({ force=false } = {}) {
         'NOT_IN_CANDIDATE_LIST',
         'FORBIDDEN'
       ]);
-      if (json.error === 'UNAUTHORIZED_TOKEN') {
-        openTokenClaimDialog();
-        return;
-      }
       if (unauthErrors.has(errCode)) {
         clearSavedIdentity();
-        showAuthError('Not an authorised user');
-        throw new Error('__AUTH_STOP__');
+        openLoginOverlay();
+        return;
       }
       throw new Error(errCode || 'SERVER_ERROR');
     }
@@ -1228,6 +1281,11 @@ async function loadFromServer({ force=false } = {}) {
       }
     }
 
+    // capture candidate email to assist Change Password flow
+    if (baseline && baseline.candidate && baseline.candidate.email) {
+      rememberEmailLocal(String(baseline.candidate.email).trim().toLowerCase());
+    }
+
     saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
 
     const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
@@ -1237,8 +1295,6 @@ async function loadFromServer({ force=false } = {}) {
 
     renderTiles();
     showFooterIfNeeded();
-
-    // Show welcome/alert banner if provided
     maybeShowWelcome();
   } finally {
     hideLoading();
@@ -1270,16 +1326,6 @@ async function submitChanges() {
       return;
     }
 
-    if (!res.ok) {
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        if (json && json.error === 'UNAUTHORIZED_TOKEN') {
-          openTokenClaimDialog();
-          return;
-        }
-        showAuthError('Not an authorised user');
-        throw new Error('__AUTH_STOP__');
-      }
-    }
     if (!res.ok || !json || json.ok === false) {
       const unauthErrors = new Set([
         'INVALID_OR_UNKNOWN_IDENTITY',
@@ -1288,7 +1334,7 @@ async function submitChanges() {
       ]);
       if (json && unauthErrors.has(json.error)) {
         clearSavedIdentity();
-        showAuthError('Not an authorised user');
+        openLoginOverlay();
         throw new Error('__AUTH_STOP__');
       }
       const msg = (json && json.error) || `HTTP ${res.status}`;
@@ -1306,14 +1352,11 @@ async function submitChanges() {
       showToast(`Saved ${applied} change${applied===1?'':'s'}.`);
     }
 
-    // Clear draft and any pending nudge state
     draft = {};
     persistDraft();
     cancelSubmitNudge();
     nudgeShown = false;
     lastEditAt = 0;
-
-    // Reset per-session tap memory so post-save render mimics a cold load
     toggledThisSession.clear();
 
     await loadFromServer({ force: true });
@@ -1332,7 +1375,6 @@ function clearChanges() {
   renderTiles();
   showFooterIfNeeded();
   showToast('Cleared pending changes.');
-  // Reset submit-nudge state
   cancelSubmitNudge();
   nudgeShown = false;
   lastEditAt = 0;
@@ -1363,18 +1405,11 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
 window.addEventListener('resize', () => { sizeGrid(); equalizeTileHeights(); }, { passive: true });
 window.addEventListener('orientationchange', () => setTimeout(() => { sizeGrid(); equalizeTileHeights(); }, 250));
 
-/**
- * Light sizing helper: keeps --vh fresh and republishes footer height.
- * Works fine with the new scrolling layout (no fixed grid math).
- */
 function sizeGrid() {
   if (!els.grid) return;
-
-  // Stabilize mobile address bar changes
   const vh = window.innerHeight * 0.01;
   document.documentElement.style.setProperty('--vh', `${vh}px`);
 
-  // Measure header/footer heights (footer may be visibility:hidden but measurable)
   const header = document.querySelector('header');
   const headerH = header ? Math.round(header.getBoundingClientRect().height) : 0;
 
@@ -1388,71 +1423,59 @@ function sizeGrid() {
   document.documentElement.style.setProperty('--footer-h', `${footerH}px`);
 }
 
-// ---------- Bootstrap: auto-claim k → msisdn (once) ----------
-async function bootstrapTryClaimIfNeeded() {
-  // If we already have msisdn, nothing to do
-  if (identity && identity.msisdn) return;
+// ---------- Simple router for auth flows ----------
+function routeFromURL() {
+  const hash = location.hash || '';
+  const hasMsisdn = !!(identity && identity.msisdn);
 
-  // If we have a token k, try to claim it to get msisdn
-  const k = identity && identity.k;
-  if (!k) return;
+  // If a reset token is present in the QUERY (?k=...), show reset
+  const k = new URLSearchParams(location.search).get('k');
+  if (k) { openResetOverlay(); return; }
 
-  try {
-    const { res, json } = await apiPOST({ action: 'TOKEN_CLAIM', k });
-    if (res.ok && json && json.ok && json.msisdn) {
-      // Prefer msisdn going forward
-      identity = { msisdn: json.msisdn };
-      saveIdentity(identity);
+  if (/^#\/login/.test(hash))  { openLoginOverlay(); return; }
+  if (/^#\/forgot/.test(hash)) { openForgotOverlay(); return; }
+  if (/^#\/reset/.test(hash))  { openResetOverlay(); return; }
 
-      // After success: strip k and normalise URL to just #t & msisdn
-      const params = new URLSearchParams();
-      const t = authToken();
-      if (t)               params.set('t', t);
-      if (identity.msisdn) params.set('msisdn', identity.msisdn);
-      history.replaceState(null, '', location.pathname + (params.toString() ? '#' + params.toString() : ''));
-    }
-  } catch (e) {
-    // Optional: openTokenClaimDialog(location.href);
-  }
+  if (!hasMsisdn) { openLoginOverlay(); return; }
 }
+window.addEventListener('hashchange', routeFromURL);
 
 // ---------- Boot ----------
 (async function init() {
-  // Parse URL (now prefers token over msisdn) and persist identity/token
-  parseQuery();
-
-  // Canonicalise URL early (drops any bad ?k=…; keeps only #t & msisdn &/or k if still needed)
-  ensureCanonicalURLWithToken();
-
-  // Try to claim k→msisdn BEFORE first load (avoids unauthorised loop on mixed URLs)
-  await bootstrapTryClaimIfNeeded();
-
-  // If we only have msisdn (from #msisdn) and no saved API token yet, try to auto-claim from the full URL
-  if (identity.msisdn && !identity.k && !localStorage.getItem(SAVED_TOKEN_KEY)) {
-    await autoClaimFromCurrentURLIfPossible();
-  }
+  // Identity from storage
+  identity = loadSavedIdentity();
 
   // Build overlays/menu early
   ensureLoadingOverlay();
   ensureMenu();
 
-  // Draft + initial load
-  loadDraft();
-  showLoading();
-  try {
-    await loadFromServer({ force: true });
-  } catch (e) {
-    if (String(e && e.message) !== '__AUTH_STOP__') {
-      showToast('Load failed: ' + e.message, 5000);
-    }
-  } finally {
-    sizeGrid();
-    equalizeTileHeights();
-    hideLoading();
-    ensurePastShiftsButton();
+  // If reset link present, show reset
+  const hasK = new URLSearchParams(location.search).has('k');
+  if (hasK) {
+    openResetOverlay();
+  } else if (!identity.msisdn) {
+    // Attempt silent auto‑sign‑in on Android/Chrome
+    const autoOK = await tryAutoLoginViaCredentialsAPI();
+    if (!autoOK) openLoginOverlay();
   }
 
-  // Wire token dialog close (created in ensureLoadingOverlay)
-  const tokenClose = document.getElementById('tokenClose');
-  if (tokenClose) tokenClose.addEventListener('click', () => closeOverlay('tokenOverlay'));
+  // Draft + initial load (only if already signed in)
+  loadDraft();
+  if (identity && identity.msisdn) {
+    showLoading();
+    try {
+      await loadFromServer({ force: true });
+    } catch (e) {
+      if (String(e && e.message) !== '__AUTH_STOP__') {
+        showToast('Load failed: ' + e.message, 5000);
+      }
+    } finally {
+      sizeGrid();
+      equalizeTileHeights();
+      hideLoading();
+      ensurePastShiftsButton();
+    }
+  }
+
+  routeFromURL();
 })();
