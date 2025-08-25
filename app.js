@@ -1096,7 +1096,8 @@ function ensureMenu() {
     try {
       showLoading('Requesting password reset link...');
       await apiForgotPassword(email); // always returns ok UX
-      showToast('If your email exists, a reset link has been sent.');
+      // Requested exact wording:
+      showToast('Password Reset request has been sent by email if email exists');
     } catch (e) {
       showToast('Could not start password change: ' + (e.message || e));
     } finally {
@@ -1220,14 +1221,15 @@ function wireAuthForms() {
 
       // Clear password field
       lp.value = '';
-      closeOverlay('loginOverlay');
+      // *** FIX: force-close the blocking login overlay after successful auth ***
+      closeOverlay('loginOverlay', /* force */ true);
 
       await loadFromServer({ force: true });
     } finally {
       hideLoading(); ls.disabled = false;
     }
   });
-  lfg?.addEventListener('click', () => { closeOverlay('loginOverlay'); openForgotOverlay(); });
+  lfg?.addEventListener('click', () => { closeOverlay('loginOverlay', /* force */ true); openForgotOverlay(); });
 
   // Forgot
   const ff   = document.getElementById('forgotForm');
@@ -1240,9 +1242,10 @@ function wireAuthForms() {
     if (!email) return;
     try {
       fs.disabled = true; showLoading('Sending link...');
-      await apiForgotPassword(email); // always ok UX
+      await apiForgotPassword(email); // always ok UX (neutral; no enumeration)
       rememberEmailLocal(email);
-      fmsg.textContent = 'If your email exists, a reset link has been sent.';
+      // *** Requested exact wording for unauthenticated flow ***
+      fmsg.textContent = 'Password Reset request has been sent by email if email exists';
       setTimeout(() => { closeOverlay('forgotOverlay'); openLoginOverlay(); }, 1200);
     } finally {
       hideLoading(); fs.disabled = false;
