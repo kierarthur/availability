@@ -1458,6 +1458,7 @@ async function tryAutoLoginViaCredentialsAPI() {
   return false;
 }
 // ---------- Rendering ----------
+
 function renderTiles() {
   if (!els.grid) { console.warn('renderTiles(): #grid not found'); return; }
   els.grid.innerHTML = '';
@@ -1466,6 +1467,7 @@ function renderTiles() {
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
 
+  // Build once from baseline + current draft
   const tiles = (baseline.tiles || []).map(t => {
     const baselineLabel = t.booked
       ? 'BOOKED'
@@ -1474,10 +1476,84 @@ function renderTiles() {
     return { ...t, baselineLabel, effectiveLabel };
   });
 
+  // Helper: update only one card's UI from a label
+  function updateCardUI(card, ymd, baselineLabel, newLabel, isBooked, isBlocked, editable) {
+    const statusEl = card.querySelector('.tile-status');
+    const subEl    = card.querySelector('.tile-sub');
+
+    // Reset status class then apply the new one
+    statusEl.className = 'tile-status ' + statusClass(newLabel);
+
+    if (isBooked) {
+      // Booked tiles never change via taps (not editable), but keep content stable
+      statusEl.textContent = 'BOOKED';
+      // subEl remains as originally rendered
+      return;
+    }
+
+    if (isBlocked || newLabel === 'BLOCKED') {
+      statusEl.textContent = 'BLOCKED';
+      subEl.textContent = 'You cannot work this shift as it will breach the 6 days in a row rule.';
+      card.classList.remove('needs-attention', 'attention-border');
+    } else if (newLabel === 'NOT AVAILABLE') {
+      statusEl.textContent = 'NOT AVAILABLE';
+      if (newLabel !== baselineLabel) {
+        subEl.innerHTML = `<span class="edit-note">Pending change</span>`;
+      } else {
+        subEl.textContent = '';
+      }
+      card.classList.remove('needs-attention', 'attention-border');
+    } else if (newLabel === 'LONG DAY' || newLabel === 'NIGHT' || newLabel === 'LONG DAY/NIGHT') {
+      statusEl.textContent = 'AVAILABLE FOR';
+      const availability =
+        newLabel === 'LONG DAY' ? 'LONG DAY ONLY' :
+        newLabel === 'NIGHT' ? 'NIGHT ONLY' : 'LONG DAY AND NIGHT';
+      if (newLabel !== baselineLabel) {
+        subEl.innerHTML = `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`;
+      } else {
+        subEl.textContent = availability;
+      }
+      card.classList.remove('needs-attention', 'attention-border');
+    } else {
+      // Pending state (two wordings based on first-touch visual)
+      const displayLabel = (function () {
+        if (newLabel !== PENDING_LABEL_DEFAULT) return newLabel;
+        const serverPending = (baselineLabel === PENDING_LABEL_DEFAULT);
+        const touched = toggledThisSession.has(ymd);
+        return (serverPending && !touched) ? PENDING_LABEL_DEFAULT : PENDING_LABEL_WRAPPED;
+      })();
+      statusEl.textContent = displayLabel;
+
+      if (newLabel !== baselineLabel) {
+        subEl.innerHTML = `<span class="edit-note">Pending change</span>`;
+      } else {
+        subEl.textContent = '';
+      }
+
+      if (editable) {
+        card.classList.add('needs-attention', 'attention-border');
+      } else {
+        card.classList.remove('needs-attention', 'attention-border');
+      }
+    }
+
+    // Keep border fallback for non-attention tiles
+    if (!card.classList.contains('attention-border')) {
+      card.style.borderColor = '#ffffff';
+    }
+
+    // Keep the label visually fitting inside its container
+    fitStatusLabel(statusEl);
+  }
+
   for (const t of tiles) {
     const card = document.createElement('div');
     card.className = 'tile';
     card.dataset.ymd = t.ymd;
+    card.dataset.baselineLabel = t.baselineLabel;
+    card.dataset.blocked = String(t.status === 'BLOCKED');
+    card.dataset.booked = String(!!t.booked);
+    card.dataset.editable = String(!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
 
     const header = document.createElement('div');
     header.className = 'tile-header';
@@ -1500,6 +1576,7 @@ function renderTiles() {
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
+    // Initial content (same logic as before)
     if (t.booked) {
       status.textContent = 'BOOKED';
       const line1 = (() => {
@@ -1551,8 +1628,7 @@ function renderTiles() {
       status.textContent = displayLabel;
 
       if (!t.booked && t.status !== 'BLOCKED' && t.editable !== false) {
-        card.classList.add('needs-attention');
-        card.classList.add('attention-border');
+        card.classList.add('needs-attention', 'attention-border');
       }
 
       if (t.effectiveLabel !== t.baselineLabel) {
@@ -1570,40 +1646,44 @@ function renderTiles() {
       card.style.borderColor = '#ffffff';
     }
 
+    // Tap handler → incremental update only
     const editable = (!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
     if (editable) {
       card.style.cursor = 'pointer';
       card.title = buildCycleHint(t);
+
       card.addEventListener('click', () => {
-        // --- Scroll-stability fix: preserve relative position of tapped tile ---
-        const prevTop = card.getBoundingClientRect().top;
+        const ymd = card.dataset.ymd;
+        const baselineLabel = card.dataset.baselineLabel;
+        const isBooked  = card.dataset.booked === 'true';
+        const isBlocked = card.dataset.blocked === 'true';
+        const canEdit   = card.dataset.editable === 'true';
+        if (!canEdit) return;
 
-        const curLabel = draft[t.ymd] ?? t.baselineLabel;
-        const nextLabel = nextStatus(curLabel);
+        // Cycle label, persist, and update only this card
+        const currentLabel = draft[ymd] ?? baselineLabel;
+        const nextLabel = nextStatus(currentLabel);
 
-        toggledThisSession.add(t.ymd);
+        toggledThisSession.add(ymd);
 
-        if (nextLabel === t.baselineLabel) {
-          delete draft[t.ymd];
+        if (nextLabel === baselineLabel) {
+          delete draft[ymd];
         } else {
-          draft[t.ymd] = nextLabel;
+          draft[ymd] = nextLabel;
         }
         persistDraft();
         registerUserEdit();
 
-        renderTiles();
-        showFooterIfNeeded();
+        // Refresh card UI only (no grid rebuild, no equalization here)
+        const effective = draft[ymd] ?? baselineLabel;
+        updateCardUI(card, ymd, baselineLabel, effective, isBooked, isBlocked, canEdit);
 
-        // Re-anchor to the same tile to prevent jump
-        requestAnimationFrame(() => {
-          const newCard = document.querySelector(`.tile[data-ymd="${t.ymd}"]`);
-          if (!newCard) return;
-          const newTop = newCard.getBoundingClientRect().top;
-          const delta = newTop - prevTop;
-          if (Math.abs(delta) > 1) {
-            window.scrollBy({ top: delta, left: 0, behavior: 'instant' in window ? 'instant' : 'auto' });
-          }
-        });
+        // Refresh tooltip/hint for the new cycle state
+        const pseudoTile = { ymd, baselineLabel, effectiveLabel: effective };
+        card.title = buildCycleHint(pseudoTile);
+
+        // Footer visibility/animation can update safely
+        showFooterIfNeeded();
       });
     } else {
       card.title = t.booked ? 'BOOKED (locked)' : (t.status === 'BLOCKED' ? 'BLOCKED by 6-day rule' : 'Not editable');
@@ -1611,18 +1691,36 @@ function renderTiles() {
     }
   }
 
-  equalizeTileHeights();
-  // No grid re-size call here; avoid layout shifts when footer toggles.
+  // Equalize only on initial/full render, not on tap
+ equalizeTileHeights({ reset: true });
+  // No sizeGrid() here; avoids layout shifts when footer toggles.
 }
 
-function equalizeTileHeights() {
+let cachedTileHeight = 0; // global cache
+
+function equalizeTileHeights({ reset = false } = {}) {
   const tiles = Array.from(els.grid.querySelectorAll('.tile'));
   if (!tiles.length) return;
-  tiles.forEach(t => t.style.minHeight = '');
-  let max = 0;
-  tiles.forEach(t => { max = Math.max(max, Math.ceil(t.getBoundingClientRect().height)); });
-  tiles.forEach(t => { t.style.minHeight = max + 'px'; });
+
+  // On a full render / resize we recompute the max
+  if (reset || cachedTileHeight === 0) {
+    // Clear previous minHeight so we can measure natural heights
+    tiles.forEach(t => t.style.minHeight = '');
+
+    let max = 0;
+    tiles.forEach(t => {
+      max = Math.max(max, Math.ceil(t.getBoundingClientRect().height));
+    });
+
+    cachedTileHeight = max;
+  }
+
+  // Apply cached uniform height to all tiles
+  tiles.forEach(t => {
+    t.style.minHeight = cachedTileHeight + 'px';
+  });
 }
+
 function escapeHtml(s) {
   return String(s || '')
     .replace(/&/g,'&amp;')
@@ -1827,8 +1925,18 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
 });
 
 // ---------- Keep CSS vars fresh ----------
-window.addEventListener('resize', () => { sizeGrid(); equalizeTileHeights(); }, { passive: true });
-window.addEventListener('orientationchange', () => setTimeout(() => { sizeGrid(); equalizeTileHeights(); }, 250));
+window.addEventListener('resize', () => { 
+  sizeGrid(); 
+  equalizeTileHeights({ reset: true }); 
+}, { passive: true });
+
+window.addEventListener('orientationchange', () => 
+  setTimeout(() => { 
+    sizeGrid(); 
+    equalizeTileHeights({ reset: true }); 
+  }, 250)
+);
+
 
 function sizeGrid() {
   if (!els.grid) return;
@@ -1899,7 +2007,7 @@ window.addEventListener('hashchange', routeFromURL);
       }
     } finally {
       sizeGrid();
-      equalizeTileHeights();
+      equalizeTileHeights({ reset: true });
       hideLoading();
       ensurePastShiftsButton();
     }
