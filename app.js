@@ -170,10 +170,11 @@ const OVERLAY_CONFIG = {
   pastOverlay:     { dismissible: true,  blocking: false },
   contentOverlay:  { dismissible: true,  blocking: false },
   welcomeOverlay:  { dismissible: false, blocking: true  }, // MUST press “Got it”
-  // Login is truly blocking & non‑dismissable
+  // Login is truly blocking & non-dismissable
   loginOverlay:    { dismissible: false, blocking: true  },
   forgotOverlay:   { dismissible: true,  blocking: false },
-  resetOverlay:    { dismissible: false, blocking: true  }  // MUST complete/reset flow
+  resetOverlay:    { dismissible: false, blocking: true  }, // MUST complete/reset flow
+  alertOverlay:    { dismissible: false, blocking: true  }  // single-OK blocking alert
 };
 function isBlockingOverlayOpen() {
   const ids = Object.keys(OVERLAY_CONFIG).filter(id => OVERLAY_CONFIG[id].blocking === true);
@@ -222,13 +223,13 @@ function ensureLoadingOverlay() {
 
     /* Overlays */
     #pastOverlay, #contentOverlay, #welcomeOverlay,
-    #loginOverlay, #forgotOverlay, #resetOverlay {
+    #loginOverlay, #forgotOverlay, #resetOverlay, #alertOverlay {
       position: fixed; inset: 0; z-index: 9998;
       display: none; align-items: stretch; justify-content: center;
       background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
     }
     #pastOverlay.show, #contentOverlay.show, #welcomeOverlay.show,
-    #loginOverlay.show, #forgotOverlay.show, #resetOverlay.show { display: flex; }
+    #loginOverlay.show, #forgotOverlay.show, #resetOverlay.show, #alertOverlay.show { display: flex; }
 
     .sheet {
       background: #0f1115; color: #e7ecf3;
@@ -409,7 +410,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(contentOverlay);
 
-  // Welcome/Alert overlay (NON‑dismissable: no close button)
+  // Welcome/Alert overlay (NON-dismissable: no close button)
   const welcomeOverlay = document.createElement('div');
   welcomeOverlay.id = 'welcomeOverlay';
   welcomeOverlay.innerHTML = `
@@ -425,7 +426,23 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(welcomeOverlay);
 
-  // Login overlay (NON‑dismissable + BLOCKING) — NO close button
+  // Blocking single-OK alert overlay (NON-dismissable)
+  const alertOverlay = document.createElement('div');
+  alertOverlay.id = 'alertOverlay';
+  alertOverlay.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Alert">
+      <div class="sheet-header">
+        <div id="alertTitle" class="sheet-title">Notice</div>
+      </div>
+      <div id="alertBody" class="sheet-body"></div>
+      <div style="display:flex;justify-content:flex-end;gap:.5rem;padding:.5rem .9rem 1rem;">
+        <button id="alertOk" class="menu-item" style="border:1px solid #2a3446;">OKAY</button>
+      </div>
+    </div>
+  `;
+  document.body.appendChild(alertOverlay);
+
+  // Login overlay (NON-dismissable + BLOCKING) — NO close button
   const loginOverlay = document.createElement('div');
   loginOverlay.id = 'loginOverlay';
   loginOverlay.innerHTML = `
@@ -481,7 +498,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(forgotOverlay);
 
-  // Reset overlay (NON‑dismissable: no close button)
+  // Reset overlay (NON-dismissable: no close button)
   const resetOverlay = document.createElement('div');
   resetOverlay.id = 'resetOverlay';
   resetOverlay.innerHTML = `
@@ -520,10 +537,11 @@ function ensureLoadingOverlay() {
   [
     { overlayId:'pastOverlay',    closeId:'pastClose' },
     { overlayId:'contentOverlay', closeId:'contentClose' },
-    // welcomeOverlay: NO closeId (non‑dismissable)
-    // loginOverlay: NON‑dismissable (no close button, do NOT wire)
+    // welcomeOverlay: NO closeId (non-dismissable)
+    // loginOverlay: NON-dismissable (no close button, do NOT wire)
     { overlayId:'forgotOverlay',  closeId:'forgotClose' }
-    // resetOverlay: NO closeId (non‑dismissable)
+    // resetOverlay: NO closeId (non-dismissable)
+    // alertOverlay: NON-dismissable (wired via showBlockingAlert)
   ].forEach(({overlayId, closeId}) => {
     const overlay = document.getElementById(overlayId);
     const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
@@ -551,7 +569,7 @@ function ensureLoadingOverlay() {
   // Global Escape → only closes dismissible overlays
   document.addEventListener('keydown', (e) => {
     if (e.key !== 'Escape') return;
-    ['pastOverlay','contentOverlay','welcomeOverlay','loginOverlay','forgotOverlay','resetOverlay'].forEach(id => {
+    ['pastOverlay','contentOverlay','welcomeOverlay','loginOverlay','forgotOverlay','resetOverlay','alertOverlay'].forEach(id => {
       const ov = document.getElementById(id);
       const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
       if (ov && ov.classList.contains('show') && cfg.dismissible) closeOverlay(id);
@@ -586,7 +604,7 @@ function closeOverlay(overlayId, force=false) {
   if (!overlay) return;
 
   const dismissible = overlay.dataset.dismissible !== 'false';
-  if (!dismissible && !force) return; // honor non‑dismissable unless force=true (e.g., Got it)
+  if (!dismissible && !force) return; // honor non-dismissable unless force=true (e.g., Got it)
 
   overlay.classList.remove('show');
   releaseFocusTrap(overlay);
@@ -637,6 +655,25 @@ function hideLoading() {
   if (!overlay) return;
   _loadingCount = Math.max(0, _loadingCount - 1);
   if (_loadingCount === 0) overlay.classList.add('hidden');
+}
+
+// ----- Blocking alert helper (OK-only) -----
+function showBlockingAlert(message, onOk) {
+  ensureLoadingOverlay();
+  const body = document.getElementById('alertBody');
+  const ok = document.getElementById('alertOk');
+  const title = document.getElementById('alertTitle');
+  if (!body || !ok) return;
+  title.textContent = 'Notice';
+  body.innerHTML = `<div class="muted">${message || ''}</div>`;
+  // Replace previous click
+  const newOk = ok.cloneNode(true);
+  ok.parentNode.replaceChild(newOk, ok);
+  newOk.addEventListener('click', () => {
+    closeOverlay('alertOverlay', /*force*/true);
+    if (typeof onOk === 'function') onOk();
+  });
+  openOverlay('alertOverlay', '#alertOk');
 }
 
 /* ---------- PWA install prompt (improved) ---------- */
@@ -693,7 +730,8 @@ function openInstallInstructions() {
 window.addEventListener('beforeinstallprompt', (e) => {
   e.preventDefault();
   deferredPrompt = e;
-  if (els.installBtn && !isStandalone()) {
+  // Show CTA only when installable on Android/Chromium and not standalone
+  if (els.installBtn && !isStandalone() && isAndroid()) {
     els.installBtn.classList.remove('hidden');
     els.installBtn.disabled = false;
   }
@@ -702,7 +740,15 @@ window.addEventListener('beforeinstallprompt', (e) => {
 // Click handler for Install button
 els.installBtn && els.installBtn.addEventListener('click', async () => {
   if (isStandalone()) { els.installBtn.classList.add('hidden'); return; }
-  if (deferredPrompt) {
+
+  // iOS → always show instructions
+  if (isiOS()) {
+    openInstallInstructions();
+    return;
+  }
+
+  // Android/Chromium: only prompt if we captured BIP
+  if (isAndroid() && deferredPrompt) {
     try {
       deferredPrompt.prompt();
       await deferredPrompt.userChoice;
@@ -711,19 +757,32 @@ els.installBtn && els.installBtn.addEventListener('click', async () => {
     els.installBtn.classList.add('hidden');
     return;
   }
-  // Fallback path (iOS or no prompt available)
-  openInstallInstructions();
+
+  // Other/Not ready yet on Android
+  showToast('Install not available yet — try again shortly.');
 });
 
-// Hide CTA if already installed; show fallback if not
+// Hide or show CTA based on platform + state
 function syncInstallCTAVisibility() {
   if (!els.installBtn) return;
   if (isStandalone()) {
     els.installBtn.classList.add('hidden');
     els.installBtn.disabled = true;
-  } else {
+    return;
+  }
+  // iOS: visible (instructions)
+  if (isiOS()) {
     els.installBtn.classList.remove('hidden');
     els.installBtn.disabled = false;
+    return;
+  }
+  // Android/Chromium: visible only when BIP captured
+  if (isAndroid() && deferredPrompt) {
+    els.installBtn.classList.remove('hidden');
+    els.installBtn.disabled = false;
+  } else {
+    els.installBtn.classList.add('hidden');
+    els.installBtn.disabled = true;
   }
 }
 
@@ -736,7 +795,7 @@ window.addEventListener('appinstalled', () => {
 // Initial CTA sync (in case BIP never fires, e.g., iOS)
 document.addEventListener('DOMContentLoaded', () => {
   setTimeout(() => {
-    if (!deferredPrompt && els.installBtn) {
+    if (els.installBtn) {
       syncInstallCTAVisibility();
     }
   }, 400);
@@ -793,7 +852,7 @@ function showFooterIfNeeded() {
     else els.submitBtn.classList.remove('btn-attention');
   }
 
-  sizeGrid();
+  // Important: do NOT call sizeGrid() here to avoid scroll jolts when footer appears.
 }
 
 function showToast(msg, ms=2800) {
@@ -1185,10 +1244,15 @@ function openResetOverlay() {
   if (rs) rs.disabled = true; // disabled until validated
   openOverlay('resetOverlay', '#resetPassword');
 
-  // If token is missing, inform the user and keep button disabled
+  // If token is missing → immediately exit to blocking alert, then login
   const k = new URLSearchParams(location.search).get('k');
-  if (!k && rerr) {
-    rerr.textContent = 'This reset link is invalid or missing.';
+  if (!k) {
+    closeOverlay('resetOverlay', /*force*/true);
+    showBlockingAlert('This reset link is invalid or missing.', () => {
+      const clean = location.pathname + (location.hash || '');
+      history.replaceState(null, '', clean);
+      openLoginOverlay();
+    });
   }
 }
 
@@ -1320,7 +1384,13 @@ function wireAuthForms() {
     const pw = rp.value || '';
     const k = new URLSearchParams(location.search).get('k') || '';
     if (!k) {
-      if (rerr) rerr.textContent = 'This reset link is invalid or missing.';
+      // Defensive: should be handled earlier
+      closeOverlay('resetOverlay', /*force*/true);
+      showBlockingAlert('This reset link is invalid or missing.', () => {
+        const clean = location.pathname + (location.hash || '');
+        history.replaceState(null, '', clean);
+        openLoginOverlay();
+      });
       return;
     }
 
@@ -1330,7 +1400,13 @@ function wireAuthForms() {
       if (!res.ok || !json || json.ok === false) {
         const msg = (json && json.error) || `HTTP ${res.status}`;
         if (msg === 'INVALID_OR_EXPIRED_RESET') {
-          rerr.textContent = 'This link has expired. Please request a new one.';
+          // Close reset → blocking OK → clean URL → to Login
+          closeOverlay('resetOverlay', /*force*/true);
+          showBlockingAlert('This link has expired. Please request a new one.', () => {
+            const clean = location.pathname + (location.hash || '');
+            history.replaceState(null, '', clean);
+            openLoginOverlay();
+          });
         } else if (msg === 'WEAK_PASSWORD') {
           rerr.textContent = 'Use at least 8 chars with uppercase, lowercase, and a number.';
         } else {
@@ -1381,7 +1457,6 @@ async function tryAutoLoginViaCredentialsAPI() {
   } catch {}
   return false;
 }
-
 // ---------- Rendering ----------
 function renderTiles() {
   if (!els.grid) { console.warn('renderTiles(): #grid not found'); return; }
@@ -1537,8 +1612,9 @@ function renderTiles() {
   }
 
   equalizeTileHeights();
-  sizeGrid();
+  // No grid re-size call here; avoid layout shifts when footer toggles.
 }
+
 function equalizeTileHeights() {
   const tiles = Array.from(els.grid.querySelectorAll('.tile'));
   if (!tiles.length) return;
@@ -1806,7 +1882,7 @@ window.addEventListener('hashchange', routeFromURL);
   if (hasK) {
     openResetOverlay();
   } else if (!identity.msisdn) {
-    // Attempt silent auto‑sign‑in on Android/Chrome
+    // Attempt silent auto-sign-in on Android/Chrome
     const autoOK = await tryAutoLoginViaCredentialsAPI();
     if (!autoOK && !isBlockingOverlayOpen()) openLoginOverlay();
   }
@@ -1831,3 +1907,4 @@ window.addEventListener('hashchange', routeFromURL);
 
   routeFromURL();
 })();
+
