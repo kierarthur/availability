@@ -1,5 +1,5 @@
 /* ====== CONFIG — replace these with your values ====== */
-const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbwGWn3JxvP7oze5sw_CuUNEChqm0E6nZwRa_g_iX21_lkhbWJDINibKBUwcPlGiR3Nnyw/exec'; // <-- REPLACE
+const API_BASE_URL     = 'https://script.google.com/macros/s/AKfycbw9X71BbvC55s2iJhyfGU5PoBtOxC9jvFsdKpd8BvrNghMfw8Yy9X-iSZ1Xcw9oTAPMcA/exec'; // <-- REPLACE
 const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 /* ===================================================== */
 
@@ -1839,6 +1839,9 @@ async function submitChanges() {
     return;
   }
 
+  // Map for quick lookup of the code we attempted to set per day
+  const changeMap = new Map(changes.map(c => [c.ymd, c.code]));
+
   showLoading('Saving...');
 
   try {
@@ -1850,11 +1853,7 @@ async function submitChanges() {
     }
 
     if (!res.ok || !json || json.ok === false) {
-      const unauthErrors = new Set([
-        'INVALID_OR_UNKNOWN_IDENTITY',
-        'NOT_IN_CANDIDATE_LIST',
-        'FORBIDDEN'
-      ]);
+      const unauthErrors = new Set(['INVALID_OR_UNKNOWN_IDENTITY','NOT_IN_CANDIDATE_LIST','FORBIDDEN']);
       if (json && unauthErrors.has(json.error)) {
         clearSavedIdentity();
         if (!isBlockingOverlayOpen()) openLoginOverlay();
@@ -1865,16 +1864,35 @@ async function submitChanges() {
       throw new Error(msg + extra);
     }
 
-    const results = json.results || [];
-    const applied = results.filter(r => r.applied).length;
+    const results  = json.results || [];
+    const applied  = results.filter(r => r.applied);
     const rejected = results.filter(r => !r.applied);
-    if (rejected.length) {
-      const reasons = rejected.slice(0,3).map(r => `${r.ymd}: ${r.reason}`).join(', ');
-      showToast(`Saved ${applied}. Skipped ${rejected.length} (${reasons}${rejected.length>3?', …':''}).`, 4200);
-    } else {
-      showToast(`Saved ${applied} change${applied===1?'':'s'}.`);
+
+    // Optimistically update local baseline for successfully applied days
+    if (baseline && Array.isArray(baseline.tiles) && applied.length) {
+      const byYmd = new Map(baseline.tiles.map(t => [t.ymd, t]));
+      for (const r of applied) {
+        const tile = byYmd.get(r.ymd);
+        if (!tile) continue;
+        // Prefer code from server result if present, else fall back to what we sent
+        const newCode = (r.code !== undefined && r.code !== null) ? r.code : changeMap.get(r.ymd);
+        if (newCode !== undefined) {
+          tile.status = newCode; // keep booked/blocked flags as-is; server rules will sync on next real refresh
+        }
+      }
+      // Bump the "last loaded" timestamp locally to avoid stale-looking UI
+      saveLastLoaded(new Date().toISOString());
     }
 
+    // User feedback
+    if (rejected.length) {
+      const reasons = rejected.slice(0,3).map(r => `${r.ymd}: ${r.reason}`).join(', ');
+      showToast(`Saved ${applied.length}. Skipped ${rejected.length} (${reasons}${rejected.length>3?', …':''}).`, 4200);
+    } else {
+      showToast(`Saved ${applied.length} change${applied.length===1?'':'s'}.`);
+    }
+
+    // Clear local edit state
     draft = {};
     persistDraft();
     cancelSubmitNudge();
@@ -1882,7 +1900,9 @@ async function submitChanges() {
     lastEditAt = 0;
     toggledThisSession.clear();
 
-    await loadFromServer({ force: true });
+    // Re-render locally (no full reload)
+    renderTiles();
+    showFooterIfNeeded();
   } catch (err) {
     if (String(err && err.message) !== '__AUTH_STOP__') {
       showToast('Submit failed: ' + (err.message || err));
@@ -1891,6 +1911,7 @@ async function submitChanges() {
     hideLoading();
   }
 }
+
 
 function clearChanges() {
   draft = {};
