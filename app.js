@@ -2455,12 +2455,20 @@ function renderEmergencyStep() {
 
       // Fetch options (lazy)
       (async () => {
-        const { ok, options, error } = await apiPostRunningLateOptions(state.selectedShift);
+        const { ok, options, context, eligible, reason, error } = await apiPostRunningLateOptions(state.selectedShift);
         if (!ok) {
           optsWrap.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
           return;
         }
+        // --- store both options and the server-provided context for PREVIEW/SEND ---
         state.lateOptions = options;
+        state.runningLateContext = context;   // <-- keep this for subsequent PREVIEW/SEND
+        // If the server says not eligible, stop here
+        if (eligible === false) {
+          optsWrap.innerHTML = `<div class="muted">${escapeHtml(reason || 'Not eligible right now.')}</div>`;
+          return;
+        }
+
         optsWrap.innerHTML = '';
 
         const group = document.createElement('div');
@@ -2592,6 +2600,7 @@ function renderEmergencyStep() {
     cont && cont.addEventListener('click', handleEmergencyConfirm);
   }
 }
+
 
 
 /* =========================
