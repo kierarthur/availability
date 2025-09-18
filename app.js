@@ -2092,40 +2092,63 @@ async function apiPostRunningLateOptions(shift) {
     const { res, json } = await apiPOST({ action: 'RUNNING_LATE_OPTIONS', shift });
     if (!res.ok || !json || json.ok === false) {
       const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
-      return { ok: false, options: [], error: msg || 'UNKNOWN_ERROR' };
+      return { ok: false, options: [], context: null, eligible: false, error: msg || 'UNKNOWN_ERROR' };
     }
-    const options = Array.isArray(json.options) ? json.options : [];
-    return { ok: true, options };
+    const options  = Array.isArray(json.options) ? json.options : [];
+    const context  = json.context || null;            // <-- keep for PREVIEW/SEND
+    const eligible = !!json.eligible;
+    const reason   = json.reason || '';
+
+    return { ok: true, options, context, eligible, reason };
   } catch (e) {
-    return { ok: false, options: [], error: String(e && e.message) || 'NETWORK_ERROR' };
+    return { ok: false, options: [], context: null, eligible: false, error: String(e && e.message) || 'NETWORK_ERROR' };
   }
 }
 
-/** POST { action:'RUNNING_LATE_PREVIEW', shift, eta_label } */
+/** POST { action:'RUNNING_LATE_PREVIEW', context, eta_label } */
 async function apiPostRunningLatePreview(shift, etaLabel) {
   try {
-    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_PREVIEW', shift, eta_label: etaLabel });
+    // `shift` may actually be the full response from OPTIONS, or just the context itself.
+    const context = shift && shift.context ? shift.context : shift;
+
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_PREVIEW', context, eta_label: etaLabel });
     if (!res.ok || !json || json.ok === false) {
       const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
-      return { ok: false, previewHtml: '', error: msg || 'UNKNOWN_ERROR' };
+      return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: msg || 'UNKNOWN_ERROR' };
     }
-    return { ok: true, previewHtml: json.previewHtml || '' };
+
+    return {
+      ok: true,
+      previewHtml: json.previewHtml || '',
+      context: json.context || context || null,        // echo back for SEND
+      minutes: Number(json.minutes || 0),
+      arrivalByLabel: (json.preview && json.preview.arrival_by_label) || ''
+    };
   } catch (e) {
-    return { ok: false, previewHtml: '', error: String(e && e.message) || 'NETWORK_ERROR' };
+    return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: String(e && e.message) || 'NETWORK_ERROR' };
   }
 }
 
-/** POST { action:'RUNNING_LATE_SEND', shift, eta_label } */
+/** POST { action:'RUNNING_LATE_SEND', context, eta_label } */
 async function apiPostRunningLateSend(shift, etaLabel) {
   try {
-    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_SEND', shift, eta_label: etaLabel });
+    // `shift` may actually be the full response from OPTIONS/PREVIEW, or just the context itself.
+    const context = shift && shift.context ? shift.context : shift;
+
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_SEND', context, eta_label: etaLabel });
     if (!res.ok || !json || json.ok === false) {
       const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
-      return { ok: false, message: '', error: msg || 'UNKNOWN_ERROR' };
+      return { ok: false, sent: null, tokens: null, error: msg || 'UNKNOWN_ERROR' };
     }
-    return { ok: true, message: json.message || '' };
+
+    // Server returns { ok, sent: {sameShift, previousShift, emergencyContacts}, tokens: {...} }
+    return {
+      ok: true,
+      sent: json.sent || null,
+      tokens: json.tokens || null
+    };
   } catch (e) {
-    return { ok: false, message: '', error: String(e && e.message) || 'NETWORK_ERROR' };
+    return { ok: false, sent: null, tokens: null, error: String(e && e.message) || 'NETWORK_ERROR' };
   }
 }
 
