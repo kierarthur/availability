@@ -2648,8 +2648,12 @@ async function handleEmergencyCollectDetails() {
       showToast('Please pick how late you will be.');
       return;
     }
+    // Use the server-provided context from OPTIONS if available,
+    // otherwise fall back to the raw selectedShift.
+    const ctxForPreview = emergencyState.runningLateContext || emergencyState.selectedShift;
+
     // Optional: preview
-    const { ok, previewHtml } = await apiPostRunningLatePreview(emergencyState.selectedShift, emergencyState.selectedLateLabel);
+    const { ok, previewHtml } = await apiPostRunningLatePreview(ctxForPreview, emergencyState.selectedLateLabel);
     emergencyState.previewHtml = ok ? (previewHtml || '') : '';
     emergencyState.step = 'CONFIRM';
     renderEmergencyStep();
@@ -2674,9 +2678,21 @@ async function handleEmergencyConfirm() {
 
   try {
     if (emergencyState.issueType === 'RUNNING_LATE') {
-      await submitEmergencyRunningLate();
+      // Use the server-provided context from OPTIONS if present; otherwise fall back.
+      const ctx =
+        emergencyState.runningLateContext ||
+        (emergencyState.selectedShift && emergencyState.selectedShift.context) ||
+        emergencyState.selectedShift;
+
+      // Guard: need a late label and a usable context
+      if (!emergencyState.selectedLateLabel || !ctx) {
+        showToast('Please pick how late you will be.');
+        return;
+      }
+
+      await submitEmergencyRunningLate(ctx, emergencyState.selectedLateLabel);
     } else {
-      await submitEmergencyRaise();
+      await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
     }
   } finally {
     if (footer) {
@@ -2691,7 +2707,7 @@ async function handleEmergencyConfirm() {
  * NEW SUBMITTERS
  * ========================= */
 
-async function submitEmergencyRunningLate() {
+async function submitEmergencyRunningLate(ctx, label) {
   const body = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
   const footer = document.getElementById('emergencyFooter');
@@ -2700,8 +2716,9 @@ async function submitEmergencyRunningLate() {
   showLoading('Sending…');
   try {
     const { ok, error } = await apiPostRunningLateSend(
-      emergencyState.selectedShift,
-      emergencyState.selectedLateLabel
+      // use the server-provided context (from OPTIONS/PREVIEW), not the raw shift
+      ctx || emergencyState.runningLateContext || emergencyState.selectedShift,
+      label || emergencyState.selectedLateLabel
     );
     if (!ok) {
       body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
@@ -2737,6 +2754,7 @@ async function submitEmergencyRunningLate() {
     hideLoading();
   }
 }
+
 
 async function submitEmergencyRaise() {
   const body = document.getElementById('emergencyBody');
