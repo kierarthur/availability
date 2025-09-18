@@ -21,7 +21,6 @@ const STATUS_TO_CODE = {
   'LONG DAY/NIGHT':       'LD/N'   // yellow
 };
 const CODE_TO_STATUS = Object.entries(STATUS_TO_CODE).reduce((acc,[k,v]) => (acc[v]=k, acc), {});
-
 const els = {
   grid: document.getElementById('grid'),
   footer: document.getElementById('footer'),
@@ -29,6 +28,7 @@ const els = {
   submitBtn: document.getElementById('submitBtn'),
   clearBtn: document.getElementById('clearBtn'),
   refreshBtn: document.getElementById('refreshBtn'),
+  emergencyBtn: document.getElementById('emergencyBtn'), // new red EMERGENCY button
   lastLoaded: document.getElementById('lastLoaded'), // optional in HTML
   toast: document.getElementById('toast'),
   installBtn: document.getElementById('installBtn'),
@@ -48,6 +48,7 @@ function showAuthError(message = 'Not an authorised user') {
   try { els.submitBtn && (els.submitBtn.disabled = true); } catch {}
   try { els.clearBtn && (els.clearBtn.disabled = true); } catch {}
   try { els.refreshBtn && (els.refreshBtn.disabled = true); } catch {}
+  try { els.emergencyBtn && (els.emergencyBtn.disabled = true); } catch {} // NEW
 
   hideLoading();
 
@@ -78,6 +79,7 @@ function showAuthError(message = 'Not an authorised user') {
   `;
   document.body.appendChild(div);
 }
+
 
 // ---------- State ----------
 let baseline = null;          // server response (tiles, lastLoadedAt, candidateName, candidate, newUserHint? / iOS/Android variants)
@@ -174,8 +176,10 @@ const OVERLAY_CONFIG = {
   loginOverlay:    { dismissible: false, blocking: true  },
   forgotOverlay:   { dismissible: true,  blocking: false },
   resetOverlay:    { dismissible: false, blocking: true  }, // MUST complete/reset flow
+  emergencyOverlay:{ dismissible: true,  blocking: false }, // new EMERGENCY flow wizard
   alertOverlay:    { dismissible: false, blocking: true  }  // single-OK blocking alert
 };
+
 function isBlockingOverlayOpen() {
   const ids = Object.keys(OVERLAY_CONFIG).filter(id => OVERLAY_CONFIG[id].blocking === true);
   return ids.some(id => {
@@ -222,14 +226,16 @@ function ensureLoadingOverlay() {
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Overlays */
-    #pastOverlay, #contentOverlay, #welcomeOverlay,
-    #loginOverlay, #forgotOverlay, #resetOverlay, #alertOverlay {
-      position: fixed; inset: 0; z-index: 9998;
-      display: none; align-items: stretch; justify-content: center;
-      background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
-    }
-    #pastOverlay.show, #contentOverlay.show, #welcomeOverlay.show,
-    #loginOverlay.show, #forgotOverlay.show, #resetOverlay.show, #alertOverlay.show { display: flex; }
+#pastOverlay, #contentOverlay, #welcomeOverlay,
+#loginOverlay, #forgotOverlay, #resetOverlay, #alertOverlay, #emergencyOverlay {
+  position: fixed; inset: 0; z-index: 9998;
+  display: none; align-items: stretch; justify-content: center;
+  background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
+}
+#pastOverlay.show, #contentOverlay.show, #welcomeOverlay.show,
+#loginOverlay.show, #forgotOverlay.show, #resetOverlay.show, #alertOverlay.show, #emergencyOverlay.show {
+  display: flex;
+}
 
     .sheet {
       background: #0f1115; color: #e7ecf3;
@@ -535,46 +541,57 @@ function ensureLoadingOverlay() {
 
   // Shared overlay wiring — respect dismissibility
   [
-    { overlayId:'pastOverlay',    closeId:'pastClose' },
-    { overlayId:'contentOverlay', closeId:'contentClose' },
-    // welcomeOverlay: NO closeId (non-dismissable)
-    // loginOverlay: NON-dismissable (no close button, do NOT wire)
-    { overlayId:'forgotOverlay',  closeId:'forgotClose' }
-    // resetOverlay: NO closeId (non-dismissable)
-    // alertOverlay: NON-dismissable (wired via showBlockingAlert)
-  ].forEach(({overlayId, closeId}) => {
-    const overlay = document.getElementById(overlayId);
-    const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
-    if (!overlay) return;
+  { overlayId:'pastOverlay',    closeId:'pastClose' },
+  { overlayId:'contentOverlay', closeId:'contentClose' },
+  // welcomeOverlay: NO closeId (non-dismissable)
+  // loginOverlay: NON-dismissable (no close button, do NOT wire)
+  { overlayId:'forgotOverlay',  closeId:'forgotClose' },
+  // resetOverlay: NO closeId (non-dismissable)
+  // alertOverlay: NON-dismissable (wired via showBlockingAlert)
+  { overlayId:'emergencyOverlay', closeId:'emergencyClose' } // NEW
+].forEach(({overlayId, closeId}) => {
+  const overlay = document.getElementById(overlayId);
+  const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
+  if (!overlay) return;
 
-    // Backdrop click → only if dismissible
-    overlay.addEventListener('click', (e) => {
-      if (e.target !== overlay) return;
-      if (!cfg.dismissible) { e.stopPropagation(); return; }
-      closeOverlay(overlayId);
-    });
+  // Backdrop click → only if dismissible
+  overlay.addEventListener('click', (e) => {
+    if (e.target !== overlay) return;
+    if (!cfg.dismissible) { e.stopPropagation(); return; }
+    closeOverlay(overlayId);
+  });
 
-    // Close button → only wired if exists and dismissible
-    if (closeId) {
-      const btn = document.getElementById(closeId);
-      if (btn) {
-        btn.addEventListener('click', () => {
-          if (!cfg.dismissible) return;
-          closeOverlay(overlayId);
-        });
-      }
+  // Close button → only wired if exists and dismissible
+  if (closeId) {
+    const btn = document.getElementById(closeId);
+    if (btn) {
+      btn.addEventListener('click', () => {
+        if (!cfg.dismissible) return;
+        closeOverlay(overlayId);
+      });
     }
-  });
+  }
+});
 
-  // Global Escape → only closes dismissible overlays
-  document.addEventListener('keydown', (e) => {
-    if (e.key !== 'Escape') return;
-    ['pastOverlay','contentOverlay','welcomeOverlay','loginOverlay','forgotOverlay','resetOverlay','alertOverlay'].forEach(id => {
-      const ov = document.getElementById(id);
-      const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
-      if (ov && ov.classList.contains('show') && cfg.dismissible) closeOverlay(id);
-    });
+// Global Escape → only closes dismissible overlays
+document.addEventListener('keydown', (e) => {
+  if (e.key !== 'Escape') return;
+  [
+    'pastOverlay',
+    'contentOverlay',
+    'welcomeOverlay',
+    'loginOverlay',
+    'forgotOverlay',
+    'resetOverlay',
+    'alertOverlay',
+    'emergencyOverlay' // NEW
+  ].forEach(id => {
+    const ov = document.getElementById(id);
+    const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
+    if (ov && ov.classList.contains('show') && cfg.dismissible) closeOverlay(id);
   });
+});
+
 
   // Wire auth forms
   wireAuthForms();
@@ -817,15 +834,28 @@ document.addEventListener('visibilitychange', () => {
       showLoading();
       loadFromServer({ force: true })
         .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
-        .finally(hideLoading);
+        .finally(() => {
+          hideLoading();
+          // Re-check emergency eligibility (fire-and-forget; hides on failure)
+          refreshEmergencyEligibility({ silent: true });
+        });
+
     } else if (!Object.keys(draft).length) {
       showLoading();
-      loadFromServer().catch(()=>{}).finally(hideLoading);
+      loadFromServer()
+        .catch(() => {})
+        .finally(() => {
+          hideLoading();
+          // Re-check emergency eligibility (fire-and-forget; hides on failure)
+          refreshEmergencyEligibility({ silent: true });
+        });
     }
+
     if (Object.keys(draft).length) scheduleSubmitNudge();
     lastHiddenAt = null;
   }
 });
+
 
 // ---------- Helpers ----------
 function statusClass(label) {
@@ -1165,14 +1195,37 @@ function ensureMenu() {
   });
 
   document.getElementById('miLogout').addEventListener('click', () => {
-    list.classList.remove('show');
-    if (isBlockingOverlayOpen()) return;
-    clearSavedIdentity();
-    draft = {}; persistDraft();
-    baseline = null;
-    els.grid && (els.grid.innerHTML = '');
-    openLoginOverlay();
-  });
+  list.classList.remove('show');
+  if (isBlockingOverlayOpen()) return;
+
+  clearSavedIdentity();
+  draft = {}; persistDraft();
+  baseline = null;
+  els.grid && (els.grid.innerHTML = '');
+
+  // --- NEW: clear emergency state + hide/disable the button + close overlay ---
+  try {
+    // Clear any cached emergency state your new code keeps
+    window._emergencyEligibleShifts = [];
+    window._emergencyState = null;
+  } catch {}
+
+  // Hide/disable the EMERGENCY button and un-wire it
+  try {
+  if (els.emergencyBtn) {
+    els.emergencyBtn.hidden = true;
+    els.emergencyBtn.disabled = true;
+    // No need to remove event listeners here; wireEmergencyButton/openEmergencyOverlay handles click logic.
+  }
+} catch {}
+
+
+  // If the emergency overlay is open, close it defensively
+  try { closeOverlay('emergencyOverlay'); } catch {}
+
+  openLoginOverlay();
+});
+
 }
 
 // ---------- Welcome / newUserHint with platform targeting ----------
@@ -1462,7 +1515,11 @@ async function tryAutoLoginViaCredentialsAPI() {
 function renderTiles() {
   if (!els.grid) { console.warn('renderTiles(): #grid not found'); return; }
   els.grid.innerHTML = '';
-  if (!baseline || !baseline.tiles) return;
+  if (!baseline || !baseline.tiles) {
+    // Keep EMERGENCY state in sync even if there are no tiles
+    try { refreshEmergencyEligibility({ silent: true }); } catch (e) { /* fail closed */ }
+    return;
+  }
 
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
@@ -1692,9 +1749,21 @@ function renderTiles() {
   }
 
   // Equalize only on initial/full render, not on tap
- equalizeTileHeights({ reset: true });
+  equalizeTileHeights({ reset: true });
   // No sizeGrid() here; avoids layout shifts when footer toggles.
+
+  // --- Keep EMERGENCY state in sync with the freshly rendered tiles ---
+  try {
+    // Uses current baseline to compute eligible shifts and toggle the button.
+    // Safe if function is absent; we fail closed (button hidden/disabled).
+   refreshEmergencyEligibility({ silent: true });
+
+  } catch (e) {
+    try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+    console.warn('Emergency eligibility sync (post-render) failed:', e);
+  }
 }
+
 
 let cachedTileHeight = 0; // global cache
 
@@ -1743,20 +1812,28 @@ function authToken() {
 // ---------- Load + Submit ----------
 async function loadFromServer({ force=false } = {}) {
   if (!authToken()) {
+    // Hide/disable EMERGENCY on auth/token problems
+    try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
     showAuthError('Missing or invalid token');
     throw new Error('__AUTH_STOP__');
   }
   if (!identity || !identity.msisdn) {
-    // Not signed in yet; show login if not already visible (but not over blocking modals)
+    // Not signed in yet; hide/disable EMERGENCY and show login if possible
+    try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
     if (!isBlockingOverlayOpen()) openLoginOverlay();
     return;
   }
+
+  // Default-safe state for EMERGENCY button before we know eligibility
+  try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
 
   showLoading();
 
   try {
     const { res, json } = await apiGET({});
     if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
+      // Busy → keep EMERGENCY hidden/disabled
+      try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
       showToast('Server is busy, please try again.');
       return;
     }
@@ -1764,6 +1841,8 @@ async function loadFromServer({ force=false } = {}) {
     const errCode = (json && json.error) || '';
     if (!res.ok) {
       if (res.status === 400 || res.status === 401 || res.status === 403) {
+        // Unauth → hide/disable EMERGENCY
+        try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
         clearSavedIdentity();
         showAuthError('Not an authorised user');
         throw new Error('__AUTH_STOP__');
@@ -1778,6 +1857,8 @@ async function loadFromServer({ force=false } = {}) {
         'FORBIDDEN'
       ]);
       if (unauthErrors.has(errCode)) {
+        // Unauth → hide/disable EMERGENCY
+        try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
         clearSavedIdentity();
         if (!isBlockingOverlayOpen()) openLoginOverlay();
         return;
@@ -1819,6 +1900,17 @@ async function loadFromServer({ force=false } = {}) {
     renderTiles();
     showFooterIfNeeded();
     maybeShowWelcome(); // uses ios/android-specific messages if provided
+
+    // ---- EMERGENCY eligibility + UI sync (NEW) ----
+    try {
+      await refreshEmergencyEligibility({ silent: true });
+      // ^ This should (a) compute/fetch eligible shifts, (b) cache them for the modal,
+      // and (c) show/enable or hide/disable els.emergencyBtn accordingly.
+    } catch (e) {
+      // If eligibility sync fails, keep the button hidden/disabled and log gently.
+      try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+      console.warn('Emergency eligibility sync failed:', e);
+    }
   } finally {
     hideLoading();
   }
@@ -1908,8 +2000,11 @@ async function submitChanges() {
       showToast('Submit failed: ' + (err.message || err));
     }
   } finally {
-    hideLoading();
-  }
+  hideLoading();
+  try { refreshEmergencyEligibility({ silent:true }); } catch {}
+
+}
+
 }
 
 
@@ -1922,6 +2017,9 @@ function clearChanges() {
   cancelSubmitNudge();
   nudgeShown = false;
   lastEditAt = 0;
+    try { refreshEmergencyEligibility({ silent:true }); } catch {}
+
+
 }
 
 // ---------- UI events ----------
@@ -1940,9 +2038,12 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
     await loadFromServer({ force: true });
   } catch (e) {
     if (!AUTH_DENIED) showToast('Reload failed: ' + e.message);
-  } finally {
+   } finally {
     hideLoading();
+    try { refreshEmergencyEligibility({ silent:true }); } catch {}
+
   }
+
 });
 
 // ---------- Keep CSS vars fresh ----------
@@ -1957,6 +2058,979 @@ window.addEventListener('orientationchange', () =>
     equalizeTileHeights({ reset: true }); 
   }, 250)
 );
+
+/* =========================
+ * NEW STATE (module-level)
+ * ========================= */
+let emergencyState = null;            // Wizard state (see resetEmergencyState)
+let emergencyEligibilityCache = null; // Last successful result from apiGetEmergencyWindow()
+
+
+/* =========================
+ * NEW API WRAPPERS
+ * (Apps Script endpoints)
+ * ========================= */
+
+/** GET ?view=emergency_window */
+async function apiGetEmergencyWindow() {
+  try {
+    const { res, json } = await apiGET({ view: 'emergency_window' });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, eligible: [], error: msg || 'UNKNOWN_ERROR' };
+    }
+    const eligible = Array.isArray(json.eligible) ? json.eligible : [];
+    return { ok: true, eligible, serverTime: json.serverTime || null };
+  } catch (e) {
+    return { ok: false, eligible: [], error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+/** POST { action:'RUNNING_LATE_OPTIONS', shift } */
+async function apiPostRunningLateOptions(shift) {
+  try {
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_OPTIONS', shift });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, options: [], error: msg || 'UNKNOWN_ERROR' };
+    }
+    const options = Array.isArray(json.options) ? json.options : [];
+    return { ok: true, options };
+  } catch (e) {
+    return { ok: false, options: [], error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+/** POST { action:'RUNNING_LATE_PREVIEW', shift, eta_label } */
+async function apiPostRunningLatePreview(shift, etaLabel) {
+  try {
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_PREVIEW', shift, eta_label: etaLabel });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, previewHtml: '', error: msg || 'UNKNOWN_ERROR' };
+    }
+    return { ok: true, previewHtml: json.previewHtml || '' };
+  } catch (e) {
+    return { ok: false, previewHtml: '', error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+/** POST { action:'RUNNING_LATE_SEND', shift, eta_label } */
+async function apiPostRunningLateSend(shift, etaLabel) {
+  try {
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_SEND', shift, eta_label: etaLabel });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, message: '', error: msg || 'UNKNOWN_ERROR' };
+    }
+    return { ok: true, message: json.message || '' };
+  } catch (e) {
+    return { ok: false, message: '', error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+/** POST { action:'EMERGENCY_RAISE', shift, issue:{...} } */
+async function apiPostEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTimeLabel) {
+  try {
+    const body = {
+      action: 'EMERGENCY_RAISE',
+      shift,
+      issue: {
+        issue_type: issueType,                 // "CANNOT_ATTEND" | "LEAVE_EARLY"
+        eta_or_leave_time_label: etaOrLeaveTimeLabel || '',
+        reason_text: reasonText || ''
+      }
+    };
+    const { res, json } = await apiPOST(body);
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, message: '', error: msg || 'UNKNOWN_ERROR' };
+    }
+    return { ok: true, message: json.message || '' };
+  } catch (e) {
+    return { ok: false, message: '', error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+
+/* =========================
+ * NEW UI ENTRYPOINTS
+ * ========================= */
+
+/** Create the bright red EMERGENCY button next to Refresh (once). Hidden by default. */
+function ensureEmergencyButton() {
+  const existing = document.getElementById('emergencyBtn');
+  if (existing) { 
+    els.emergencyBtn = existing; // keep els in sync if already present
+    return; 
+  }
+
+  // Find header and refresh button
+  const header = document.querySelector('header');
+  if (!header || !els.refreshBtn) return;
+
+  // Create button
+  const btn = document.createElement('button');
+  btn.id = 'emergencyBtn';
+  btn.type = 'button';
+  btn.textContent = 'EMERGENCY';
+  btn.setAttribute('aria-label', 'Report an emergency');
+  btn.className = ''; // do not inherit standard .btn styling
+  Object.assign(btn.style, {
+    background: '#e06666',
+    color: '#ffffff',
+    fontWeight: '900',
+    borderRadius: '10px',
+    padding: '.5rem .7rem',
+    border: '0',
+    cursor: 'pointer',
+    fontSize: '.9rem',
+    outline: '0',
+    transition: 'transform .08s ease, opacity .15s ease',
+    boxShadow: '0 0 0 1px rgba(0,0,0,.2) inset',
+  });
+  btn.onpointerdown = () => { btn.style.transform = 'scale(0.98)'; };
+  btn.onpointerup = () => { btn.style.transform = 'scale(1)'; };
+
+  // Hidden by default
+  btn.hidden = true;
+
+  // Insert immediately after Refresh
+  els.refreshBtn.insertAdjacentElement('afterend', btn);
+  els.emergencyBtn = btn; // <-- keep els in sync
+
+  // Wire click
+  btn.addEventListener('click', () => {
+    if (btn.dataset.busy === '1') return;
+    openEmergencyOverlay();
+  });
+}
+
+/** Show/hide the EMERGENCY button based on eligible shifts. */
+function syncEmergencyButtonVisibility(eligible) {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+  const hasEligible = Array.isArray(eligible) && eligible.length > 0;
+  btn.hidden = !hasEligible;
+}
+
+/** Open the Emergency overlay, seeding state from cached/fetched eligibility. */
+async function openEmergencyOverlay() {
+  if (isBlockingOverlayOpen()) return;
+
+  ensureEmergencyOverlay();
+  const btn = document.getElementById('emergencyBtn');
+  if (btn) { btn.dataset.busy = '1'; btn.style.opacity = '.9'; btn.style.pointerEvents = 'none'; }
+
+  try {
+    // Use cache first; if none, fetch
+    if (!emergencyEligibilityCache) {
+      const { ok, eligible, error } = await apiGetEmergencyWindow();
+      if (!ok) {
+        showToast(mapServerErrorToMessage(error));
+        return;
+      }
+      emergencyEligibilityCache = { eligible };
+    }
+
+    resetEmergencyState();
+    emergencyState.eligible = emergencyEligibilityCache.eligible || [];
+    emergencyState.step = 'PICK_SHIFT';
+
+    // Open overlay and render
+    openOverlay('emergencyOverlay', '#emergencyClose');
+    renderEmergencyStep();
+  } finally {
+    if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+  }
+}
+
+/** Close the Emergency overlay and reset state. */
+function closeEmergencyOverlay() {
+  closeOverlay('emergencyOverlay', /*force*/true);
+  emergencyState = null;
+}
+
+/** Reset the wizard state but keep overlay open. */
+function resetEmergencyState() {
+  emergencyState = {
+    eligible: [],
+    selectedShift: null,
+    issueType: null,              // 'RUNNING_LATE' | 'CANNOT_ATTEND' | 'LEAVE_EARLY'
+    lateOptions: [],              // [{ label, minutes }]
+    selectedLateLabel: null,
+    reasonText: '',
+    previewHtml: '',
+    step: 'PICK_SHIFT'
+  };
+}
+
+
+/* =========================
+ * NEW OVERLAY RENDERER
+ * ========================= */
+
+/** Build and manage the Emergency overlay's current step. */
+function renderEmergencyStep() {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  // Utilities for footer buttons
+  function setFooter({ showContinue = true, continueText = 'Continue', continueDisabled = false, showCancel = true, cancelText = 'Cancel' } = {}) {
+    footer.innerHTML = '';
+    if (showCancel) {
+      const cancel = document.createElement('button');
+      cancel.id = 'emergencyCancel';
+      cancel.type = 'button';
+      cancel.textContent = cancelText;
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', closeEmergencyOverlay);
+      footer.appendChild(cancel);
+    }
+    if (showContinue) {
+      const cont = document.createElement('button');
+      cont.id = 'emergencyContinue';
+      cont.type = 'button';
+      cont.textContent = continueText;
+      cont.className = 'menu-item';
+      cont.style.border = '1px solid #2a3446';
+      cont.disabled = !!continueDisabled;
+      footer.appendChild(cont);
+    }
+  }
+
+  // Step-specific UI
+  const state = emergencyState;
+  body.innerHTML = '';
+
+  if (state.step === 'PICK_SHIFT') {
+    title.textContent = 'Which shift is this emergency concerning?';
+
+    if (!Array.isArray(state.eligible) || state.eligible.length === 0) {
+      body.innerHTML = `<div class="muted">No eligible shifts right now.</div>`;
+      setFooter({ showContinue: false, showCancel: true, cancelText: 'Close' });
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.setAttribute('role', 'list');
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '.5rem';
+
+    state.eligible.forEach((shift, idx) => {
+      const id = `emShift_${idx}`;
+      const item = document.createElement('label');
+      item.setAttribute('role', 'listitem');
+      item.style.border = '1px solid #222a36';
+      item.style.background = '#131926';
+      item.style.borderRadius = '10px';
+      item.style.padding = '.5rem .6rem';
+      item.style.display = 'flex';
+      item.style.alignItems = 'center';
+      item.style.gap = '.5rem';
+      item.innerHTML = `
+        <input type="radio" name="emShift" id="${id}" value="${escapeHtml(shift.ymd || String(idx))}">
+        <div style="font-weight:700;">${escapeHtml(buildEmergencyShiftLabel(shift))}</div>
+      `;
+      // stash full shift object on the input element for retrieval
+      item.querySelector('input')._shift = shift;
+      list.appendChild(item);
+    });
+
+    body.appendChild(list);
+    setFooter({ continueDisabled: true });
+
+    const cont = document.getElementById('emergencyContinue');
+    body.addEventListener('change', (e) => {
+      if (e.target && e.target.name === 'emShift') {
+        cont && (cont.disabled = false);
+      }
+    });
+    cont && cont.addEventListener('click', handleEmergencyPickShift);
+  }
+
+  else if (state.step === 'PICK_ISSUE') {
+    title.textContent = 'Please select your emergency';
+
+    const now = getNow();
+    const allowed = allowedIssuesForShift(state.selectedShift, now);
+
+    const choices = document.createElement('div');
+    choices.setAttribute('role', 'group');
+    choices.style.display = 'flex';
+    choices.style.flexDirection = 'column';
+    choices.style.gap = '.5rem';
+
+    function addOption(key, label, help) {
+      const id = `emIssue_${key}`;
+      const row = document.createElement('label');
+      row.style.border = '1px solid #222a36';
+      row.style.background = '#131926';
+      row.style.borderRadius = '10px';
+      row.style.padding = '.5rem .6rem';
+      row.style.display = 'grid';
+      row.style.gridTemplateColumns = 'auto 1fr';
+      row.style.gap = '.6rem';
+      row.innerHTML = `
+        <input type="radio" name="emIssue" id="${id}" value="${key}">
+        <div>
+          <div style="font-weight:800;">${escapeHtml(label)}</div>
+          ${help ? `<div class="muted" style="margin-top:.15rem">${escapeHtml(help)}</div>` : ''}
+        </div>
+      `;
+      choices.appendChild(row);
+    }
+
+    if (allowed.includes('RUNNING_LATE')) {
+      addOption('RUNNING_LATE', 'Running late', 'If the shift is within 4 hours or has already started.');
+    }
+    if (allowed.includes('CANNOT_ATTEND')) {
+      addOption('CANNOT_ATTEND', 'Cannot attend shift', 'Only if your shift has not started yet.');
+    }
+    if (allowed.includes('LEAVE_EARLY')) {
+      addOption('LEAVE_EARLY', 'Need to leave current shift early', 'Only if you are currently on shift.');
+    }
+
+    if (!choices.children.length) {
+      body.innerHTML = `<div class="muted">No emergency options are available for this shift.</div>`;
+      setFooter({ showCancel: true, cancelText: 'Close', showContinue: false });
+      return;
+    }
+
+    body.appendChild(choices);
+    setFooter({ continueDisabled: true });
+
+    const cont = document.getElementById('emergencyContinue');
+    body.addEventListener('change', (e) => {
+      if (e.target && e.target.name === 'emIssue') {
+        cont && (cont.disabled = false);
+      }
+    });
+    cont && cont.addEventListener('click', handleEmergencyPickIssue);
+  }
+
+  else if (state.step === 'DETAILS') {
+    if (state.issueType === 'RUNNING_LATE') {
+      title.textContent = 'How late will you be?';
+
+      const container = document.createElement('div');
+      container.style.display = 'flex';
+      container.style.flexDirection = 'column';
+      container.style.gap = '.5rem';
+
+      // Show loading text until options are fetched
+      const optsWrap = document.createElement('div');
+      optsWrap.innerHTML = `<div class="muted">Loading options…</div>`;
+      container.appendChild(optsWrap);
+
+      body.appendChild(container);
+      setFooter({ continueDisabled: true });
+
+      // Fetch options (lazy)
+      (async () => {
+        const { ok, options, error } = await apiPostRunningLateOptions(state.selectedShift);
+        if (!ok) {
+          optsWrap.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+          return;
+        }
+        state.lateOptions = options;
+        optsWrap.innerHTML = '';
+
+        const group = document.createElement('div');
+        group.setAttribute('role', 'group');
+        group.style.display = 'flex';
+        group.style.flexDirection = 'column';
+        group.style.gap = '.5rem';
+
+        options.forEach((opt, idx) => {
+          const id = `lateOpt_${idx}`;
+          const row = document.createElement('label');
+          row.style.border = '1px solid #222a36';
+          row.style.background = '#131926';
+          row.style.borderRadius = '10px';
+          row.style.padding = '.5rem .6rem';
+          row.style.display = 'flex';
+          row.style.alignItems = 'center';
+          row.style.gap = '.6rem';
+          row.innerHTML = `
+            <input type="radio" name="emLate" id="${id}" value="${escapeHtml(opt.label)}">
+            <div style="font-weight:700;">${escapeHtml(opt.label)}</div>
+          `;
+          group.appendChild(row);
+        });
+
+        optsWrap.appendChild(group);
+
+        const cont = document.getElementById('emergencyContinue');
+        body.addEventListener('change', (e) => {
+          if (e.target && e.target.name === 'emLate') {
+            cont && (cont.disabled = false);
+            state.selectedLateLabel = e.target.value || null;
+          }
+        });
+      })();
+
+      const cont = document.getElementById('emergencyContinue');
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+    }
+
+    else if (state.issueType === 'CANNOT_ATTEND') {
+      title.textContent = 'Please provide a reason for your very late cancellation';
+      const p = document.createElement('div');
+      p.className = 'muted';
+      p.style.marginBottom = '.5rem';
+      p.textContent = 'We will notify our office and they will be called on their phones. If this is not an emergency you will be removed from all future care packages.';
+      const ta = document.createElement('textarea');
+      ta.id = 'emergencyReason';
+      ta.rows = 4;
+      ta.style.width = '100%';
+      ta.style.borderRadius = '10px';
+      ta.style.border = '1px solid #222a36';
+      ta.style.background = '#0b0e14';
+      ta.style.color = '#e7ecf3';
+      ta.style.padding = '.6rem';
+      ta.placeholder = 'Type your reason…';
+      body.append(p, ta);
+
+      setFooter({ continueDisabled: true });
+
+      const cont = document.getElementById('emergencyContinue');
+      ta.addEventListener('input', () => {
+        state.reasonText = (ta.value || '').trim();
+        cont && (cont.disabled = state.reasonText.length < 3);
+      });
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+    }
+
+    else if (state.issueType === 'LEAVE_EARLY') {
+      title.textContent = 'Reason for leaving early';
+      const p = document.createElement('div');
+      p.className = 'muted';
+      p.style.marginBottom = '.5rem';
+      p.textContent = 'Our office staff will be called on their mobile phones immediately regarding this.';
+      const ta = document.createElement('textarea');
+      ta.id = 'emergencyReason';
+      ta.rows = 4;
+      ta.style.width = '100%';
+      ta.style.borderRadius = '10px';
+      ta.style.border = '1px solid #222a36';
+      ta.style.background = '#0b0e14';
+      ta.style.color = '#e7ecf3';
+      ta.style.padding = '.6rem';
+      ta.placeholder = 'Type your reason…';
+      body.append(p, ta);
+
+      setFooter({ continueDisabled: true });
+
+      const cont = document.getElementById('emergencyContinue');
+      ta.addEventListener('input', () => {
+        state.reasonText = (ta.value || '').trim();
+        cont && (cont.disabled = state.reasonText.length < 3);
+      });
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+    }
+  }
+
+  else if (state.step === 'CONFIRM') {
+    // Irreversible warning text varies by issue
+    let msg = '';
+    if (state.issueType === 'RUNNING_LATE') {
+      msg = "Your colleagues on shift will be informed and so will the Arthur Rai office. Do you want to proceed? You cannot cancel after this step.";
+    } else if (state.issueType === 'CANNOT_ATTEND') {
+      msg = "Warning – Our office staff will now be called on their mobile phones regarding your cancellation. Are you absolutely sure you want to continue?";
+    } else if (state.issueType === 'LEAVE_EARLY') {
+      msg = "Are you sure you wish to continue? Our office staff will be called on their mobile phones immediately regarding this.";
+    }
+
+    title.textContent = 'Please confirm';
+    const box = document.createElement('div');
+    box.style.border = '1px solid #2a3446';
+    box.style.background = '#131926';
+    box.style.borderRadius = '10px';
+    box.style.padding = '.6rem';
+    box.style.lineHeight = '1.35';
+    box.innerHTML = `<div class="muted">${escapeHtml(msg)}</div>`;
+
+    if (state.previewHtml && state.issueType === 'RUNNING_LATE') {
+      const prev = document.createElement('div');
+      prev.style.marginTop = '.6rem';
+      prev.innerHTML = state.previewHtml; // server-provided HTML
+      box.appendChild(prev);
+    }
+
+    body.appendChild(box);
+
+    setFooter({ continueText: 'Continue', cancelText: 'Cancel' });
+    const cont = document.getElementById('emergencyContinue');
+    cont && cont.addEventListener('click', handleEmergencyConfirm);
+  }
+}
+
+
+/* =========================
+ * NEW STEP HANDLERS
+ * ========================= */
+
+function handleEmergencyPickShift() {
+  const body = document.getElementById('emergencyBody');
+  if (!body || !emergencyState) return;
+
+  const chosen = body.querySelector('input[name="emShift"]:checked');
+  if (!chosen || !chosen._shift) {
+    showToast('Please select a shift.');
+    return;
+  }
+  emergencyState.selectedShift = chosen._shift;
+  emergencyState.issueType = null;
+  emergencyState.step = 'PICK_ISSUE';
+  renderEmergencyStep();
+}
+
+function handleEmergencyPickIssue() {
+  const body = document.getElementById('emergencyBody');
+  if (!body || !emergencyState) return;
+
+  const chosen = body.querySelector('input[name="emIssue"]:checked');
+  if (!chosen) {
+    showToast('Please select an option.');
+    return;
+  }
+  const issue = String(chosen.value || '').toUpperCase();
+  emergencyState.issueType = issue;
+  emergencyState.selectedLateLabel = null;
+  emergencyState.reasonText = '';
+  emergencyState.previewHtml = '';
+  emergencyState.step = 'DETAILS';
+  renderEmergencyStep();
+}
+
+async function handleEmergencyCollectDetails() {
+  if (!emergencyState) return;
+
+  if (emergencyState.issueType === 'RUNNING_LATE') {
+    if (!emergencyState.selectedLateLabel) {
+      showToast('Please pick how late you will be.');
+      return;
+    }
+    // Optional: preview
+    const { ok, previewHtml } = await apiPostRunningLatePreview(emergencyState.selectedShift, emergencyState.selectedLateLabel);
+    emergencyState.previewHtml = ok ? (previewHtml || '') : '';
+    emergencyState.step = 'CONFIRM';
+    renderEmergencyStep();
+    return;
+  }
+
+  // For CANNOT_ATTEND or LEAVE_EARLY, ensure reason provided
+  if (!emergencyState.reasonText || emergencyState.reasonText.length < 3) {
+    showToast('Please enter a brief reason.');
+    return;
+  }
+  emergencyState.step = 'CONFIRM';
+  renderEmergencyStep();
+}
+
+async function handleEmergencyConfirm() {
+  if (!emergencyState || !emergencyState.selectedShift || !emergencyState.issueType) return;
+
+  const footer = document.getElementById('emergencyFooter');
+  const cont = document.getElementById('emergencyContinue');
+  if (cont) cont.disabled = true;
+
+  try {
+    if (emergencyState.issueType === 'RUNNING_LATE') {
+      await submitEmergencyRunningLate();
+    } else {
+      await submitEmergencyRaise();
+    }
+  } finally {
+    if (footer) {
+      // Replace footer with a single Close after success/error is rendered by submitters
+      // (submitters handle the body content)
+    }
+  }
+}
+
+
+/* =========================
+ * NEW SUBMITTERS
+ * ========================= */
+
+async function submitEmergencyRunningLate() {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  showLoading('Sending…');
+  try {
+    const { ok, error } = await apiPostRunningLateSend(
+      emergencyState.selectedShift,
+      emergencyState.selectedLateLabel
+    );
+    if (!ok) {
+      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+      // Re-offer confirm button for retry
+      footer.innerHTML = '';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', closeEmergencyOverlay);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Try again';
+      retry.className = 'menu-item';
+      retry.style.border = '1px solid #2a3446';
+      retry.addEventListener('click', handleEmergencyConfirm);
+      footer.append(cancel, retry);
+      return;
+    }
+
+    title.textContent = 'Sent';
+    body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
+    footer.innerHTML = '';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', closeEmergencyOverlay);
+    footer.appendChild(close);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function submitEmergencyRaise() {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  const issueType =
+    emergencyState.issueType === 'CANNOT_ATTEND' ? 'CANNOT_ATTEND' :
+    emergencyState.issueType === 'LEAVE_EARLY' ? 'LEAVE_EARLY' : '';
+
+  const etaOrLeaveTimeLabel =
+    (issueType === 'LEAVE_EARLY') ? (emergencyState.selectedLateLabel || 'N/A') : 'N/A';
+
+  showLoading('Sending…');
+  try {
+    const { ok, error } = await apiPostEmergencyRaise(
+      emergencyState.selectedShift,
+      issueType,
+      emergencyState.reasonText || '',
+      etaOrLeaveTimeLabel
+    );
+
+    if (!ok) {
+      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+      footer.innerHTML = '';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', closeEmergencyOverlay);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Try again';
+      retry.className = 'menu-item';
+      retry.style.border = '1px solid #2a3446';
+      retry.addEventListener('click', handleEmergencyConfirm);
+      footer.append(cancel, retry);
+      return;
+    }
+
+    title.textContent = 'Sent';
+    const successMsg = (issueType === 'CANNOT_ATTEND')
+      ? 'Our office have been informed. Please expect a phonecall shortly.'
+      : 'Our office have been informed and will call you shortly.';
+    body.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
+    footer.innerHTML = '';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', closeEmergencyOverlay);
+    footer.appendChild(close);
+  } finally {
+    hideLoading();
+  }
+}
+
+
+/* =========================
+ * NEW BUSINESS-RULE HELPERS
+ * ========================= */
+
+/** Parse local start/end from a shift. Falls back to standard LD/N times if absent. */
+function parseShiftWindow(shift) {
+  // shift.ymd = 'YYYY-MM-DD'
+  // shift.shift_type = 'LONG DAY' | 'NIGHT' | 'LD' | 'N'
+  // shift.shiftInfo might contain times like "LONG DAY 07:30–20:00" or "NIGHT 19:30–08:00"
+  const ymd = String(shift.ymd || '');
+  const [Y, M, D] = ymd.split('-').map(n => parseInt(n, 10));
+  const base = new Date(Y, (M || 1) - 1, D || 1);
+
+  function parseTime(str, dayOffset = 0) {
+    const m = /(\d{1,2}):(\d{2})/.exec(str || '');
+    const hh = m ? parseInt(m[1], 10) : 0;
+    const mm = m ? parseInt(m[2], 10) : 0;
+    const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset, hh, mm, 0, 0);
+    return dt;
+  }
+
+  const info = String(shift.shiftInfo || '');
+  let start, end;
+
+  const times = info.match(/(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/);
+  const type = String(shift.shift_type || '').toUpperCase().replace(/\s+/g, '');
+
+  if (times) {
+    const s = times[1];
+    const e = times[2];
+    // If end is "earlier" than start, it crosses midnight (+1 day)
+    const sDate = parseTime(s, 0);
+    const eDate = parseTime(e, (e < s ? 1 : 0));
+    start = sDate; end = eDate;
+  } else if (type.includes('NIGHT') || type === 'N') {
+    start = parseTime('19:30', 0);
+    end = parseTime('08:00', 1);
+  } else {
+    // Long day default
+    start = parseTime('07:30', 0);
+    end = parseTime('20:00', 0);
+  }
+
+  return { start, end };
+}
+
+function getNow() {
+  return new Date();
+}
+
+function isShiftNotStarted(shift, now = getNow()) {
+  const { start } = parseShiftWindow(shift);
+  return now < start;
+}
+
+function isShiftInProgress(shift, now = getNow()) {
+  const { start, end } = parseShiftWindow(shift);
+  return now >= start && now < end;
+}
+
+function isWithinHours(shift, now = getNow(), hours = 4) {
+  const { start } = parseShiftWindow(shift);
+  const ms = hours * 60 * 60 * 1000;
+  return now < start && (start - now) <= ms;
+}
+
+/** Return list of allowed issue keys for a shift at time `now`. */
+function allowedIssuesForShift(shift, now = getNow()) {
+  const allowed = [];
+  if (isShiftInProgress(shift, now) || isWithinHours(shift, now, 4)) {
+    allowed.push('RUNNING_LATE');
+  }
+  if (isShiftNotStarted(shift, now)) {
+    allowed.push('CANNOT_ATTEND');
+  }
+  if (isShiftInProgress(shift, now)) {
+    allowed.push('LEAVE_EARLY');
+  }
+  return allowed;
+}
+
+/** Build a compact display label for a shift (date + type + place). */
+function buildEmergencyShiftLabel(shift) {
+  const ymd = String(shift.ymd || '');
+  const [Y, M, D] = ymd.split('-').map(n => parseInt(n, 10));
+  const dt = (Y && M && D) ? new Date(Y, M - 1, D) : null;
+  const dateStr = dt ? dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/,/g, '') : (ymd || 'Date');
+  const st = String(shift.shift_type || shift.shiftInfo || '').toUpperCase();
+  const type = st.includes('NIGHT') ? 'NIGHT' : (st.includes('LONG') || st.includes('LD') ? 'LONG DAY' : (st || 'SHIFT'));
+  const hosp = (shift.hospital || shift.location || '') || '';
+  const ward = (shift.ward || '');
+  const ref = (shift.booking_ref || shift.bookingRef || '');
+  const parts = [`${dateStr}`, `${type}`, hosp ? hosp : '', ward ? `(${ward})` : '', ref ? `Ref: ${ref}` : ''];
+  return parts.filter(Boolean).join(' — ');
+}
+
+/** Optional helper to build a shift skeleton from baseline if needed. */
+function coerceShiftFromBaseline(ymd) {
+  if (!baseline || !Array.isArray(baseline.tiles)) return null;
+  const t = baseline.tiles.find(x => x.ymd === ymd);
+  if (!t) return null;
+  return {
+    ymd: t.ymd,
+    shift_type: (t.shiftInfo && t.shiftInfo.toUpperCase().includes('NIGHT')) ? 'NIGHT' : 'LONG DAY',
+    hospital: t.hospital || t.location || '',
+    ward: t.ward || '',
+    job_title: t.jobTitle || '',
+    booking_ref: t.bookingRef || '',
+    shiftInfo: t.shiftInfo || ''
+  };
+}
+
+
+/* =========================
+ * NEW ERROR / UX UTILITIES
+ * ========================= */
+
+function mapServerErrorToMessage(err) {
+  const s = String(err || '').toUpperCase();
+  if (!s) return 'Something went wrong. Please try again.';
+  if (s.includes('NOT_ELIGIBLE')) return 'This shift is not eligible for emergency actions.';
+  if (s.includes('SHIFT_NOT_FOUND')) return 'We could not find that shift.';
+  if (s.includes('OUT_OF_WINDOW')) return 'This action is outside the allowed time window.';
+  if (s.includes('RATE_LIMIT')) return 'Please wait a moment and try again.';
+  if (s.includes('TEMPORARILY_BUSY_TRY_AGAIN')) return 'Server is busy, please try again.';
+  if (s.includes('FORBIDDEN') || s.includes('UNAUTH') || s.includes('INVALID_OR_UNKNOWN_IDENTITY')) return 'You are not authorised for this action.';
+  if (/HTTP\s*\d+/.test(s)) return `Server error: ${err}`;
+  return 'Could not complete the request. Please try again.';
+}
+
+/** Refresh eligibility and toggle button; failure is silent by default. */
+/** Refresh eligibility and toggle button; failure is silent by default. */
+async function refreshEmergencyEligibility({ silent = false } = {}) {
+  const { ok, eligible, error } = await apiGetEmergencyWindow();
+  if (!ok) {
+    emergencyEligibilityCache = null;
+    window._emergencyEligibleShifts = [];                 // <-- keep global in sync
+    syncEmergencyButtonVisibility([]);                    // UI: hide/disable
+    try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI([]); } catch {}
+    if (!silent) showToast(mapServerErrorToMessage(error));
+    return;
+  }
+  emergencyEligibilityCache = { eligible };
+  window._emergencyEligibleShifts = eligible;             // <-- single source of truth update
+  syncEmergencyButtonVisibility(eligible);                // UI: show/hide
+  try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI(eligible); } catch {}
+}
+
+
+/* =========================
+ * NEW LIFECYCLE HOOKS
+ * ========================= */
+
+
+/** Call at the end of Refresh button flow to re-check eligibility. */
+async function onRefreshClickForEmergency() {
+  await refreshEmergencyEligibility({ silent: true });
+}
+
+
+/* =========================
+ * NEW OVERLAY FACTORY
+ * ========================= */
+
+/** Lazily create the Emergency overlay DOM (uses existing overlay system). */
+
+function ensureEmergencyOverlay() {
+  if (document.getElementById('emergencyOverlay')) return;
+
+  ensureLoadingOverlay(); // ensures shared styles and focus-trap helpers exist
+
+  const overlay = document.createElement('div');
+  overlay.id = 'emergencyOverlay';
+  overlay.innerHTML = `
+    <div class="sheet" role="dialog" aria-modal="true" aria-label="Emergency">
+      <div class="sheet-header">
+        <div id="emergencyTitle" class="sheet-title">Emergency</div>
+        <button id="emergencyClose" class="sheet-close" aria-label="Close">✕</button>
+      </div>
+      <div id="emergencyBody" class="sheet-body"></div>
+      <div id="emergencyFooter" style="display:flex;justify-content:flex-end;gap:.5rem;padding:.5rem .9rem 1rem;"></div>
+    </div>
+  `;
+  document.body.appendChild(overlay);
+
+  // Close button — emergency overlay is dismissible
+  const closeBtn = overlay.querySelector('#emergencyClose');
+  if (closeBtn) closeBtn.addEventListener('click', closeEmergencyOverlay);
+
+  // Backdrop click to close (consistent with dismissible overlays)
+  overlay.addEventListener('click', (e) => {
+    if (e.target === overlay) closeEmergencyOverlay();
+  });
+}
+
+function populateEmergencyModalStart(eligible) {
+  // Don’t open on top of a blocking overlay (e.g., reset/login/alert).
+  if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen()) return;
+
+  // Ensure the Emergency overlay DOM exists.
+  if (typeof ensureEmergencyOverlay === 'function') ensureEmergencyOverlay();
+
+  // Resolve eligible shifts: prefer the argument; otherwise fall back to cache; else empty.
+  const list =
+    (Array.isArray(eligible) && eligible) ||
+    (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible) && emergencyEligibilityCache.eligible) ||
+    [];
+
+  // Reset wizard state and seed with eligibility.
+  if (typeof resetEmergencyState === 'function') resetEmergencyState();
+  if (!emergencyState) {
+    // Safety: create a minimal state if reset helper isn’t available for some reason.
+    emergencyState = { eligible: [], selectedShift: null, issueType: null, lateOptions: [], selectedLateLabel: null, reasonText: '', previewHtml: '', step: 'PICK_SHIFT' };
+  }
+  emergencyState.eligible = list;
+  emergencyState.step = 'PICK_SHIFT';
+
+  // Open overlay and render first step (shift selection or “no eligible shifts”).
+  if (typeof openOverlay === 'function') openOverlay('emergencyOverlay', '#emergencyClose');
+  if (typeof renderEmergencyStep === 'function') renderEmergencyStep();
+}
+
+function syncEmergencyEligibilityUI(eligible) {
+  try {
+    const btn = document.getElementById('emergencyBtn');
+    if (!btn) return;
+
+    // Prefer explicit arg → cache → global fallback (tolerates older call sites)
+    const list =
+      Array.isArray(eligible) ? eligible :
+      (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible))
+        ? emergencyEligibilityCache.eligible
+        : (window._emergencyEligibleShifts || []);
+
+    const hasEligible = Array.isArray(list) && list.length > 0;
+    btn.hidden = !hasEligible;     // ← use attribute, not class
+    btn.disabled = !hasEligible;
+
+  } catch {
+    // Defensive: hide if anything goes wrong
+    try {
+      const btn = document.getElementById('emergencyBtn');
+      if (btn) { btn.hidden = true; btn.disabled = true; }  // ← use attribute, not class
+    } catch {}
+  }
+}
+
+
+
+function wireEmergencyButton() {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+
+  // Remove any old click handlers to avoid duplicates
+  const clone = btn.cloneNode(true);
+  btn.replaceWith(clone);
+  const freshBtn = document.getElementById('emergencyBtn');
+
+  // Delegate to the canonical entrypoint
+  freshBtn.addEventListener('click', () => {
+    if (freshBtn.dataset.busy === '1') return; // respect busy state if set
+    openEmergencyOverlay(); // this handles cache/fetch, overlay open, and rendering
+  });
+}
+
 
 
 function sizeGrid() {
@@ -2005,12 +3079,17 @@ window.addEventListener('hashchange', routeFromURL);
   // Build overlays/menu early
   ensureLoadingOverlay();
   ensureMenu();
+  ensureEmergencyButton(); // <-- make sure the button exists early (idempotent)
 
   // If reset link present, show reset (blocking)
   const hasK = new URLSearchParams(location.search).has('k');
   if (hasK) {
     openResetOverlay();
   } else if (!identity.msisdn) {
+    // Ensure EMERGENCY button is hidden when not signed in
+   try { if (els.emergencyBtn) { els.emergencyBtn.hidden = true; els.emergencyBtn.disabled = true; } } catch {}
+
+
     // Attempt silent auto-sign-in on Android/Chrome
     const autoOK = await tryAutoLoginViaCredentialsAPI();
     if (!autoOK && !isBlockingOverlayOpen()) openLoginOverlay();
@@ -2031,9 +3110,13 @@ window.addEventListener('hashchange', routeFromURL);
       equalizeTileHeights({ reset: true });
       hideLoading();
       ensurePastShiftsButton();
+
+      // Initial EMERGENCY visibility + wiring
+      try { refreshEmergencyEligibility({ silent:true }); } catch {}
+
+      try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
     }
   }
 
   routeFromURL();
 })();
-
