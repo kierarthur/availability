@@ -2713,13 +2713,26 @@ async function submitEmergencyRunningLate(ctx, label) {
   const footer = document.getElementById('emergencyFooter');
   if (!body || !title || !footer || !emergencyState) return;
 
+  // Resolve the exact context and label we will send
+  const resolvedCtx =
+    // explicit ctx argument may already be a wrapper with .context
+    (ctx && (ctx.context || ctx)) ||
+    // best: server-provided context from OPTIONS
+    (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
+    // sometimes selectedShift might itself carry a .context
+    (emergencyState.selectedShift && (emergencyState.selectedShift.context || emergencyState.selectedShift));
+
+  const resolvedLabel = label || emergencyState.selectedLateLabel;
+
+  // Hard guard: don't call the API with incomplete payload
+  if (!resolvedCtx || !resolvedLabel) {
+    showToast('Please pick how late you will be.');
+    return;
+  }
+
   showLoading('Sending…');
   try {
-    const { ok, error } = await apiPostRunningLateSend(
-      // use the server-provided context (from OPTIONS/PREVIEW), not the raw shift
-      ctx || emergencyState.runningLateContext || emergencyState.selectedShift,
-      label || emergencyState.selectedLateLabel
-    );
+    const { ok, error } = await apiPostRunningLateSend(resolvedCtx, resolvedLabel);
     if (!ok) {
       body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
       // Re-offer confirm button for retry
@@ -2754,6 +2767,7 @@ async function submitEmergencyRunningLate(ctx, label) {
     hideLoading();
   }
 }
+
 
 
 async function submitEmergencyRaise() {
