@@ -2066,68 +2066,6 @@ let emergencyState = null;            // Wizard state (see resetEmergencyState)
 let emergencyEligibilityCache = null; // Last successful result from apiGetEmergencyWindow()
 
 
-/* =========================
- * NEW API WRAPPERS
- * (Apps Script endpoints)
- * ========================= */
-
-/** GET ?view=emergency_window */
-async function apiGetEmergencyWindow() {
-  try {
-    const { res, json } = await apiGET({ view: 'emergency_window' });
-    if (!res.ok || !json || json.ok === false) {
-      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
-      return { ok: false, eligible: [], error: msg || 'UNKNOWN_ERROR' };
-    }
-    const eligible = Array.isArray(json.eligible) ? json.eligible : [];
-    return { ok: true, eligible, serverTime: json.serverTime || null };
-  } catch (e) {
-    return { ok: false, eligible: [], error: String(e && e.message) || 'NETWORK_ERROR' };
-  }
-}
-
-/** POST { action:'RUNNING_LATE_OPTIONS', shift } */
-async function apiPostRunningLateOptions(shift) {
-  try {
-    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_OPTIONS', shift });
-    if (!res.ok || !json || json.ok === false) {
-      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
-      return { ok: false, options: [], context: null, eligible: false, error: msg || 'UNKNOWN_ERROR' };
-    }
-    const options  = Array.isArray(json.options) ? json.options : [];
-    const context  = json.context || null;            // <-- keep for PREVIEW/SEND
-    const eligible = !!json.eligible;
-    const reason   = json.reason || '';
-
-    return { ok: true, options, context, eligible, reason };
-  } catch (e) {
-    return { ok: false, options: [], context: null, eligible: false, error: String(e && e.message) || 'NETWORK_ERROR' };
-  }
-}
-
-/** POST { action:'RUNNING_LATE_PREVIEW', context, eta_label } */
-async function apiPostRunningLatePreview(shift, etaLabel) {
-  try {
-    // `shift` may actually be the full response from OPTIONS, or just the context itself.
-    const context = shift && shift.context ? shift.context : shift;
-
-    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_PREVIEW', context, eta_label: etaLabel });
-    if (!res.ok || !json || json.ok === false) {
-      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
-      return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: msg || 'UNKNOWN_ERROR' };
-    }
-
-    return {
-      ok: true,
-      previewHtml: json.previewHtml || '',
-      context: json.context || context || null,        // echo back for SEND
-      minutes: Number(json.minutes || 0),
-      arrivalByLabel: (json.preview && json.preview.arrival_by_label) || ''
-    };
-  } catch (e) {
-    return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: String(e && e.message) || 'NETWORK_ERROR' };
-  }
-}
 
 /** POST { action:'RUNNING_LATE_SEND', context, eta_label } */
 async function apiPostRunningLateSend(shift, etaLabel) {
@@ -2238,35 +2176,7 @@ function syncEmergencyButtonVisibility(eligible) {
 }
 
 /** Open the Emergency overlay, seeding state from cached/fetched eligibility. */
-async function openEmergencyOverlay() {
-  if (isBlockingOverlayOpen()) return;
 
-  ensureEmergencyOverlay();
-  const btn = document.getElementById('emergencyBtn');
-  if (btn) { btn.dataset.busy = '1'; btn.style.opacity = '.9'; btn.style.pointerEvents = 'none'; }
-
-  try {
-    // Use cache first; if none, fetch
-    if (!emergencyEligibilityCache) {
-      const { ok, eligible, error } = await apiGetEmergencyWindow();
-      if (!ok) {
-        showToast(mapServerErrorToMessage(error));
-        return;
-      }
-      emergencyEligibilityCache = { eligible };
-    }
-
-    resetEmergencyState();
-    emergencyState.eligible = emergencyEligibilityCache.eligible || [];
-    emergencyState.step = 'PICK_SHIFT';
-
-    // Open overlay and render
-    openOverlay('emergencyOverlay', '#emergencyClose');
-    renderEmergencyStep();
-  } finally {
-    if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
-  }
-}
 
 /** Close the Emergency overlay and reset state. */
 function closeEmergencyOverlay() {
@@ -2294,312 +2204,7 @@ function resetEmergencyState() {
  * ========================= */
 
 /** Build and manage the Emergency overlay's current step. */
-function renderEmergencyStep() {
-  const body = document.getElementById('emergencyBody');
-  const title = document.getElementById('emergencyTitle');
-  const footer = document.getElementById('emergencyFooter');
-  if (!body || !title || !footer || !emergencyState) return;
 
-  // Utilities for footer buttons
-  function setFooter({ showContinue = true, continueText = 'Continue', continueDisabled = false, showCancel = true, cancelText = 'Cancel' } = {}) {
-    footer.innerHTML = '';
-    if (showCancel) {
-      const cancel = document.createElement('button');
-      cancel.id = 'emergencyCancel';
-      cancel.type = 'button';
-      cancel.textContent = cancelText;
-      cancel.className = 'menu-item';
-      cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', closeEmergencyOverlay);
-      footer.appendChild(cancel);
-    }
-    if (showContinue) {
-      const cont = document.createElement('button');
-      cont.id = 'emergencyContinue';
-      cont.type = 'button';
-      cont.textContent = continueText;
-      cont.className = 'menu-item';
-      cont.style.border = '1px solid #2a3446';
-      cont.disabled = !!continueDisabled;
-      footer.appendChild(cont);
-    }
-  }
-
-  // Step-specific UI
-  const state = emergencyState;
-  body.innerHTML = '';
-
-  if (state.step === 'PICK_SHIFT') {
-    title.textContent = 'Which shift is this emergency concerning?';
-
-    if (!Array.isArray(state.eligible) || state.eligible.length === 0) {
-      body.innerHTML = `<div class="muted">No eligible shifts right now.</div>`;
-      setFooter({ showContinue: false, showCancel: true, cancelText: 'Close' });
-      return;
-    }
-
-    const list = document.createElement('div');
-    list.setAttribute('role', 'list');
-    list.style.display = 'flex';
-    list.style.flexDirection = 'column';
-    list.style.gap = '.5rem';
-
-    state.eligible.forEach((shift, idx) => {
-      const id = `emShift_${idx}`;
-      const item = document.createElement('label');
-      item.setAttribute('role', 'listitem');
-      item.style.border = '1px solid #222a36';
-      item.style.background = '#131926';
-      item.style.borderRadius = '10px';
-      item.style.padding = '.5rem .6rem';
-      item.style.display = 'flex';
-      item.style.alignItems = 'center';
-      item.style.gap = '.5rem';
-      item.innerHTML = `
-        <input type="radio" name="emShift" id="${id}" value="${escapeHtml(shift.ymd || String(idx))}">
-        <div style="font-weight:700;">${escapeHtml(buildEmergencyShiftLabel(shift))}</div>
-      `;
-      // stash full shift object on the input element for retrieval
-      item.querySelector('input')._shift = shift;
-      list.appendChild(item);
-    });
-
-    body.appendChild(list);
-    setFooter({ continueDisabled: true });
-
-    const cont = document.getElementById('emergencyContinue');
-    body.addEventListener('change', (e) => {
-      if (e.target && e.target.name === 'emShift') {
-        cont && (cont.disabled = false);
-      }
-    });
-    cont && cont.addEventListener('click', handleEmergencyPickShift);
-  }
-
-  else if (state.step === 'PICK_ISSUE') {
-    title.textContent = 'Please select your emergency';
-
-    const now = getNow();
-    const allowed = allowedIssuesForShift(state.selectedShift, now);
-
-    const choices = document.createElement('div');
-    choices.setAttribute('role', 'group');
-    choices.style.display = 'flex';
-    choices.style.flexDirection = 'column';
-    choices.style.gap = '.5rem';
-
-    function addOption(key, label, help) {
-      const id = `emIssue_${key}`;
-      const row = document.createElement('label');
-      row.style.border = '1px solid #222a36';
-      row.style.background = '#131926';
-      row.style.borderRadius = '10px';
-      row.style.padding = '.5rem .6rem';
-      row.style.display = 'grid';
-      row.style.gridTemplateColumns = 'auto 1fr';
-      row.style.gap = '.6rem';
-      row.innerHTML = `
-        <input type="radio" name="emIssue" id="${id}" value="${key}">
-        <div>
-          <div style="font-weight:800;">${escapeHtml(label)}</div>
-          ${help ? `<div class="muted" style="margin-top:.15rem">${escapeHtml(help)}</div>` : ''}
-        </div>
-      `;
-      choices.appendChild(row);
-    }
-
-    if (allowed.includes('RUNNING_LATE')) {
-      addOption('RUNNING_LATE', 'Running late', 'If the shift is within 4 hours or has already started.');
-    }
-    if (allowed.includes('CANNOT_ATTEND')) {
-      addOption('CANNOT_ATTEND', 'Cannot attend shift', 'Only if your shift has not started yet.');
-    }
-    if (allowed.includes('LEAVE_EARLY')) {
-      addOption('LEAVE_EARLY', 'Need to leave current shift early', 'Only if you are currently on shift.');
-    }
-
-    if (!choices.children.length) {
-      body.innerHTML = `<div class="muted">No emergency options are available for this shift.</div>`;
-      setFooter({ showCancel: true, cancelText: 'Close', showContinue: false });
-      return;
-    }
-
-    body.appendChild(choices);
-    setFooter({ continueDisabled: true });
-
-    const cont = document.getElementById('emergencyContinue');
-    body.addEventListener('change', (e) => {
-      if (e.target && e.target.name === 'emIssue') {
-        cont && (cont.disabled = false);
-      }
-    });
-    cont && cont.addEventListener('click', handleEmergencyPickIssue);
-  }
-
-  else if (state.step === 'DETAILS') {
-    if (state.issueType === 'RUNNING_LATE') {
-      title.textContent = 'How late will you be?';
-
-      const container = document.createElement('div');
-      container.style.display = 'flex';
-      container.style.flexDirection = 'column';
-      container.style.gap = '.5rem';
-
-      // Show loading text until options are fetched
-      const optsWrap = document.createElement('div');
-      optsWrap.innerHTML = `<div class="muted">Loading options…</div>`;
-      container.appendChild(optsWrap);
-
-      body.appendChild(container);
-      setFooter({ continueDisabled: true });
-
-      // Fetch options (lazy)
-      (async () => {
-        const { ok, options, context, eligible, reason, error } = await apiPostRunningLateOptions(state.selectedShift);
-        if (!ok) {
-          optsWrap.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
-          return;
-        }
-        // --- store both options and the server-provided context for PREVIEW/SEND ---
-        state.lateOptions = options;
-        state.runningLateContext = context;   // <-- keep this for subsequent PREVIEW/SEND
-        // If the server says not eligible, stop here
-        if (eligible === false) {
-          optsWrap.innerHTML = `<div class="muted">${escapeHtml(reason || 'Not eligible right now.')}</div>`;
-          return;
-        }
-
-        optsWrap.innerHTML = '';
-
-        const group = document.createElement('div');
-        group.setAttribute('role', 'group');
-        group.style.display = 'flex';
-        group.style.flexDirection = 'column';
-        group.style.gap = '.5rem';
-
-        options.forEach((opt, idx) => {
-          const id = `lateOpt_${idx}`;
-          const row = document.createElement('label');
-          row.style.border = '1px solid #222a36';
-          row.style.background = '#131926';
-          row.style.borderRadius = '10px';
-          row.style.padding = '.5rem .6rem';
-          row.style.display = 'flex';
-          row.style.alignItems = 'center';
-          row.style.gap = '.6rem';
-          row.innerHTML = `
-            <input type="radio" name="emLate" id="${id}" value="${escapeHtml(opt.label)}">
-            <div style="font-weight:700;">${escapeHtml(opt.label)}</div>
-          `;
-          group.appendChild(row);
-        });
-
-        optsWrap.appendChild(group);
-
-        const cont = document.getElementById('emergencyContinue');
-        body.addEventListener('change', (e) => {
-          if (e.target && e.target.name === 'emLate') {
-            cont && (cont.disabled = false);
-            state.selectedLateLabel = e.target.value || null;
-          }
-        });
-      })();
-
-      const cont = document.getElementById('emergencyContinue');
-      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
-    }
-
-    else if (state.issueType === 'CANNOT_ATTEND') {
-      title.textContent = 'Please provide a reason for your very late cancellation';
-      const p = document.createElement('div');
-      p.className = 'muted';
-      p.style.marginBottom = '.5rem';
-      p.textContent = 'We will notify our office and they will be called on their phones. If this is not an emergency you will be removed from all future care packages.';
-      const ta = document.createElement('textarea');
-      ta.id = 'emergencyReason';
-      ta.rows = 4;
-      ta.style.width = '100%';
-      ta.style.borderRadius = '10px';
-      ta.style.border = '1px solid #222a36';
-      ta.style.background = '#0b0e14';
-      ta.style.color = '#e7ecf3';
-      ta.style.padding = '.6rem';
-      ta.placeholder = 'Type your reason…';
-      body.append(p, ta);
-
-      setFooter({ continueDisabled: true });
-
-      const cont = document.getElementById('emergencyContinue');
-      ta.addEventListener('input', () => {
-        state.reasonText = (ta.value || '').trim();
-        cont && (cont.disabled = state.reasonText.length < 3);
-      });
-      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
-    }
-
-    else if (state.issueType === 'LEAVE_EARLY') {
-      title.textContent = 'Reason for leaving early';
-      const p = document.createElement('div');
-      p.className = 'muted';
-      p.style.marginBottom = '.5rem';
-      p.textContent = 'Our office staff will be called on their mobile phones immediately regarding this.';
-      const ta = document.createElement('textarea');
-      ta.id = 'emergencyReason';
-      ta.rows = 4;
-      ta.style.width = '100%';
-      ta.style.borderRadius = '10px';
-      ta.style.border = '1px solid #222a36';
-      ta.style.background = '#0b0e14';
-      ta.style.color = '#e7ecf3';
-      ta.style.padding = '.6rem';
-      ta.placeholder = 'Type your reason…';
-      body.append(p, ta);
-
-      setFooter({ continueDisabled: true });
-
-      const cont = document.getElementById('emergencyContinue');
-      ta.addEventListener('input', () => {
-        state.reasonText = (ta.value || '').trim();
-        cont && (cont.disabled = state.reasonText.length < 3);
-      });
-      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
-    }
-  }
-
-  else if (state.step === 'CONFIRM') {
-    // Irreversible warning text varies by issue
-    let msg = '';
-    if (state.issueType === 'RUNNING_LATE') {
-      msg = "Your colleagues on shift will be informed and so will the Arthur Rai office. Do you want to proceed? You cannot cancel after this step.";
-    } else if (state.issueType === 'CANNOT_ATTEND') {
-      msg = "Warning – Our office staff will now be called on their mobile phones regarding your cancellation. Are you absolutely sure you want to continue?";
-    } else if (state.issueType === 'LEAVE_EARLY') {
-      msg = "Are you sure you wish to continue? Our office staff will be called on their mobile phones immediately regarding this.";
-    }
-
-    title.textContent = 'Please confirm';
-    const box = document.createElement('div');
-    box.style.border = '1px solid #2a3446';
-    box.style.background = '#131926';
-    box.style.borderRadius = '10px';
-    box.style.padding = '.6rem';
-    box.style.lineHeight = '1.35';
-    box.innerHTML = `<div class="muted">${escapeHtml(msg)}</div>`;
-
-    if (state.previewHtml && state.issueType === 'RUNNING_LATE') {
-      const prev = document.createElement('div');
-      prev.style.marginTop = '.6rem';
-      prev.innerHTML = state.previewHtml; // server-provided HTML
-      box.appendChild(prev);
-    }
-
-    body.appendChild(box);
-
-    setFooter({ continueText: 'Continue', cancelText: 'Cancel' });
-    const cont = document.getElementById('emergencyContinue');
-    cont && cont.addEventListener('click', handleEmergencyConfirm);
-  }
-}
 
 
 
@@ -2640,307 +2245,7 @@ function handleEmergencyPickIssue() {
   renderEmergencyStep();
 }
 
-async function handleEmergencyCollectDetails() {
-  if (!emergencyState) return;
 
-  if (emergencyState.issueType === 'RUNNING_LATE') {
-    if (!emergencyState.selectedLateLabel) {
-      showToast('Please pick how late you will be.');
-      return;
-    }
-    // Use the server-provided context from OPTIONS if available,
-    // otherwise fall back to the raw selectedShift.
-    const ctxForPreview = emergencyState.runningLateContext || emergencyState.selectedShift;
-
-    // Optional: preview
-    const { ok, previewHtml } = await apiPostRunningLatePreview(ctxForPreview, emergencyState.selectedLateLabel);
-    emergencyState.previewHtml = ok ? (previewHtml || '') : '';
-    emergencyState.step = 'CONFIRM';
-    renderEmergencyStep();
-    return;
-  }
-
-  // For CANNOT_ATTEND or LEAVE_EARLY, ensure reason provided
-  if (!emergencyState.reasonText || emergencyState.reasonText.length < 3) {
-    showToast('Please enter a brief reason.');
-    return;
-  }
-  emergencyState.step = 'CONFIRM';
-  renderEmergencyStep();
-}
-
-async function handleEmergencyConfirm() {
-  if (!emergencyState || !emergencyState.selectedShift || !emergencyState.issueType) return;
-
-  const footer = document.getElementById('emergencyFooter');
-  const cont = document.getElementById('emergencyContinue');
-  if (cont) cont.disabled = true;
-
-  try {
-    if (emergencyState.issueType === 'RUNNING_LATE') {
-      // Use the server-provided context from OPTIONS if present; otherwise fall back.
-      const ctx =
-        emergencyState.runningLateContext ||
-        (emergencyState.selectedShift && emergencyState.selectedShift.context) ||
-        emergencyState.selectedShift;
-
-      // Guard: need a late label and a usable context
-      if (!emergencyState.selectedLateLabel || !ctx) {
-        showToast('Please pick how late you will be.');
-        return;
-      }
-
-      await submitEmergencyRunningLate(ctx, emergencyState.selectedLateLabel);
-    } else {
-      await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
-    }
-  } finally {
-    if (footer) {
-      // Replace footer with a single Close after success/error is rendered by submitters
-      // (submitters handle the body content)
-    }
-  }
-}
-
-
-/* =========================
- * NEW SUBMITTERS
- * ========================= */
-
-async function submitEmergencyRunningLate(ctx, label) {
-  const body = document.getElementById('emergencyBody');
-  const title = document.getElementById('emergencyTitle');
-  const footer = document.getElementById('emergencyFooter');
-  if (!body || !title || !footer || !emergencyState) return;
-
-  // Resolve the exact context and label we will send
-  const resolvedCtx =
-    // explicit ctx argument may already be a wrapper with .context
-    (ctx && (ctx.context || ctx)) ||
-    // best: server-provided context from OPTIONS
-    (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
-    // sometimes selectedShift might itself carry a .context
-    (emergencyState.selectedShift && (emergencyState.selectedShift.context || emergencyState.selectedShift));
-
-  const resolvedLabel = label || emergencyState.selectedLateLabel;
-
-  // Hard guard: don't call the API with incomplete payload
-  if (!resolvedCtx || !resolvedLabel) {
-    showToast('Please pick how late you will be.');
-    return;
-  }
-
-  showLoading('Sending…');
-  try {
-    const { ok, error } = await apiPostRunningLateSend(resolvedCtx, resolvedLabel);
-    if (!ok) {
-      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
-      // Re-offer confirm button for retry
-      footer.innerHTML = '';
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = 'Cancel';
-      cancel.className = 'menu-item';
-      cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', closeEmergencyOverlay);
-      const retry = document.createElement('button');
-      retry.type = 'button';
-      retry.textContent = 'Try again';
-      retry.className = 'menu-item';
-      retry.style.border = '1px solid #2a3446';
-      retry.addEventListener('click', handleEmergencyConfirm);
-      footer.append(cancel, retry);
-      return;
-    }
-
-    title.textContent = 'Sent';
-    body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
-    footer.innerHTML = '';
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.textContent = 'Close';
-    close.className = 'menu-item';
-    close.style.border = '1px solid #2a3446';
-    close.addEventListener('click', closeEmergencyOverlay);
-    footer.appendChild(close);
-  } finally {
-    hideLoading();
-  }
-}
-
-
-
-async function submitEmergencyRaise() {
-  const body = document.getElementById('emergencyBody');
-  const title = document.getElementById('emergencyTitle');
-  const footer = document.getElementById('emergencyFooter');
-  if (!body || !title || !footer || !emergencyState) return;
-
-  const issueType =
-    emergencyState.issueType === 'CANNOT_ATTEND' ? 'CANNOT_ATTEND' :
-    emergencyState.issueType === 'LEAVE_EARLY' ? 'LEAVE_EARLY' : '';
-
-  const etaOrLeaveTimeLabel =
-    (issueType === 'LEAVE_EARLY') ? (emergencyState.selectedLateLabel || 'N/A') : 'N/A';
-
-  showLoading('Sending…');
-  try {
-    const { ok, error } = await apiPostEmergencyRaise(
-      emergencyState.selectedShift,
-      issueType,
-      emergencyState.reasonText || '',
-      etaOrLeaveTimeLabel
-    );
-
-    if (!ok) {
-      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
-      footer.innerHTML = '';
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = 'Cancel';
-      cancel.className = 'menu-item';
-      cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', closeEmergencyOverlay);
-      const retry = document.createElement('button');
-      retry.type = 'button';
-      retry.textContent = 'Try again';
-      retry.className = 'menu-item';
-      retry.style.border = '1px solid #2a3446';
-      retry.addEventListener('click', handleEmergencyConfirm);
-      footer.append(cancel, retry);
-      return;
-    }
-
-    title.textContent = 'Sent';
-    const successMsg = (issueType === 'CANNOT_ATTEND')
-      ? 'Our office have been informed. Please expect a phonecall shortly.'
-      : 'Our office have been informed and will call you shortly.';
-    body.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
-    footer.innerHTML = '';
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.textContent = 'Close';
-    close.className = 'menu-item';
-    close.style.border = '1px solid #2a3446';
-    close.addEventListener('click', closeEmergencyOverlay);
-    footer.appendChild(close);
-  } finally {
-    hideLoading();
-  }
-}
-
-
-/* =========================
- * NEW BUSINESS-RULE HELPERS
- * ========================= */
-
-/** Parse local start/end from a shift. Falls back to standard LD/N times if absent. */
-function parseShiftWindow(shift) {
-  // shift.ymd = 'YYYY-MM-DD'
-  // shift.shift_type = 'LONG DAY' | 'NIGHT' | 'LD' | 'N'
-  // shift.shiftInfo might contain times like "LONG DAY 07:30–20:00" or "NIGHT 19:30–08:00"
-  const ymd = String(shift.ymd || '');
-  const [Y, M, D] = ymd.split('-').map(n => parseInt(n, 10));
-  const base = new Date(Y, (M || 1) - 1, D || 1);
-
-  function parseTime(str, dayOffset = 0) {
-    const m = /(\d{1,2}):(\d{2})/.exec(str || '');
-    const hh = m ? parseInt(m[1], 10) : 0;
-    const mm = m ? parseInt(m[2], 10) : 0;
-    const dt = new Date(base.getFullYear(), base.getMonth(), base.getDate() + dayOffset, hh, mm, 0, 0);
-    return dt;
-  }
-
-  const info = String(shift.shiftInfo || '');
-  let start, end;
-
-  const times = info.match(/(\d{1,2}:\d{2})\s*[–-]\s*(\d{1,2}:\d{2})/);
-  const type = String(shift.shift_type || '').toUpperCase().replace(/\s+/g, '');
-
-  if (times) {
-    const s = times[1];
-    const e = times[2];
-    // If end is "earlier" than start, it crosses midnight (+1 day)
-    const sDate = parseTime(s, 0);
-    const eDate = parseTime(e, (e < s ? 1 : 0));
-    start = sDate; end = eDate;
-  } else if (type.includes('NIGHT') || type === 'N') {
-    start = parseTime('19:30', 0);
-    end = parseTime('08:00', 1);
-  } else {
-    // Long day default
-    start = parseTime('07:30', 0);
-    end = parseTime('20:00', 0);
-  }
-
-  return { start, end };
-}
-
-function getNow() {
-  return new Date();
-}
-
-function isShiftNotStarted(shift, now = getNow()) {
-  const { start } = parseShiftWindow(shift);
-  return now < start;
-}
-
-function isShiftInProgress(shift, now = getNow()) {
-  const { start, end } = parseShiftWindow(shift);
-  return now >= start && now < end;
-}
-
-function isWithinHours(shift, now = getNow(), hours = 4) {
-  const { start } = parseShiftWindow(shift);
-  const ms = hours * 60 * 60 * 1000;
-  return now < start && (start - now) <= ms;
-}
-
-/** Return list of allowed issue keys for a shift at time `now`. */
-function allowedIssuesForShift(shift, now = getNow()) {
-  const allowed = [];
-  if (isShiftInProgress(shift, now) || isWithinHours(shift, now, 4)) {
-    allowed.push('RUNNING_LATE');
-  }
-  if (isShiftNotStarted(shift, now)) {
-    allowed.push('CANNOT_ATTEND');
-  }
-  if (isShiftInProgress(shift, now)) {
-    allowed.push('LEAVE_EARLY');
-  }
-  return allowed;
-}
-
-/** Build a compact display label for a shift (date + type + place). */
-function buildEmergencyShiftLabel(shift) {
-  const ymd = String(shift.ymd || '');
-  const [Y, M, D] = ymd.split('-').map(n => parseInt(n, 10));
-  const dt = (Y && M && D) ? new Date(Y, M - 1, D) : null;
-  const dateStr = dt ? dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/,/g, '') : (ymd || 'Date');
-  const st = String(shift.shift_type || shift.shiftInfo || '').toUpperCase();
-  const type = st.includes('NIGHT') ? 'NIGHT' : (st.includes('LONG') || st.includes('LD') ? 'LONG DAY' : (st || 'SHIFT'));
-  const hosp = (shift.hospital || shift.location || '') || '';
-  const ward = (shift.ward || '');
-  const ref = (shift.booking_ref || shift.bookingRef || '');
-  const parts = [`${dateStr}`, `${type}`, hosp ? hosp : '', ward ? `(${ward})` : '', ref ? `Ref: ${ref}` : ''];
-  return parts.filter(Boolean).join(' — ');
-}
-
-/** Optional helper to build a shift skeleton from baseline if needed. */
-function coerceShiftFromBaseline(ymd) {
-  if (!baseline || !Array.isArray(baseline.tiles)) return null;
-  const t = baseline.tiles.find(x => x.ymd === ymd);
-  if (!t) return null;
-  return {
-    ymd: t.ymd,
-    shift_type: (t.shiftInfo && t.shiftInfo.toUpperCase().includes('NIGHT')) ? 'NIGHT' : 'LONG DAY',
-    hospital: t.hospital || t.location || '',
-    ward: t.ward || '',
-    job_title: t.jobTitle || '',
-    booking_ref: t.bookingRef || '',
-    shiftInfo: t.shiftInfo || ''
-  };
-}
 
 
 /* =========================
@@ -2962,22 +2267,6 @@ function mapServerErrorToMessage(err) {
 
 /** Refresh eligibility and toggle button; failure is silent by default. */
 /** Refresh eligibility and toggle button; failure is silent by default. */
-async function refreshEmergencyEligibility({ silent = false } = {}) {
-  const { ok, eligible, error } = await apiGetEmergencyWindow();
-  if (!ok) {
-    emergencyEligibilityCache = null;
-    window._emergencyEligibleShifts = [];                 // <-- keep global in sync
-    syncEmergencyButtonVisibility([]);                    // UI: hide/disable
-    try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI([]); } catch {}
-    if (!silent) showToast(mapServerErrorToMessage(error));
-    return;
-  }
-  emergencyEligibilityCache = { eligible };
-  window._emergencyEligibleShifts = eligible;             // <-- single source of truth update
-  syncEmergencyButtonVisibility(eligible);                // UI: show/hide
-  try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI(eligible); } catch {}
-}
-
 
 /* =========================
  * NEW LIFECYCLE HOOKS
@@ -3095,6 +2384,651 @@ function wireEmergencyButton() {
   });
 }
 
+// =========================
+// SERVER-AUTHORITATIVE FLOW
+// =========================
+
+async function refreshEmergencyEligibility({ silent = false } = {}) {
+  const { ok, eligible, error } = await apiGetEmergencyWindow();
+  if (!ok) {
+    // Fail soft: clear caches, hide button, keep app usable
+    emergencyEligibilityCache = null;
+    window._emergencyEligibleShifts = [];
+    syncEmergencyButtonVisibility([]);
+    try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI([]); } catch {}
+    if (!silent) showToast(mapServerErrorToMessage(error));
+    return;
+  }
+  // Cache the entire server payload once; no client decisions
+  emergencyEligibilityCache = { eligible };
+  window._emergencyEligibleShifts = eligible;
+  syncEmergencyButtonVisibility(eligible);
+  try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI(eligible); } catch {}
+}
+
+async function openEmergencyOverlay() {
+  if (isBlockingOverlayOpen()) return;
+
+  ensureEmergencyOverlay();
+  const btn = document.getElementById('emergencyBtn');
+  if (btn) { btn.dataset.busy = '1'; btn.style.opacity = '.9'; btn.style.pointerEvents = 'none'; }
+
+  try {
+    // Use the single cached window; only fetch if missing
+    if (!emergencyEligibilityCache) {
+      const { ok, eligible, error } = await apiGetEmergencyWindow();
+      if (!ok) { showToast(mapServerErrorToMessage(error)); return; }
+      emergencyEligibilityCache = { eligible };
+    }
+
+    resetEmergencyState();
+    emergencyState.eligible = emergencyEligibilityCache.eligible || [];
+    emergencyState.step = 'PICK_SHIFT';
+
+    openOverlay('emergencyOverlay', '#emergencyClose');
+    renderEmergencyStep();
+  } finally {
+    if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+  }
+}
+
+function renderEmergencyStep() {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  function setFooter({ showContinue = true, continueText = 'Continue', continueDisabled = false, showCancel = true, cancelText = 'Cancel' } = {}) {
+    footer.innerHTML = '';
+    if (showCancel) {
+      const cancel = document.createElement('button');
+      cancel.id = 'emergencyCancel';
+      cancel.type = 'button';
+      cancel.textContent = cancelText;
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', closeEmergencyOverlay);
+      footer.appendChild(cancel);
+    }
+    if (showContinue) {
+      const cont = document.createElement('button');
+      cont.id = 'emergencyContinue';
+      cont.type = 'button';
+      cont.textContent = continueText;
+      cont.className = 'menu-item';
+      cont.style.border = '1px solid #2a3446';
+      cont.disabled = !!continueDisabled;
+      footer.appendChild(cont);
+    }
+  }
+
+  const state = emergencyState;
+  body.innerHTML = '';
+
+  if (state.step === 'PICK_SHIFT') {
+    title.textContent = 'Which shift is this emergency concerning?';
+
+    if (!Array.isArray(state.eligible) || state.eligible.length === 0) {
+      body.innerHTML = `<div class="muted">No eligible shifts right now.</div>`;
+      setFooter({ showContinue: false, showCancel: true, cancelText: 'Close' });
+      return;
+    }
+
+    const list = document.createElement('div');
+    list.setAttribute('role', 'list');
+    list.style.display = 'flex';
+    list.style.flexDirection = 'column';
+    list.style.gap = '.5rem';
+
+    state.eligible.forEach((shift, idx) => {
+      const id = `emShift_${idx}`;
+      const item = document.createElement('label');
+      item.setAttribute('role', 'listitem');
+      item.style.border = '1px solid #222a36';
+      item.style.background = '#131926';
+      item.style.borderRadius = '10px';
+      item.style.padding = '.5rem .6rem';
+      item.style.display = 'flex';
+      item.style.alignItems = 'center';
+      item.style.gap = '.5rem';
+      item.innerHTML = `
+        <input type="radio" name="emShift" id="${id}" value="${escapeHtml(shift.ymd || String(idx))}">
+        <div style="font-weight:700;">${escapeHtml(buildEmergencyShiftLabel(shift))}</div>
+      `;
+      item.querySelector('input')._shift = shift; // stash whole server object
+      list.appendChild(item);
+    });
+
+    body.appendChild(list);
+    setFooter({ continueDisabled: true });
+
+    const cont = document.getElementById('emergencyContinue');
+    body.addEventListener('change', (e) => {
+      if (e.target && e.target.name === 'emShift') {
+        cont && (cont.disabled = false);
+      }
+    });
+    cont && cont.addEventListener('click', handleEmergencyPickShift);
+  }
+
+  else if (state.step === 'PICK_ISSUE') {
+    title.textContent = 'Please select your emergency';
+
+    // Trust the server for allowed actions.
+    // Preferred: shift.allowed_issues or shift.allowedActions (array of keys).
+    // Fallback (still server-driven): boolean flags.
+    const s = state.selectedShift || {};
+    let allowed = [];
+
+    if (Array.isArray(s.allowed_issues) && s.allowed_issues.length) {
+      allowed = s.allowed_issues.map(x => String(x).toUpperCase());
+    } else if (Array.isArray(s.allowedActions) && s.allowedActions.length) {
+      allowed = s.allowedActions.map(x => String(x).toUpperCase());
+    } else {
+      // Derive purely from server-provided flags; no client time math.
+      if (s.canRunLate === true)  allowed.push('RUNNING_LATE');
+      if (s.canCancel  === true)  allowed.push('CANNOT_ATTEND');
+      if (s.canLeaveEarly === true) allowed.push('LEAVE_EARLY');
+    }
+
+    const choices = document.createElement('div');
+    choices.setAttribute('role', 'group');
+    choices.style.display = 'flex';
+    choices.style.flexDirection = 'column';
+    choices.style.gap = '.5rem';
+
+    function addOption(key, label, help) {
+      const id = `emIssue_${key}`;
+      const row = document.createElement('label');
+      row.style.border = '1px solid #222a36';
+      row.style.background = '#131926';
+      row.style.borderRadius = '10px';
+      row.style.padding = '.5rem .6rem';
+      row.style.display = 'grid';
+      row.style.gridTemplateColumns = 'auto 1fr';
+      row.style.gap = '.6rem';
+      row.innerHTML = `
+        <input type="radio" name="emIssue" id="${id}" value="${key}">
+        <div>
+          <div style="font-weight:800;">${escapeHtml(label)}</div>
+          ${help ? `<div class="muted" style="margin-top:.15rem">${escapeHtml(help)}</div>` : ''}
+        </div>
+      `;
+      choices.appendChild(row);
+    }
+
+    if (allowed.includes('RUNNING_LATE')) {
+      addOption('RUNNING_LATE', 'Running late', 'If the shift is within 4 hours or has already started.');
+    }
+    if (allowed.includes('CANNOT_ATTEND')) {
+      addOption('CANNOT_ATTEND', 'Cannot attend shift', 'Only if your shift has not started yet.');
+    }
+    if (allowed.includes('LEAVE_EARLY')) {
+      addOption('LEAVE_EARLY', 'Need to leave current shift early', 'Only if you are currently on shift.');
+    }
+
+    if (!choices.children.length) {
+      body.innerHTML = `<div class="muted">No emergency options are available for this shift.</div>`;
+      setFooter({ showCancel: true, cancelText: 'Close', showContinue: false });
+      return;
+    }
+
+    body.appendChild(choices);
+    setFooter({ continueDisabled: true });
+
+    const cont = document.getElementById('emergencyContinue');
+    body.addEventListener('change', (e) => {
+      if (e.target && e.target.name === 'emIssue') {
+        cont && (cont.disabled = false);
+      }
+    });
+    cont && cont.addEventListener('click', handleEmergencyPickIssue);
+  }
+
+  else if (state.step === 'DETAILS') {
+    if (state.issueType === 'RUNNING_LATE') {
+      title.textContent = 'How late will you be?';
+
+      const container = document.createElement('div');
+      container.style.display = 'flex';
+      container.style.flexDirection = 'column';
+      container.style.gap = '.5rem';
+
+      const optsWrap = document.createElement('div');
+      container.appendChild(optsWrap);
+      body.appendChild(container);
+      setFooter({ continueDisabled: true });
+
+      // Prefer options bundled by the server in the eligibility payload
+      const s = state.selectedShift || {};
+      const serverOpts = Array.isArray(s.late_options) ? s.late_options : null;
+      const serverCtx  = s.context || null;
+
+      (async () => {
+        // If server already told us the options/context, use them; otherwise call OPTIONS once.
+        if (serverOpts && serverOpts.length) {
+          state.lateOptions = serverOpts;
+          state.runningLateContext = serverCtx || s;
+        } else {
+          optsWrap.innerHTML = `<div class="muted">Loading options…</div>`;
+          const { ok, options, context, eligible, reason, error } = await apiPostRunningLateOptions(s);
+          if (!ok) { optsWrap.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`; return; }
+          if (eligible === false) { optsWrap.innerHTML = `<div class="muted">${escapeHtml(reason || 'Not eligible right now.')}</div>`; return; }
+          state.lateOptions = options;
+          state.runningLateContext = context || s;
+        }
+
+        optsWrap.innerHTML = '';
+        const group = document.createElement('div');
+        group.setAttribute('role', 'group');
+        group.style.display = 'flex';
+        group.style.flexDirection = 'column';
+        group.style.gap = '.5rem';
+
+        (state.lateOptions || []).forEach((opt, idx) => {
+          const id = `lateOpt_${idx}`;
+          const row = document.createElement('label');
+          row.style.border = '1px solid #222a36';
+          row.style.background = '#131926';
+          row.style.borderRadius = '10px';
+          row.style.padding = '.5rem .6rem';
+          row.style.display = 'flex';
+          row.style.alignItems = 'center';
+          row.style.gap = '.6rem';
+          const labelText = typeof opt === 'string' ? opt : (opt.label || '');
+          row.innerHTML = `
+            <input type="radio" name="emLate" id="${id}" value="${escapeHtml(labelText)}">
+            <div style="font-weight:700;">${escapeHtml(labelText)}</div>
+          `;
+          group.appendChild(row);
+        });
+
+        optsWrap.appendChild(group);
+
+        const cont = document.getElementById('emergencyContinue');
+        body.addEventListener('change', (e) => {
+          if (e.target && e.target.name === 'emLate') {
+            cont && (cont.disabled = false);
+            state.selectedLateLabel = e.target.value || null;
+          }
+        });
+      })();
+
+      const cont = document.getElementById('emergencyContinue');
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+    }
+
+    else if (state.issueType === 'CANNOT_ATTEND') {
+      title.textContent = 'Please provide a reason for your very late cancellation';
+      const p = document.createElement('div');
+      p.className = 'muted';
+      p.style.marginBottom = '.5rem';
+      p.textContent = 'We will notify our office and they will be called on their phones. If this is not an emergency you will be removed from all future care packages.';
+      const ta = document.createElement('textarea');
+      ta.id = 'emergencyReason';
+      ta.rows = 4;
+      ta.style.width = '100%';
+      ta.style.borderRadius = '10px';
+      ta.style.border = '1px solid #222a36';
+      ta.style.background = '#0b0e14';
+      ta.style.color = '#e7ecf3';
+      ta.style.padding = '.6rem';
+      ta.placeholder = 'Type your reason…';
+      body.append(p, ta);
+
+      setFooter({ continueDisabled: true });
+
+      const cont = document.getElementById('emergencyContinue');
+      ta.addEventListener('input', () => {
+        emergencyState.reasonText = (ta.value || '').trim();
+        cont && (cont.disabled = emergencyState.reasonText.length < 3);
+      });
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+    }
+
+    else if (state.issueType === 'LEAVE_EARLY') {
+      title.textContent = 'Reason for leaving early';
+      const p = document.createElement('div');
+      p.className = 'muted';
+      p.style.marginBottom = '.5rem';
+      p.textContent = 'Our office staff will be called on their mobile phones immediately regarding this.';
+      const ta = document.createElement('textarea');
+      ta.id = 'emergencyReason';
+      ta.rows = 4;
+      ta.style.width = '100%';
+      ta.style.borderRadius = '10px';
+      ta.style.border = '1px solid #222a36';
+      ta.style.background = '#0b0e14';
+      ta.style.color = '#e7ecf3';
+      ta.style.padding = '.6rem';
+      ta.placeholder = 'Type your reason…';
+      body.append(p, ta);
+
+      setFooter({ continueDisabled: true });
+
+      const cont = document.getElementById('emergencyContinue');
+      ta.addEventListener('input', () => {
+        emergencyState.reasonText = (ta.value || '').trim();
+        cont && (cont.disabled = emergencyState.reasonText.length < 3);
+      });
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+    }
+  }
+
+  else if (state.step === 'CONFIRM') {
+    let msg = '';
+    if (state.issueType === 'RUNNING_LATE') {
+      msg = "Your colleagues on shift will be informed and so will the Arthur Rai office. Do you want to proceed? You cannot cancel after this step.";
+    } else if (state.issueType === 'CANNOT_ATTEND') {
+      msg = "Warning – Our office staff will now be called on their mobile phones regarding your cancellation. Are you absolutely sure you want to continue?";
+    } else if (state.issueType === 'LEAVE_EARLY') {
+      msg = "Are you sure you wish to continue? Our office staff will be called on their mobile phones immediately regarding this.";
+    }
+
+    title.textContent = 'Please confirm';
+    const box = document.createElement('div');
+    box.style.border = '1px solid #2a3446';
+    box.style.background = '#131926';
+    box.style.borderRadius = '10px';
+    box.style.padding = '.6rem';
+    box.style.lineHeight = '1.35';
+    box.innerHTML = `<div class="muted">${escapeHtml(msg)}</div>`;
+
+    if (emergencyState.previewHtml && emergencyState.issueType === 'RUNNING_LATE') {
+      const prev = document.createElement('div');
+      prev.style.marginTop = '.6rem';
+      prev.innerHTML = emergencyState.previewHtml; // may come from server PREVIEW or pre-supplied
+      box.appendChild(prev);
+    }
+
+    body.appendChild(box);
+
+    setFooter({ continueText: 'Continue', cancelText: 'Cancel' });
+    const cont = document.getElementById('emergencyContinue');
+    cont && cont.addEventListener('click', handleEmergencyConfirm);
+  }
+}
+
+// Prefer server-provided label/time; fall back to old label composition.
+function buildEmergencyShiftLabel(shift) {
+  if (shift && typeof shift.display_label === 'string' && shift.display_label.trim()) {
+    return shift.display_label.trim();
+  }
+  const datePart =
+    (shift && shift.date_label) ||
+    (() => {
+      const ymd = String(shift && shift.ymd || '');
+      const [Y, M, D] = ymd.split('-').map(n => parseInt(n, 10));
+      const dt = (Y && M && D) ? new Date(Y, M - 1, D) : null;
+      return dt ? dt.toLocaleDateString('en-GB', { weekday: 'short', day: 'numeric', month: 'short' }).replace(/,/g, '') : (ymd || 'Date');
+    })();
+
+  const type =
+    (shift && (shift.shift_type_label || shift.shift_type_raw || shift.shift_type)) ||
+    ((String(shift && shift.shiftInfo || '').toUpperCase().includes('NIGHT')) ? 'NIGHT' : 'LONG DAY');
+
+  const timeRange =
+    (shift && (shift.time_range_label || shift.timeLabel)) || // server-supplied pretty range preferred
+    '';
+
+  const hosp = (shift && (shift.hospital || shift.location)) || '';
+  const ward = (shift && shift.ward) || '';
+  const ref  = (shift && (shift.booking_ref || shift.bookingRef)) || '';
+
+  const parts = [
+    String(datePart || '').trim(),
+    String(type || '').trim(),
+    timeRange ? String(timeRange).trim() : '',
+    hosp ? String(hosp).trim() : '',
+    ward ? `(${String(ward).trim()})` : '',
+    ref ? `Ref: ${String(ref).trim()}` : ''
+  ];
+  return parts.filter(Boolean).join(' — ');
+}
+
+async function apiGetEmergencyWindow() {
+  try {
+    const { res, json } = await apiGET({ view: 'emergency_window' });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, eligible: [], error: msg || 'UNKNOWN_ERROR' };
+    }
+    // Pass through whatever the server decided (eligible items may include
+    // allowed_issues, late_options, context, labels, etc.)
+    const eligible = Array.isArray(json.eligible) ? json.eligible : [];
+    return { ok: true, eligible, serverTime: json.serverTime || null };
+  } catch (e) {
+    return { ok: false, eligible: [], error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+async function handleEmergencyCollectDetails() {
+  if (!emergencyState) return;
+
+  if (emergencyState.issueType === 'RUNNING_LATE') {
+    if (!emergencyState.selectedLateLabel) {
+      showToast('Please pick how late you will be.');
+      return;
+    }
+
+    // Prefer pre-supplied preview HTML if the server sent it with the window/options.
+    const s = emergencyState.selectedShift || {};
+    const prePreview = (s.previewHtml || (s.preview && s.preview.html)) || '';
+
+    if (prePreview) {
+      emergencyState.previewHtml = prePreview;
+      emergencyState.step = 'CONFIRM';
+      renderEmergencyStep();
+      return;
+    }
+
+    // Optional PREVIEW call only if needed and if we have a context.
+    const ctxForPreview =
+      (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
+      (s && (s.context || s));
+
+    if (ctxForPreview) {
+      const { ok, previewHtml } = await apiPostRunningLatePreview(ctxForPreview, emergencyState.selectedLateLabel);
+      emergencyState.previewHtml = ok ? (previewHtml || '') : '';
+    } else {
+      emergencyState.previewHtml = '';
+    }
+
+    emergencyState.step = 'CONFIRM';
+    renderEmergencyStep();
+    return;
+  }
+
+  // CANNOT_ATTEND / LEAVE_EARLY
+  if (!emergencyState.reasonText || emergencyState.reasonText.length < 3) {
+    showToast('Please enter a brief reason.');
+    return;
+  }
+  emergencyState.step = 'CONFIRM';
+  renderEmergencyStep();
+}
+
+async function handleEmergencyConfirm() {
+  if (!emergencyState || !emergencyState.selectedShift || !emergencyState.issueType) return;
+
+  const footer = document.getElementById('emergencyFooter');
+  const cont = document.getElementById('emergencyContinue');
+  if (cont) cont.disabled = true;
+
+  try {
+    if (emergencyState.issueType === 'RUNNING_LATE') {
+      // Use context supplied by server in either the window payload or OPTIONS
+      const s = emergencyState.selectedShift || {};
+      const ctx =
+        (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
+        (s && (s.context || s));
+
+      if (!emergencyState.selectedLateLabel || !ctx) {
+        showToast('Please pick how late you will be.');
+        return;
+      }
+
+      await submitEmergencyRunningLate(ctx, emergencyState.selectedLateLabel);
+    } else {
+      await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
+    }
+  } finally {
+    // Footer will be replaced by submitters; nothing else to do
+  }
+}
+
+async function submitEmergencyRunningLate(ctx, label) {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  const resolvedCtx =
+    (ctx && (ctx.context || ctx)) ||
+    (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
+    (emergencyState.selectedShift && (emergencyState.selectedShift.context || emergencyState.selectedShift));
+
+  const resolvedLabel = label || emergencyState.selectedLateLabel;
+
+  if (!resolvedCtx || !resolvedLabel) {
+    showToast('Please pick how late you will be.');
+    return;
+  }
+
+  showLoading('Sending…');
+  try {
+    const { ok, error } = await apiPostRunningLateSend(resolvedCtx, resolvedLabel);
+    if (!ok) {
+      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+      footer.innerHTML = '';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', closeEmergencyOverlay);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Try again';
+      retry.className = 'menu-item';
+      retry.style.border = '1px solid #2a3446';
+      retry.addEventListener('click', handleEmergencyConfirm);
+      footer.append(cancel, retry);
+      return;
+    }
+
+    title.textContent = 'Sent';
+    body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
+    footer.innerHTML = '';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', closeEmergencyOverlay);
+    footer.appendChild(close);
+  } finally {
+    hideLoading();
+  }
+}
+
+async function submitEmergencyRaise() {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  const issueType =
+    emergencyState.issueType === 'CANNOT_ATTEND' ? 'CANNOT_ATTEND' :
+    emergencyState.issueType === 'LEAVE_EARLY' ? 'LEAVE_EARLY' : '';
+
+  const etaOrLeaveTimeLabel =
+    (issueType === 'LEAVE_EARLY') ? (emergencyState.selectedLateLabel || 'N/A') : 'N/A';
+
+  showLoading('Sending…');
+  try {
+    const { ok, error } = await apiPostEmergencyRaise(
+      emergencyState.selectedShift,
+      issueType,
+      emergencyState.reasonText || '',
+      etaOrLeaveTimeLabel
+    );
+
+    if (!ok) {
+      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+      footer.innerHTML = '';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', closeEmergencyOverlay);
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Try again';
+      retry.className = 'menu-item';
+      retry.style.border = '1px solid #2a3446';
+      retry.addEventListener('click', handleEmergencyConfirm);
+      footer.append(cancel, retry);
+      return;
+    }
+
+    title.textContent = 'Sent';
+    const successMsg = (issueType === 'CANNOT_ATTEND')
+      ? 'Our office have been informed. Please expect a phonecall shortly.'
+      : 'Our office have been informed and will call you shortly.';
+    body.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
+    footer.innerHTML = '';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', closeEmergencyOverlay);
+    footer.appendChild(close);
+  } finally {
+    hideLoading();
+  }
+}
+
+// Fallback endpoints kept for backward compatibility (only used if the server
+// did NOT include late options/context in the initial emergency_window payload)
+async function apiPostRunningLateOptions(shift) {
+  try {
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_OPTIONS', shift });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, options: [], context: null, eligible: false, error: msg || 'UNKNOWN_ERROR' };
+    }
+    const options  = Array.isArray(json.options) ? json.options : [];
+    const context  = json.context || null;
+    const eligible = !!json.eligible;
+    const reason   = json.reason || '';
+    return { ok: true, options, context, eligible, reason };
+  } catch (e) {
+    return { ok: false, options: [], context: null, eligible: false, error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
+
+async function apiPostRunningLatePreview(shiftOrContext, etaLabel) {
+  try {
+    const context = shiftOrContext && shiftOrContext.context ? shiftOrContext.context : shiftOrContext;
+    const { res, json } = await apiPOST({ action: 'RUNNING_LATE_PREVIEW', context, eta_label: etaLabel });
+    if (!res.ok || !json || json.ok === false) {
+      const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
+      return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: msg || 'UNKNOWN_ERROR' };
+    }
+    return {
+      ok: true,
+      previewHtml: json.previewHtml || '',
+      context: json.context || context || null,
+      minutes: Number(json.minutes || 0),
+      arrivalByLabel: (json.preview && json.preview.arrival_by_label) || ''
+    };
+  } catch (e) {
+    return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: String(e && e.message) || 'NETWORK_ERROR' };
+  }
+}
 
 
 function sizeGrid() {
