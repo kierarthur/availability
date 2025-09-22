@@ -2191,12 +2191,15 @@ function resetEmergencyState() {
     selectedShift: null,
     issueType: null,              // 'RUNNING_LATE' | 'CANNOT_ATTEND' | 'LEAVE_EARLY'
     lateOptions: [],              // [{ label, minutes }]
+    runningLateContext: null,     // ensure default for RL preview/send
     selectedLateLabel: null,
     reasonText: '',
     previewHtml: '',
-    step: 'PICK_SHIFT'
+    step: 'PICK_SHIFT',
+    __confirmSubmitting: false    // double-submit guard reset
   };
 }
+
 
 
 /* =========================
@@ -2702,15 +2705,158 @@ function renderEmergencyStep() {
       ta.style.color = '#e7ecf3';
       ta.style.padding = '.6rem';
       ta.placeholder = 'Type your reason…';
-      body.append(p, ta);
+
+      // ── NEW: time selection (NOW or HH MM)
+      const timeWrap = document.createElement('div');
+      timeWrap.style.marginTop = '.6rem';
+      timeWrap.style.border = '1px solid #222a36';
+      timeWrap.style.background = '#131926';
+      timeWrap.style.borderRadius = '10px';
+      timeWrap.style.padding = '.6rem';
+
+      const legend = document.createElement('div');
+      legend.style.fontWeight = '800';
+      legend.style.marginBottom = '.35rem';
+      legend.textContent = 'When do you need to leave?';
+      timeWrap.appendChild(legend);
+
+      const help = document.createElement('div');
+      help.className = 'muted';
+      help.style.marginBottom = '.4rem';
+      help.textContent = 'Choose NOW or enter a 24-hour time (HH MM).';
+      timeWrap.appendChild(help);
+
+      const rowNow = document.createElement('label');
+      rowNow.style.display = 'flex';
+      rowNow.style.alignItems = 'center';
+      rowNow.style.gap = '.5rem';
+      rowNow.style.marginBottom = '.35rem';
+      rowNow.innerHTML = `<input type="radio" name="leaveTimeMode" value="NOW"> <div>NOW / ASAP</div>`;
+
+      const rowAt = document.createElement('div');
+      rowAt.style.display = 'grid';
+      rowAt.style.gridTemplateColumns = 'auto auto auto 1fr';
+      rowAt.style.alignItems = 'center';
+      rowAt.style.gap = '.4rem';
+
+      const atLabel = document.createElement('label');
+      atLabel.style.display = 'flex';
+      atLabel.style.alignItems = 'center';
+      atLabel.style.gap = '.5rem';
+      atLabel.innerHTML = `<input type="radio" name="leaveTimeMode" value="AT"> <div>At time:</div>`;
+
+      const hh = document.createElement('input');
+      hh.type = 'text';
+      hh.inputMode = 'numeric';
+      hh.maxLength = 2;
+      hh.placeholder = 'HH';
+      hh.style.width = '3.5rem';
+      hh.style.textAlign = 'center';
+      hh.style.borderRadius = '8px';
+      hh.style.border = '1px solid #222a36';
+      hh.style.background = '#0b0e14';
+      hh.style.color = '#e7ecf3';
+      hh.style.padding = '.35rem';
+
+      const mm = document.createElement('input');
+      mm.type = 'text';
+      mm.inputMode = 'numeric';
+      mm.maxLength = 2;
+      mm.placeholder = 'MM';
+      mm.style.width = '3.5rem';
+      mm.style.textAlign = 'center';
+      mm.style.borderRadius = '8px';
+      mm.style.border = '1px solid #222a36';
+      mm.style.background = '#0b0e14';
+      mm.style.color = '#e7ecf3';
+      mm.style.padding = '.35rem';
+
+      const err = document.createElement('div');
+      err.className = 'muted';
+      err.style.color = '#ff8a80';
+      err.style.marginTop = '.3rem';
+      err.style.display = 'none';
+      err.textContent = 'Enter a valid 24-hour time (00–23 and 00–59).';
+
+      rowAt.appendChild(atLabel);
+      rowAt.appendChild(hh);
+      rowAt.appendChild(mm);
+
+      timeWrap.appendChild(rowNow);
+      timeWrap.appendChild(rowAt);
+      timeWrap.appendChild(err);
+
+      body.append(p, ta, timeWrap);
 
       setFooter({ continueDisabled: true });
 
       const cont = document.getElementById('emergencyContinue');
+      // Reset selection when entering this step
+      emergencyState.selectedLateLabel = null;
+
+      function isNumInRange(v, min, max) {
+        const n = Number(v);
+        return String(v).trim() !== '' && Number.isInteger(n) && n >= min && n <= max;
+      }
+      function pad2(n) { n = Number(n); return (n < 10 ? '0' + n : String(n)); }
+
+      function updateTimeSelection() {
+        const modeNow = body.querySelector('input[name="leaveTimeMode"][value="NOW"]');
+        const modeAt  = body.querySelector('input[name="leaveTimeMode"][value="AT"]');
+        const nowChecked = modeNow && modeNow.checked;
+        const atChecked  = modeAt && modeAt.checked;
+
+        let ok = false;
+        let label = null;
+
+        if (nowChecked) {
+          label = 'NOW';
+          ok = true;
+          err.style.display = 'none';
+        } else if (atChecked) {
+          const H = hh.value.replace(/\D+/g, '');
+          const M = mm.value.replace(/\D+/g, '');
+          const hOk = isNumInRange(H, 0, 23);
+          const mOk = isNumInRange(M, 0, 59);
+          ok = hOk && mOk;
+          if (ok) {
+            label = `${pad2(H)}:${pad2(M)}`;
+            err.style.display = 'none';
+          } else {
+            // show error only if any field filled
+            if (H !== '' || M !== '') err.style.display = '';
+          }
+        } else {
+          err.style.display = 'none';
+        }
+
+        emergencyState.selectedLateLabel = ok ? label : null;
+
+        // Continue gating (needs valid reason + valid time)
+        const reasonOK = (emergencyState.reasonText || '').length >= 3;
+        cont && (cont.disabled = !(reasonOK && !!emergencyState.selectedLateLabel));
+      }
+
+      // Events
+      body.addEventListener('change', (e) => {
+        if (e.target && e.target.name === 'leaveTimeMode') {
+          updateTimeSelection();
+        }
+      });
+      [hh, mm].forEach(inp => {
+        inp.addEventListener('input', updateTimeSelection);
+        inp.addEventListener('blur', updateTimeSelection);
+      });
+
       ta.addEventListener('input', () => {
         emergencyState.reasonText = (ta.value || '').trim();
-        cont && (cont.disabled = emergencyState.reasonText.length < 3);
+        updateTimeSelection();
       });
+
+      const modeNowRadio = body.querySelector('input[name="leaveTimeMode"][value="NOW"]');
+      modeNowRadio && (modeNowRadio.checked = false); // start unselected
+      updateTimeSelection();
+
       cont && cont.addEventListener('click', handleEmergencyCollectDetails);
     }
   }
@@ -2748,6 +2894,7 @@ function renderEmergencyStep() {
     cont && cont.addEventListener('click', handleEmergencyConfirm);
   }
 }
+
 
 // Prefer server-provided label/time; fall back to old label composition.
 function buildEmergencyShiftLabel(shift) {
@@ -2851,9 +2998,23 @@ async function handleEmergencyCollectDetails() {
 async function handleEmergencyConfirm() {
   if (!emergencyState || !emergencyState.selectedShift || !emergencyState.issueType) return;
 
-  const footer = document.getElementById('emergencyFooter');
+  // --- double-submit guard ---
+  if (emergencyState.__confirmSubmitting) return;
+  emergencyState.__confirmSubmitting = true;
+
   const cont = document.getElementById('emergencyContinue');
-  if (cont) cont.disabled = true;
+  const cancel = document.getElementById('emergencyCancel');
+  const origText = cont ? cont.textContent : '';
+
+  // Disable buttons immediately on click
+  if (cont) { cont.disabled = true; cont.textContent = 'Sending…'; }
+  if (cancel) cancel.disabled = true;
+
+  function reenable() {
+    if (cont) { cont.disabled = false; cont.textContent = origText || 'Continue'; }
+    if (cancel) cancel.disabled = false;
+    emergencyState.__confirmSubmitting = false;
+  }
 
   try {
     if (emergencyState.issueType === 'RUNNING_LATE') {
@@ -2865,16 +3026,58 @@ async function handleEmergencyConfirm() {
 
       if (!emergencyState.selectedLateLabel || !ctx) {
         showToast('Please pick how late you will be.');
+        reenable();
         return;
       }
 
       await submitEmergencyRunningLate(ctx, emergencyState.selectedLateLabel);
+
+    } else if (emergencyState.issueType === 'LEAVE_EARLY') {
+      // Must have reason and a valid leave time (NOW or HH:MM)
+      const reasonOk = (emergencyState.reasonText || '').trim().length >= 3;
+      const lbl = (emergencyState.selectedLateLabel || '').trim();
+      const isNow = lbl === 'NOW';
+      let isValidTime = false;
+
+      if (/^\d{2}:\d{2}$/.test(lbl)) {
+        const parts = lbl.split(':');
+        const hh = parseInt(parts[0], 10);
+        const mm = parseInt(parts[1], 10);
+        isValidTime = Number.isInteger(hh) && Number.isInteger(mm) && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
+      }
+
+      if (!reasonOk) {
+        showToast('Please enter a brief reason.');
+        reenable();
+        return;
+      }
+      if (!(isNow || isValidTime)) {
+        showToast('Please select NOW or enter a valid time in 24-hour format (HH:MM).');
+        reenable();
+        return;
+      }
+
+      await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
+
     } else {
+      // CANNOT_ATTEND: ensure a reason is present
+      const reasonOk = (emergencyState.reasonText || '').trim().length >= 3;
+      if (!reasonOk) {
+        showToast('Please enter a brief reason.');
+        reenable();
+        return;
+      }
       await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
     }
-  } finally {
-    // Footer will be replaced by submitters; nothing else to do
+  } catch (err) {
+    // Generic failure path → allow retry
+    showToast('Something went wrong. Please try again.');
+    reenable();
+    return;
   }
+
+  // Success → keep disabled; submitters will replace footer/overlay
+  // (Do not re-enable here)
 }
 
 async function submitEmergencyRunningLate(ctx, label) {
