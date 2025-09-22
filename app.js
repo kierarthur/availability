@@ -2590,7 +2590,7 @@ function renderEmergencyStep() {
 
   else if (state.step === 'DETAILS') {
     if (state.issueType === 'RUNNING_LATE') {
-      title.textContent = 'How late will you be?';
+      title.textContent = 'How late will you be? Please note that is how late you will arrive after the shift time is due to start.';
 
       const container = document.createElement('div');
       container.style.display = 'flex';
