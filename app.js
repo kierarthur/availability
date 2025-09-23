@@ -2181,6 +2181,7 @@ function syncEmergencyButtonVisibility(eligible) {
 /** Close the Emergency overlay and reset state. */
 
 /** Reset the wizard state but keep overlay open. */
+
 function resetEmergencyState() {
   emergencyState = {
     eligible: [],
@@ -2192,7 +2193,8 @@ function resetEmergencyState() {
     reasonText: '',
     previewHtml: '',
     step: 'PICK_SHIFT',
-    __confirmSubmitting: false    // double-submit guard reset
+    __confirmSubmitting: false,   // double-submit guard reset
+    confirmError: ''              // inline confirm warning
   };
 }
 
@@ -2305,13 +2307,14 @@ function ensureEmergencyOverlay() {
 
   // Close button — emergency overlay is dismissible
   const closeBtn = overlay.querySelector('#emergencyClose');
-  if (closeBtn) closeBtn.addEventListener('click', closeEmergencyOverlay);
+  if (closeBtn) closeBtn.addEventListener('click', () => closeEmergencyOverlay(false));
 
   // Backdrop click to close (consistent with dismissible overlays)
   overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) closeEmergencyOverlay();
+    if (e.target === overlay) closeEmergencyOverlay(false);
   });
 }
+
 
 function populateEmergencyModalStart(eligible) {
   // Don’t open on top of a blocking overlay (e.g., reset/login/alert).
@@ -2446,7 +2449,7 @@ function renderEmergencyStep() {
       cancel.textContent = cancelText;
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', closeEmergencyOverlay);
+      cancel.addEventListener('click', () => closeEmergencyOverlay(false));
       footer.appendChild(cancel);
     }
     if (showContinue) {
@@ -2649,6 +2652,8 @@ function renderEmergencyStep() {
           if (e.target && e.target.name === 'emLate') {
             cont && (cont.disabled = false);
             state.selectedLateLabel = e.target.value || null;
+            // Clear any previous confirm error once valid choice made
+            if (state.selectedLateLabel) state.confirmError = '';
           }
         });
       })();
@@ -2680,7 +2685,10 @@ function renderEmergencyStep() {
       const cont = document.getElementById('emergencyContinue');
       ta.addEventListener('input', () => {
         emergencyState.reasonText = (ta.value || '').trim();
-        cont && (cont.disabled = emergencyState.reasonText.length < 3);
+        // Gate continue and clear confirm error when valid
+        const valid = emergencyState.reasonText.length >= 3;
+        cont && (cont.disabled = !valid);
+        if (valid) emergencyState.confirmError = '';
       });
       cont && cont.addEventListener('click', handleEmergencyCollectDetails);
     }
@@ -2831,6 +2839,11 @@ function renderEmergencyStep() {
         // Continue gating (needs valid reason + valid time)
         const reasonOK = (emergencyState.reasonText || '').length >= 3;
         cont && (cont.disabled = !(reasonOK && !!emergencyState.selectedLateLabel));
+
+        // Clear any previous confirm error once inputs are valid
+        if (reasonOK && !!emergencyState.selectedLateLabel) {
+          emergencyState.confirmError = '';
+        }
       }
 
       // Events
@@ -2883,13 +2896,24 @@ function renderEmergencyStep() {
       box.appendChild(prev);
     }
 
+    // Inline confirm error (when present)
+    if (state.confirmError) {
+      const warn = document.createElement('div');
+      warn.style.marginTop = '.6rem';
+      warn.style.fontWeight = '700';
+      warn.style.color = '#ff8a80';
+      warn.textContent = state.confirmError;
+      box.appendChild(warn);
+    }
+
     body.appendChild(box);
 
-    setFooter({ continueText: 'Continue', cancelText: 'Cancel' });
+    setFooter({ continueText: 'Continue', cancelText: 'Cancel', continueDisabled: !!state.confirmError });
     const cont = document.getElementById('emergencyContinue');
     cont && cont.addEventListener('click', handleEmergencyConfirm);
   }
 }
+
 
 
 // Prefer server-provided label/time; fall back to old label composition.
@@ -2950,7 +2974,10 @@ async function handleEmergencyCollectDetails() {
 
   if (emergencyState.issueType === 'RUNNING_LATE') {
     if (!emergencyState.selectedLateLabel) {
-      showToast('Please pick how late you will be.');
+      // Inline warning on confirm step
+      emergencyState.confirmError = 'Please pick how late you will be.';
+      emergencyState.step = 'CONFIRM';
+      renderEmergencyStep();
       return;
     }
 
@@ -2977,6 +3004,7 @@ async function handleEmergencyCollectDetails() {
       emergencyState.previewHtml = '';
     }
 
+    emergencyState.confirmError = ''; // clear any prior warning
     emergencyState.step = 'CONFIRM';
     renderEmergencyStep();
     return;
@@ -2984,9 +3012,12 @@ async function handleEmergencyCollectDetails() {
 
   // CANNOT_ATTEND / LEAVE_EARLY
   if (!emergencyState.reasonText || emergencyState.reasonText.length < 3) {
-    showToast('Please enter a brief reason.');
+    emergencyState.confirmError = 'Please enter a reason before continuing.';
+    emergencyState.step = 'CONFIRM';
+    renderEmergencyStep();
     return;
   }
+  emergencyState.confirmError = ''; // clear any prior warning
   emergencyState.step = 'CONFIRM';
   renderEmergencyStep();
 }
@@ -3021,8 +3052,11 @@ async function handleEmergencyConfirm() {
         (s && (s.context || s));
 
       if (!emergencyState.selectedLateLabel || !ctx) {
-        showToast('Please pick how late you will be.');
+        // Inline confirm warning (no toast)
+        emergencyState.confirmError = 'Please pick how late you will be.';
+        emergencyState.step = 'CONFIRM';
         reenable();
+        renderEmergencyStep();
         return;
       }
 
@@ -3043,13 +3077,19 @@ async function handleEmergencyConfirm() {
       }
 
       if (!reasonOk) {
-        showToast('Please enter a brief reason.');
+        // Inline confirm warning (no toast)
+        emergencyState.confirmError = 'Please enter a reason before continuing.';
+        emergencyState.step = 'CONFIRM';
         reenable();
+        renderEmergencyStep();
         return;
       }
       if (!(isNow || isValidTime)) {
-        showToast('Please select NOW or enter a valid time in 24-hour format (HH:MM).');
+        // Inline confirm warning (no toast)
+        emergencyState.confirmError = 'Please select NOW or enter a valid time in 24-hour format (HH:MM).';
+        emergencyState.step = 'CONFIRM';
         reenable();
+        renderEmergencyStep();
         return;
       }
 
@@ -3059,16 +3099,21 @@ async function handleEmergencyConfirm() {
       // CANNOT_ATTEND: ensure a reason is present
       const reasonOk = (emergencyState.reasonText || '').trim().length >= 3;
       if (!reasonOk) {
-        showToast('Please enter a brief reason.');
+        // Inline confirm warning (no toast)
+        emergencyState.confirmError = 'Please enter a reason before continuing.';
+        emergencyState.step = 'CONFIRM';
         reenable();
+        renderEmergencyStep();
         return;
       }
       await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
     }
   } catch (err) {
     // Generic failure path → allow retry
-    showToast('Something went wrong. Please try again.');
+    emergencyState.confirmError = 'Something went wrong. Please try again.';
+    emergencyState.step = 'CONFIRM';
     reenable();
+    renderEmergencyStep();
     return;
   }
 
@@ -3134,11 +3179,12 @@ async function submitEmergencyRaise() {
     hideLoading();
   }
 }
+
 function closeEmergencyOverlay(reload = false) {
   closeOverlay('emergencyOverlay', /*force*/true);
   emergencyState = null;
 
-  if (reload) {
+  if (reload === true) {
     // Guard against multiple rapid clicks
     if (!window.__reloadingFromEmergency) {
       window.__reloadingFromEmergency = true;
