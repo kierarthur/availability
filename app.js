@@ -3168,6 +3168,15 @@ async function submitEmergencyRaise() {
       : 'Our office have been informed and will call you shortly.';
     body.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
     footer.innerHTML = '';
+
+    // Make the header ✕ (close) also trigger a reload after success
+    const x = document.getElementById('emergencyClose');
+    if (x) {
+      const newX = x.cloneNode(true);
+      x.parentNode.replaceChild(newX, x);
+      newX.addEventListener('click', () => closeEmergencyOverlay(true));
+    }
+
     const close = document.createElement('button');
     close.type = 'button';
     close.textContent = 'Close';
@@ -3237,6 +3246,15 @@ async function submitEmergencyRunningLate(ctx, label) {
     title.textContent = 'Sent';
     body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
     footer.innerHTML = '';
+
+    // Make the header ✕ (close) also trigger a reload after success
+    const x = document.getElementById('emergencyClose');
+    if (x) {
+      const newX = x.cloneNode(true);
+      x.parentNode.replaceChild(newX, x);
+      newX.addEventListener('click', () => closeEmergencyOverlay(true));
+    }
+
     const close = document.createElement('button');
     close.type = 'button';
     close.textContent = 'Close';
