@@ -2179,10 +2179,6 @@ function syncEmergencyButtonVisibility(eligible) {
 
 
 /** Close the Emergency overlay and reset state. */
-function closeEmergencyOverlay() {
-  closeOverlay('emergencyOverlay', /*force*/true);
-  emergencyState = null;
-}
 
 /** Reset the wizard state but keep overlay open. */
 function resetEmergencyState() {
@@ -3080,61 +3076,6 @@ async function handleEmergencyConfirm() {
   // (Do not re-enable here)
 }
 
-async function submitEmergencyRunningLate(ctx, label) {
-  const body = document.getElementById('emergencyBody');
-  const title = document.getElementById('emergencyTitle');
-  const footer = document.getElementById('emergencyFooter');
-  if (!body || !title || !footer || !emergencyState) return;
-
-  const resolvedCtx =
-    (ctx && (ctx.context || ctx)) ||
-    (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
-    (emergencyState.selectedShift && (emergencyState.selectedShift.context || emergencyState.selectedShift));
-
-  const resolvedLabel = label || emergencyState.selectedLateLabel;
-
-  if (!resolvedCtx || !resolvedLabel) {
-    showToast('Please pick how late you will be.');
-    return;
-  }
-
-  showLoading('Sending…');
-  try {
-    const { ok, error } = await apiPostRunningLateSend(resolvedCtx, resolvedLabel);
-    if (!ok) {
-      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
-      footer.innerHTML = '';
-      const cancel = document.createElement('button');
-      cancel.type = 'button';
-      cancel.textContent = 'Cancel';
-      cancel.className = 'menu-item';
-      cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', closeEmergencyOverlay);
-      const retry = document.createElement('button');
-      retry.type = 'button';
-      retry.textContent = 'Try again';
-      retry.className = 'menu-item';
-      retry.style.border = '1px solid #2a3446';
-      retry.addEventListener('click', handleEmergencyConfirm);
-      footer.append(cancel, retry);
-      return;
-    }
-
-    title.textContent = 'Sent';
-    body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
-    footer.innerHTML = '';
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.textContent = 'Close';
-    close.className = 'menu-item';
-    close.style.border = '1px solid #2a3446';
-    close.addEventListener('click', closeEmergencyOverlay);
-    footer.appendChild(close);
-  } finally {
-    hideLoading();
-  }
-}
-
 async function submitEmergencyRaise() {
   const body = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
@@ -3165,7 +3106,7 @@ async function submitEmergencyRaise() {
       cancel.textContent = 'Cancel';
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', closeEmergencyOverlay);
+      cancel.addEventListener('click', () => closeEmergencyOverlay(false));
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.textContent = 'Try again';
@@ -3187,12 +3128,83 @@ async function submitEmergencyRaise() {
     close.textContent = 'Close';
     close.className = 'menu-item';
     close.style.border = '1px solid #2a3446';
-    close.addEventListener('click', closeEmergencyOverlay);
+    close.addEventListener('click', () => closeEmergencyOverlay(true));
     footer.appendChild(close);
   } finally {
     hideLoading();
   }
 }
+function closeEmergencyOverlay(reload = false) {
+  closeOverlay('emergencyOverlay', /*force*/true);
+  emergencyState = null;
+
+  if (reload) {
+    // Guard against multiple rapid clicks
+    if (!window.__reloadingFromEmergency) {
+      window.__reloadingFromEmergency = true;
+      // Allow overlay close animation to finish before reload
+      setTimeout(() => { window.location.reload(); }, 150);
+    }
+  }
+}
+
+async function submitEmergencyRunningLate(ctx, label) {
+  const body = document.getElementById('emergencyBody');
+  const title = document.getElementById('emergencyTitle');
+  const footer = document.getElementById('emergencyFooter');
+  if (!body || !title || !footer || !emergencyState) return;
+
+  const resolvedCtx =
+    (ctx && (ctx.context || ctx)) ||
+    (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
+    (emergencyState.selectedShift && (emergencyState.selectedShift.context || emergencyState.selectedShift));
+
+  const resolvedLabel = label || emergencyState.selectedLateLabel;
+
+  if (!resolvedCtx || !resolvedLabel) {
+    showToast('Please pick how late you will be.');
+    return;
+  }
+
+  showLoading('Sending…');
+  try {
+    const { ok, error } = await apiPostRunningLateSend(resolvedCtx, resolvedLabel);
+    if (!ok) {
+      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+      footer.innerHTML = '';
+      const cancel = document.createElement('button');
+      cancel.type = 'button';
+      cancel.textContent = 'Cancel';
+      cancel.className = 'menu-item';
+      cancel.style.border = '1px solid #2a3446';
+      cancel.addEventListener('click', () => closeEmergencyOverlay(false));
+      const retry = document.createElement('button');
+      retry.type = 'button';
+      retry.textContent = 'Try again';
+      retry.className = 'menu-item';
+      retry.style.border = '1px solid #2a3446';
+      retry.addEventListener('click', handleEmergencyConfirm);
+      footer.append(cancel, retry);
+      return;
+    }
+
+    title.textContent = 'Sent';
+    body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
+    footer.innerHTML = '';
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', () => closeEmergencyOverlay(true));
+    footer.appendChild(close);
+  } finally {
+    hideLoading();
+  }
+}
+
+
+
 
 // Fallback endpoints kept for backward compatibility (only used if the server
 // did NOT include late options/context in the initial emergency_window payload)
