@@ -2091,23 +2091,47 @@ async function apiPostRunningLateSend(shift, etaLabel) {
 }
 
 /** POST { action:'EMERGENCY_RAISE', shift, issue:{...} } */
-async function apiPostEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTimeLabel) {
+
+
+async function apiPostEmergencyRaise(shift, issueType, issuePayload) {
   try {
-    const body = {
-      action: 'EMERGENCY_RAISE',
-      shift,
-      issue: {
-        issue_type: issueType,                 // "CANNOT_ATTEND" | "LEAVE_EARLY"
-        eta_or_leave_time_label: etaOrLeaveTimeLabel || '',
-        reason_text: reasonText || ''
-      }
-    };
+    const it = String(issueType || '').toUpperCase();
+
+    let body;
+    if (it === 'DNA') {
+      // New DNA shape
+      body = {
+        action: 'EMERGENCY_RAISE',
+        shift: shift || {},
+        issue: {
+          type: 'DNA',
+          subject_name: (issuePayload && issuePayload.subject_name) || '',
+          // Only include if present
+          ...(issuePayload && issuePayload.subject_msisdn ? { subject_msisdn: issuePayload.subject_msisdn } : {}),
+          ...(issuePayload && issuePayload.reason_text ? { reason_text: issuePayload.reason_text } : {})
+        }
+      };
+    } else {
+      // Legacy shape for RL/CA/LE
+      const etaOrLeave = (issuePayload && issuePayload.eta_or_leave_time_label) || 'N/A';
+      const reason = (issuePayload && issuePayload.reason_text) || '';
+      body = {
+        action: 'EMERGENCY_RAISE',
+        shift: shift || {},
+        issue: {
+          issue_type: it,                 // "CANNOT_ATTEND" | "LEAVE_EARLY" | (older clients)
+          eta_or_leave_time_label: etaOrLeave,
+          reason_text: reason
+        }
+      };
+    }
+
     const { res, json } = await apiPOST(body);
     if (!res.ok || !json || json.ok === false) {
       const msg = (json && (json.error || json.message)) || `HTTP ${res.status}`;
       return { ok: false, message: '', error: msg || 'UNKNOWN_ERROR' };
     }
-    return { ok: true, message: json.message || '' };
+    return { ok: true, message: json.message || '', alert_id: json.alert_id || null, notifications: json.notifications || null };
   } catch (e) {
     return { ok: false, message: '', error: String(e && e.message) || 'NETWORK_ERROR' };
   }
@@ -2186,12 +2210,17 @@ function resetEmergencyState() {
   emergencyState = {
     eligible: [],
     selectedShift: null,
-    issueType: null,              // 'RUNNING_LATE' | 'CANNOT_ATTEND' | 'LEAVE_EARLY'
+    issueType: null,              // 'RUNNING_LATE' | 'CANNOT_ATTEND' | 'LEAVE_EARLY' | 'DNA'
     lateOptions: [],              // [{ label, minutes }]
     runningLateContext: null,     // ensure default for RL preview/send
     selectedLateLabel: null,
     reasonText: '',
     previewHtml: '',
+    // DNA-specific
+    dnaOptions: [],               // [{ name, role, msisdn07?, id? }] – server-provided cohort/peers list
+    dnaAbsenteeName: null,
+    dnaAbsenteeMsisdn: null,      // not shown in UI list; may be present from server
+    dnaTriedCalling: false,       // gate for Continue
     step: 'PICK_SHIFT',
     __confirmSubmitting: false,   // double-submit guard reset
     confirmError: ''              // inline confirm warning
@@ -2242,10 +2271,17 @@ function handleEmergencyPickIssue() {
   emergencyState.selectedLateLabel = null;
   emergencyState.reasonText = '';
   emergencyState.previewHtml = '';
+
+  // reset DNA-specific state on entry
+  if (issue === 'DNA') {
+    emergencyState.dnaAbsenteeName = null;
+    emergencyState.dnaAbsenteeMsisdn = null;
+    emergencyState.dnaTriedCalling = false;
+  }
+
   emergencyState.step = 'DETAILS';
   renderEmergencyStep();
 }
-
 
 
 
@@ -2433,7 +2469,6 @@ async function openEmergencyOverlay() {
     if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
   }
 }
-
 function renderEmergencyStep() {
   const body = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
@@ -2516,9 +2551,6 @@ function renderEmergencyStep() {
   else if (state.step === 'PICK_ISSUE') {
     title.textContent = 'Please select your emergency';
 
-    // Trust the server for allowed actions.
-    // Preferred: shift.allowed_issues or shift.allowedActions (array of keys).
-    // Fallback (still server-driven): boolean flags.
     const s = state.selectedShift || {};
     let allowed = [];
 
@@ -2527,10 +2559,10 @@ function renderEmergencyStep() {
     } else if (Array.isArray(s.allowedActions) && s.allowedActions.length) {
       allowed = s.allowedActions.map(x => String(x).toUpperCase());
     } else {
-      // Derive purely from server-provided flags; no client time math.
-      if (s.canRunLate === true)  allowed.push('RUNNING_LATE');
-      if (s.canCancel  === true)  allowed.push('CANNOT_ATTEND');
-      if (s.canLeaveEarly === true) allowed.push('LEAVE_EARLY');
+      if (s.canRunLate === true)     allowed.push('RUNNING_LATE');
+      if (s.canCancel === true)      allowed.push('CANNOT_ATTEND');
+      if (s.canLeaveEarly === true)  allowed.push('LEAVE_EARLY');
+      if (s.canDNA === true)         allowed.push('DNA'); // tolerant fallback
     }
 
     const choices = document.createElement('div');
@@ -2559,15 +2591,10 @@ function renderEmergencyStep() {
       choices.appendChild(row);
     }
 
-    if (allowed.includes('RUNNING_LATE')) {
-      addOption('RUNNING_LATE', 'Running late', 'If the shift is within 4 hours or has already started.');
-    }
-    if (allowed.includes('CANNOT_ATTEND')) {
-      addOption('CANNOT_ATTEND', 'Cannot attend shift', 'Only if your shift has not started yet.');
-    }
-    if (allowed.includes('LEAVE_EARLY')) {
-      addOption('LEAVE_EARLY', 'Need to leave current shift early', 'Only if you are currently on shift.');
-    }
+    if (allowed.includes('RUNNING_LATE')) addOption('RUNNING_LATE', 'Running late', 'If the shift is within 4 hours or has already started.');
+    if (allowed.includes('CANNOT_ATTEND')) addOption('CANNOT_ATTEND', 'Cannot attend shift', 'Only if your shift has not started yet.');
+    if (allowed.includes('LEAVE_EARLY')) addOption('LEAVE_EARLY', 'Need to leave current shift early', 'Only if you are currently on shift.');
+    if (allowed.includes('DNA')) addOption('DNA', 'Someone hasn’t arrived on shift yet', 'Select the person who has not arrived.');
 
     if (!choices.children.length) {
       body.innerHTML = `<div class="muted">No emergency options are available for this shift.</div>`;
@@ -2588,6 +2615,7 @@ function renderEmergencyStep() {
   }
 
   else if (state.step === 'DETAILS') {
+    // ───────────────────────── RUNNING_LATE ─────────────────────────
     if (state.issueType === 'RUNNING_LATE') {
       title.textContent = 'How late will you be? Please note that is how late you will arrive after the shift time is due to start.';
 
@@ -2601,13 +2629,11 @@ function renderEmergencyStep() {
       body.appendChild(container);
       setFooter({ continueDisabled: true });
 
-      // Prefer options bundled by the server in the eligibility payload
       const s = state.selectedShift || {};
       const serverOpts = Array.isArray(s.late_options) ? s.late_options : null;
       const serverCtx  = s.context || null;
 
       (async () => {
-        // If server already told us the options/context, use them; otherwise call OPTIONS once.
         if (serverOpts && serverOpts.length) {
           state.lateOptions = serverOpts;
           state.runningLateContext = serverCtx || s;
@@ -2652,7 +2678,6 @@ function renderEmergencyStep() {
           if (e.target && e.target.name === 'emLate') {
             cont && (cont.disabled = false);
             state.selectedLateLabel = e.target.value || null;
-            // Clear any previous confirm error once valid choice made
             if (state.selectedLateLabel) state.confirmError = '';
           }
         });
@@ -2662,6 +2687,7 @@ function renderEmergencyStep() {
       cont && cont.addEventListener('click', handleEmergencyCollectDetails);
     }
 
+    // ───────────────────────── CANNOT_ATTEND ─────────────────────────
     else if (state.issueType === 'CANNOT_ATTEND') {
       title.textContent = 'Please provide a reason for your very late cancellation';
       const p = document.createElement('div');
@@ -2685,7 +2711,6 @@ function renderEmergencyStep() {
       const cont = document.getElementById('emergencyContinue');
       ta.addEventListener('input', () => {
         emergencyState.reasonText = (ta.value || '').trim();
-        // Gate continue and clear confirm error when valid
         const valid = emergencyState.reasonText.length >= 3;
         cont && (cont.disabled = !valid);
         if (valid) emergencyState.confirmError = '';
@@ -2693,6 +2718,7 @@ function renderEmergencyStep() {
       cont && cont.addEventListener('click', handleEmergencyCollectDetails);
     }
 
+    // ───────────────────────── LEAVE_EARLY ─────────────────────────
     else if (state.issueType === 'LEAVE_EARLY') {
       title.textContent = 'Reason for leaving early';
       const p = document.createElement('div');
@@ -2710,7 +2736,7 @@ function renderEmergencyStep() {
       ta.style.padding = '.6rem';
       ta.placeholder = 'Type your reason…';
 
-      // ── NEW: time selection (NOW or HH MM)
+      // time selector
       const timeWrap = document.createElement('div');
       timeWrap.style.marginTop = '.6rem';
       timeWrap.style.border = '1px solid #222a36';
@@ -2795,7 +2821,6 @@ function renderEmergencyStep() {
       setFooter({ continueDisabled: true });
 
       const cont = document.getElementById('emergencyContinue');
-      // Reset selection when entering this step
       emergencyState.selectedLateLabel = null;
 
       function isNumInRange(v, min, max) {
@@ -2827,7 +2852,6 @@ function renderEmergencyStep() {
             label = `${pad2(H)}:${pad2(M)}`;
             err.style.display = 'none';
           } else {
-            // show error only if any field filled
             if (H !== '' || M !== '') err.style.display = '';
           }
         } else {
@@ -2836,17 +2860,14 @@ function renderEmergencyStep() {
 
         emergencyState.selectedLateLabel = ok ? label : null;
 
-        // Continue gating (needs valid reason + valid time)
         const reasonOK = (emergencyState.reasonText || '').length >= 3;
         cont && (cont.disabled = !(reasonOK && !!emergencyState.selectedLateLabel));
 
-        // Clear any previous confirm error once inputs are valid
         if (reasonOK && !!emergencyState.selectedLateLabel) {
           emergencyState.confirmError = '';
         }
       }
 
-      // Events
       body.addEventListener('change', (e) => {
         if (e.target && e.target.name === 'leaveTimeMode') {
           updateTimeSelection();
@@ -2863,11 +2884,134 @@ function renderEmergencyStep() {
       });
 
       const modeNowRadio = body.querySelector('input[name="leaveTimeMode"][value="NOW"]');
-      modeNowRadio && (modeNowRadio.checked = false); // start unselected
+      modeNowRadio && (modeNowRadio.checked = false);
       updateTimeSelection();
 
       cont && cont.addEventListener('click', handleEmergencyCollectDetails);
     }
+
+    // ───────────────────────── DNA ─────────────────────────
+    else if (state.issueType === 'DNA') {
+  title.textContent = 'Who hasn’t arrived?';
+
+  const s = state.selectedShift || {};
+
+  const peers =
+    (Array.isArray(s.cohort) && s.cohort) ||
+    (Array.isArray(s.cohort_peers) && s.cohort_peers) ||
+    (Array.isArray(s.peers) && s.peers) ||
+    (Array.isArray(s.shiftPeers) && s.shiftPeers) ||
+    [];
+
+  state.dnaOptions = Array.isArray(state.dnaOptions) && state.dnaOptions.length ? state.dnaOptions : peers;
+
+  const info = document.createElement('div');
+  info.className = 'muted';
+  info.style.marginBottom = '.5rem';
+  info.textContent = 'Select the co-worker who has not arrived.';
+  body.appendChild(info);
+
+  const list = document.createElement('div');
+  list.setAttribute('role', 'group');
+  list.style.display = 'flex';
+  list.style.flexDirection = 'column';
+  list.style.gap = '.5rem';
+
+  function getDisplayName(p) {
+    if (!p) return '';
+    if (p.displayName) return String(p.displayName);
+    const fn = p.firstName || p.firstname || '';
+    const ln = p.surname || p.lastName || p.lastname || p.last_name || '';
+    const nameKey = p.nameKey || '';
+    const full = [fn, ln].filter(Boolean).join(' ').trim();
+    return full || p.name || nameKey || '';
+  }
+
+  (state.dnaOptions || []).forEach((p, idx) => {
+    const id = `dnaOpt_${idx}`;
+    const name = getDisplayName(p);
+    const role = p.role || p.jobTitle || p.title || '';
+    const ms = p.msisdn07 || p.msisdn || p.mobile07 || p.mobile || null;
+
+    const row = document.createElement('label');
+    row.style.border = '1px solid #222a36';
+    row.style.background = '#131926';
+    row.style.borderRadius = '10px';
+    row.style.padding = '.5rem .6rem';
+    row.style.display = 'grid';
+    row.style.gridTemplateColumns = 'auto 1fr';
+    row.style.gap = '.6rem';
+    row.innerHTML = `
+      <input type="radio" name="dnaAbsentee" id="${id}" value="${escapeHtml(name)}">
+      <div>
+        <div style="font-weight:800;">${escapeHtml(name)}</div>
+        ${role ? `<div class="muted" style="margin-top:.15rem">${escapeHtml(role)}</div>` : ''}
+      </div>
+    `;
+    row.querySelector('input')._abs = { name, msisdn: ms || null };
+    list.appendChild(row);
+  });
+
+  if (!list.children.length) {
+    body.innerHTML = `<div class="muted">We can’t find your co-workers for this shift yet. Please go back and try again shortly.</div>`;
+    setFooter({ showCancel: true, cancelText: 'Back', showContinue: false });
+    return;
+  }
+
+  body.appendChild(list);
+
+  // Instruction block (populated when absentee is selected)
+  const callInfo = document.createElement('div');
+  callInfo.className = 'muted';
+  callInfo.style.marginTop = '.6rem';
+  body.appendChild(callInfo);
+// Tried-calling checkbox
+const chkWrap = document.createElement('label');
+chkWrap.style.display = 'flex';
+chkWrap.style.alignItems = 'center';
+chkWrap.style.gap = '.5rem';
+chkWrap.style.marginTop = '.6rem';
+chkWrap.innerHTML = `<input type="checkbox" id="dnaTriedCalling"> <div>I tried calling them and could not reach them</div>`;
+body.appendChild(chkWrap);
+
+setFooter({ continueDisabled: true });
+
+const cont = document.getElementById('emergencyContinue');
+const chk = chkWrap.querySelector('#dnaTriedCalling');
+
+
+function syncContinueGate() {
+  const chosen = body.querySelector('input[name="dnaAbsentee"]:checked');
+  if (chosen && chosen._abs) {
+    emergencyState.dnaAbsenteeName = chosen._abs.name || null;
+    emergencyState.dnaAbsenteeMsisdn = chosen._abs.msisdn || null;
+
+    const dispNum = formatMsisdn07Display(chosen._abs.msisdn);
+    if (dispNum) {
+      callInfo.textContent = `Please call ${chosen._abs.name} on ${dispNum}. If you can’t get a response after trying a couple of times, tick below and continue.`;
+    } else {
+      callInfo.textContent = `Please try calling ${chosen._abs.name} via your usual contact method. If you can’t get a response after trying a couple of times, tick below and continue.`;
+    }
+  }
+
+  const ok = !!chosen && !!chk.checked;
+  cont && (cont.disabled = !ok);
+  emergencyState.dnaTriedCalling = !!chk.checked;
+  emergencyState.confirmError = '';
+}
+
+  body.addEventListener('change', (e) => {
+    if (e.target && (e.target.name === 'dnaAbsentee')) {
+      syncContinueGate();
+    }
+    if (e.target && e.target.id === 'dnaTriedCalling') {
+      syncContinueGate();
+    }
+  });
+
+  cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+}
+
   }
 
   else if (state.step === 'CONFIRM') {
@@ -2878,6 +3022,9 @@ function renderEmergencyStep() {
       msg = "Warning – Our office staff will now be called on their mobile phones regarding your cancellation. Are you absolutely sure you want to continue?";
     } else if (state.issueType === 'LEAVE_EARLY') {
       msg = "Are you sure you wish to continue? Our office staff will be called on their mobile phones immediately regarding this.";
+    } else if (state.issueType === 'DNA') {
+      const who = emergencyState.dnaAbsenteeName || 'this person';
+      msg = `Are you sure you want to raise an emergency and contact Arthur Rai to inform them that ${who} hasn’t arrived on shift?`;
     }
 
     title.textContent = 'Please confirm';
@@ -2892,11 +3039,10 @@ function renderEmergencyStep() {
     if (emergencyState.previewHtml && emergencyState.issueType === 'RUNNING_LATE') {
       const prev = document.createElement('div');
       prev.style.marginTop = '.6rem';
-      prev.innerHTML = emergencyState.previewHtml; // may come from server PREVIEW or pre-supplied
+      prev.innerHTML = emergencyState.previewHtml;
       box.appendChild(prev);
     }
 
-    // Inline confirm error (when present)
     if (state.confirmError) {
       const warn = document.createElement('div');
       warn.style.marginTop = '.6rem';
@@ -2908,7 +3054,7 @@ function renderEmergencyStep() {
 
     body.appendChild(box);
 
-    setFooter({ continueText: 'Continue', cancelText: 'Cancel', continueDisabled: !!state.confirmError });
+    setFooter({ continueText: 'Yes, I am sure', cancelText: 'Cancel', continueDisabled: !!state.confirmError });
     const cont = document.getElementById('emergencyContinue');
     cont && cont.addEventListener('click', handleEmergencyConfirm);
   }
@@ -2974,14 +3120,12 @@ async function handleEmergencyCollectDetails() {
 
   if (emergencyState.issueType === 'RUNNING_LATE') {
     if (!emergencyState.selectedLateLabel) {
-      // Inline warning on confirm step
       emergencyState.confirmError = 'Please pick how late you will be.';
       emergencyState.step = 'CONFIRM';
       renderEmergencyStep();
       return;
     }
 
-    // Prefer pre-supplied preview HTML if the server sent it with the window/options.
     const s = emergencyState.selectedShift || {};
     const prePreview = (s.previewHtml || (s.preview && s.preview.html)) || '';
 
@@ -2992,7 +3136,6 @@ async function handleEmergencyCollectDetails() {
       return;
     }
 
-    // Optional PREVIEW call only if needed and if we have a context.
     const ctxForPreview =
       (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
       (s && (s.context || s));
@@ -3004,7 +3147,24 @@ async function handleEmergencyCollectDetails() {
       emergencyState.previewHtml = '';
     }
 
-    emergencyState.confirmError = ''; // clear any prior warning
+    emergencyState.confirmError = '';
+    emergencyState.step = 'CONFIRM';
+    renderEmergencyStep();
+    return;
+  }
+
+  if (emergencyState.issueType === 'DNA') {
+    const nameOK = !!(emergencyState.dnaAbsenteeName && emergencyState.dnaAbsenteeName.trim());
+    const calledOK = !!emergencyState.dnaTriedCalling;
+    if (!nameOK || !calledOK) {
+      emergencyState.confirmError = !nameOK
+        ? 'Please select who has not arrived.'
+        : 'Please confirm you tried calling them before continuing.';
+      emergencyState.step = 'CONFIRM';
+      renderEmergencyStep();
+      return;
+    }
+    emergencyState.confirmError = '';
     emergencyState.step = 'CONFIRM';
     renderEmergencyStep();
     return;
@@ -3017,10 +3177,37 @@ async function handleEmergencyCollectDetails() {
     renderEmergencyStep();
     return;
   }
-  emergencyState.confirmError = ''; // clear any prior warning
+  emergencyState.confirmError = '';
   emergencyState.step = 'CONFIRM';
   renderEmergencyStep();
 }
+
+function formatMsisdn07Display(msisdn) {
+  if (!msisdn) return '';
+  let s = String(msisdn).replace(/\s+/g, '').trim();
+
+  // +447xxxxxxxxx → 07xxxxxxxxx
+  if (/^\+447\d{9}$/.test(s)) return '0' + s.slice(3);
+
+  // 447xxxxxxxxx → 07xxxxxxxxx
+  if (/^447\d{9}$/.test(s)) return '0' + s.slice(2);
+
+  // Already in 07xxxxxxxxx form
+  if (/^07\d{9}$/.test(s)) return s;
+
+  // Fallback: strip non-digits and try again
+  const digits = s.replace(/[^\d]/g, '');
+  if (digits.startsWith('447') && digits.length === 12) {
+    return '0' + digits.slice(2);
+  }
+  if (digits.startsWith('07') && digits.length === 11) {
+    return digits;
+  }
+
+  // Couldn’t normalise → return raw input
+  return s;
+}
+
 
 async function handleEmergencyConfirm() {
   if (!emergencyState || !emergencyState.selectedShift || !emergencyState.issueType) return;
@@ -3033,7 +3220,6 @@ async function handleEmergencyConfirm() {
   const cancel = document.getElementById('emergencyCancel');
   const origText = cont ? cont.textContent : '';
 
-  // Disable buttons immediately on click
   if (cont) { cont.disabled = true; cont.textContent = 'Sending…'; }
   if (cancel) cancel.disabled = true;
 
@@ -3045,14 +3231,12 @@ async function handleEmergencyConfirm() {
 
   try {
     if (emergencyState.issueType === 'RUNNING_LATE') {
-      // Use context supplied by server in either the window payload or OPTIONS
       const s = emergencyState.selectedShift || {};
       const ctx =
         (emergencyState.runningLateContext && (emergencyState.runningLateContext.context || emergencyState.runningLateContext)) ||
         (s && (s.context || s));
 
       if (!emergencyState.selectedLateLabel || !ctx) {
-        // Inline confirm warning (no toast)
         emergencyState.confirmError = 'Please pick how late you will be.';
         emergencyState.step = 'CONFIRM';
         reenable();
@@ -3063,7 +3247,6 @@ async function handleEmergencyConfirm() {
       await submitEmergencyRunningLate(ctx, emergencyState.selectedLateLabel);
 
     } else if (emergencyState.issueType === 'LEAVE_EARLY') {
-      // Must have reason and a valid leave time (NOW or HH:MM)
       const reasonOk = (emergencyState.reasonText || '').trim().length >= 3;
       const lbl = (emergencyState.selectedLateLabel || '').trim();
       const isNow = lbl === 'NOW';
@@ -3077,7 +3260,6 @@ async function handleEmergencyConfirm() {
       }
 
       if (!reasonOk) {
-        // Inline confirm warning (no toast)
         emergencyState.confirmError = 'Please enter a reason before continuing.';
         emergencyState.step = 'CONFIRM';
         reenable();
@@ -3085,7 +3267,6 @@ async function handleEmergencyConfirm() {
         return;
       }
       if (!(isNow || isValidTime)) {
-        // Inline confirm warning (no toast)
         emergencyState.confirmError = 'Please select NOW or enter a valid time in 24-hour format (HH:MM).';
         emergencyState.step = 'CONFIRM';
         reenable();
@@ -3093,23 +3274,36 @@ async function handleEmergencyConfirm() {
         return;
       }
 
-      await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
+      await submitEmergencyRaise(emergencyState.selectedShift, 'LEAVE_EARLY', emergencyState.reasonText || '', emergencyState.selectedLateLabel);
+
+    } else if (emergencyState.issueType === 'DNA') {
+      const nameOK = !!(emergencyState.dnaAbsenteeName && emergencyState.dnaAbsenteeName.trim());
+      const calledOK = !!emergencyState.dnaTriedCalling;
+      if (!nameOK || !calledOK) {
+        emergencyState.confirmError = !nameOK
+          ? 'Please select who has not arrived.'
+          : 'Please confirm you tried calling them before continuing.';
+        emergencyState.step = 'CONFIRM';
+        reenable();
+        renderEmergencyStep();
+        return;
+      }
+
+      await submitEmergencyRaise(emergencyState.selectedShift, 'DNA', '', 'N/A');
 
     } else {
-      // CANNOT_ATTEND: ensure a reason is present
+      // CANNOT_ATTEND
       const reasonOk = (emergencyState.reasonText || '').trim().length >= 3;
       if (!reasonOk) {
-        // Inline confirm warning (no toast)
         emergencyState.confirmError = 'Please enter a reason before continuing.';
         emergencyState.step = 'CONFIRM';
         reenable();
         renderEmergencyStep();
         return;
       }
-      await submitEmergencyRaise(emergencyState.selectedShift, emergencyState.reasonText || '');
+      await submitEmergencyRaise(emergencyState.selectedShift, 'CANNOT_ATTEND', emergencyState.reasonText || '', 'N/A');
     }
   } catch (err) {
-    // Generic failure path → allow retry
     emergencyState.confirmError = 'Something went wrong. Please try again.';
     emergencyState.step = 'CONFIRM';
     reenable();
@@ -3118,33 +3312,44 @@ async function handleEmergencyConfirm() {
   }
 
   // Success → keep disabled; submitters will replace footer/overlay
-  // (Do not re-enable here)
 }
 
-async function submitEmergencyRaise() {
-  const body = document.getElementById('emergencyBody');
+async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTimeLabel) {
+  const bodyEl = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
   const footer = document.getElementById('emergencyFooter');
-  if (!body || !title || !footer || !emergencyState) return;
+  if (!bodyEl || !title || !footer || !emergencyState) return;
 
-  const issueType =
-    emergencyState.issueType === 'CANNOT_ATTEND' ? 'CANNOT_ATTEND' :
-    emergencyState.issueType === 'LEAVE_EARLY' ? 'LEAVE_EARLY' : '';
+  // Compute robust defaults
+  const it = String(issueType || '').toUpperCase();
+  const leaveLabel = (it === 'LEAVE_EARLY') ? (emergencyState.selectedLateLabel || etaOrLeaveTimeLabel || 'N/A') : 'N/A';
+  const reason = String(reasonText || emergencyState.reasonText || '').trim();
 
-  const etaOrLeaveTimeLabel =
-    (issueType === 'LEAVE_EARLY') ? (emergencyState.selectedLateLabel || 'N/A') : 'N/A';
+  // Build a tolerant issue payload for apiPostEmergencyRaise
+  let issuePayload;
+  if (it === 'DNA') {
+    issuePayload = {
+      type: 'DNA',
+      subject_name: emergencyState.dnaAbsenteeName || '',
+      // Optional but recommended; server will normalise if present
+      subject_msisdn: emergencyState.dnaAbsenteeMsisdn || undefined,
+      // Optional – server also auto-composes DNA reason text if omitted
+      reason_text: reason || ''
+    };
+  } else {
+    issuePayload = {
+      issue_type: it, // legacy shape
+      eta_or_leave_time_label: leaveLabel || '',
+      reason_text: reason || ''
+    };
+  }
 
   showLoading('Sending…');
   try {
-    const { ok, error } = await apiPostEmergencyRaise(
-      emergencyState.selectedShift,
-      issueType,
-      emergencyState.reasonText || '',
-      etaOrLeaveTimeLabel
-    );
+    const { ok, error } = await apiPostEmergencyRaise(shift, it, issuePayload);
 
     if (!ok) {
-      body.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
+      bodyEl.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
       footer.innerHTML = '';
       const cancel = document.createElement('button');
       cancel.type = 'button';
@@ -3163,13 +3368,15 @@ async function submitEmergencyRaise() {
     }
 
     title.textContent = 'Sent';
-    const successMsg = (issueType === 'CANNOT_ATTEND')
-      ? 'Our office have been informed. Please expect a phonecall shortly.'
-      : 'Our office have been informed and will call you shortly.';
-    body.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
+    let successMsg = 'Our office have been informed and will call you shortly.';
+    if (it === 'CANNOT_ATTEND') {
+      successMsg = 'Our office have been informed. Please expect a phonecall shortly.';
+    } else if (it === 'DNA') {
+      successMsg = 'This emergency has been raised with Arthur Rai and someone will be in contact shortly.';
+    }
+    bodyEl.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
     footer.innerHTML = '';
 
-    // Make the header ✕ (close) also trigger a reload after success
     const x = document.getElementById('emergencyClose');
     if (x) {
       const newX = x.cloneNode(true);
@@ -3188,6 +3395,7 @@ async function submitEmergencyRaise() {
     hideLoading();
   }
 }
+
 
 function closeEmergencyOverlay(reload = false) {
   closeOverlay('emergencyOverlay', /*force*/true);
