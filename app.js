@@ -817,43 +817,36 @@ document.addEventListener('DOMContentLoaded', () => {
     }
   }, 400);
 });
-
-// ---------- Visibility handling (auto-clear after 3 minutes away) ----------
+// ───────────────────────── CHANGED ─────────────────────────
+// Single, minimal place to refresh on visibility change.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     cancelSubmitNudge();
     lastHiddenAt = Date.now();
     persistDraft();
-  } else {
-    if (lastHiddenAt && Date.now() - lastHiddenAt > 3 * 60 * 1000) {
-      if (Object.keys(draft).length) {
-        draft = {};
-        persistDraft();
-        showToast('Unsaved changes were cleared after inactivity.');
-      }
-      showLoading();
-      loadFromServer({ force: true })
-        .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
-        .finally(() => {
-          hideLoading();
-          // Re-check emergency eligibility (fire-and-forget; hides on failure)
-          refreshEmergencyEligibility({ silent: true });
-        });
-
-    } else if (!Object.keys(draft).length) {
-      showLoading();
-      loadFromServer()
-        .catch(() => {})
-        .finally(() => {
-          hideLoading();
-          // Re-check emergency eligibility (fire-and-forget; hides on failure)
-          refreshEmergencyEligibility({ silent: true });
-        });
-    }
-
-    if (Object.keys(draft).length) scheduleSubmitNudge();
-    lastHiddenAt = null;
+    return;
   }
+
+  const wasAwayLong = lastHiddenAt && (Date.now() - lastHiddenAt > 3 * 60 * 1000);
+  lastHiddenAt = null;
+
+  // If there were local edits, clear them consistently (same as before)
+  if (wasAwayLong && Object.keys(draft).length) {
+    draft = {};
+    persistDraft();
+    showToast('Unsaved changes were cleared after inactivity.');
+  }
+
+  // Only one path to refresh: the orchestrator. Coalesces via loadFromServer() guard.
+  const needsRefresh = wasAwayLong || !Object.keys(draft).length;
+  if (needsRefresh) {
+    showLoading();
+    refreshAppState({ force: true })
+      .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
+      .finally(() => { hideLoading(); });
+  }
+
+  if (Object.keys(draft).length) scheduleSubmitNudge();
 });
 
 
@@ -1511,20 +1504,18 @@ async function tryAutoLoginViaCredentialsAPI() {
   return false;
 }
 // ---------- Rendering ----------
-
+// ───────────────────────── CHANGED ─────────────────────────
 function renderTiles() {
   if (!els.grid) { console.warn('renderTiles(): #grid not found'); return; }
   els.grid.innerHTML = '';
   if (!baseline || !baseline.tiles) {
-    // Keep EMERGENCY state in sync even if there are no tiles
-    try { refreshEmergencyEligibility({ silent: true }); } catch (e) { /* fail closed */ }
+    // No fetches from here; rendering must be side-effect free.
     return;
   }
 
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
 
-  // Build once from baseline + current draft
   const tiles = (baseline.tiles || []).map(t => {
     const baselineLabel = t.booked
       ? 'BOOKED'
@@ -1533,18 +1524,13 @@ function renderTiles() {
     return { ...t, baselineLabel, effectiveLabel };
   });
 
-  // Helper: update only one card's UI from a label
   function updateCardUI(card, ymd, baselineLabel, newLabel, isBooked, isBlocked, editable) {
     const statusEl = card.querySelector('.tile-status');
     const subEl    = card.querySelector('.tile-sub');
-
-    // Reset status class then apply the new one
     statusEl.className = 'tile-status ' + statusClass(newLabel);
 
     if (isBooked) {
-      // Booked tiles never change via taps (not editable), but keep content stable
       statusEl.textContent = 'BOOKED';
-      // subEl remains as originally rendered
       return;
     }
 
@@ -1554,25 +1540,18 @@ function renderTiles() {
       card.classList.remove('needs-attention', 'attention-border');
     } else if (newLabel === 'NOT AVAILABLE') {
       statusEl.textContent = 'NOT AVAILABLE';
-      if (newLabel !== baselineLabel) {
-        subEl.innerHTML = `<span class="edit-note">Pending change</span>`;
-      } else {
-        subEl.textContent = '';
-      }
+      subEl.innerHTML = (newLabel !== baselineLabel) ? `<span class="edit-note">Pending change</span>` : '';
       card.classList.remove('needs-attention', 'attention-border');
     } else if (newLabel === 'LONG DAY' || newLabel === 'NIGHT' || newLabel === 'LONG DAY/NIGHT') {
       statusEl.textContent = 'AVAILABLE FOR';
       const availability =
         newLabel === 'LONG DAY' ? 'LONG DAY ONLY' :
         newLabel === 'NIGHT' ? 'NIGHT ONLY' : 'LONG DAY AND NIGHT';
-      if (newLabel !== baselineLabel) {
-        subEl.innerHTML = `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`;
-      } else {
-        subEl.textContent = availability;
-      }
+      subEl.innerHTML = (newLabel !== baselineLabel)
+        ? `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`
+        : availability;
       card.classList.remove('needs-attention', 'attention-border');
     } else {
-      // Pending state (two wordings based on first-touch visual)
       const displayLabel = (function () {
         if (newLabel !== PENDING_LABEL_DEFAULT) return newLabel;
         const serverPending = (baselineLabel === PENDING_LABEL_DEFAULT);
@@ -1594,12 +1573,10 @@ function renderTiles() {
       }
     }
 
-    // Keep border fallback for non-attention tiles
     if (!card.classList.contains('attention-border')) {
       card.style.borderColor = '#ffffff';
     }
 
-    // Keep the label visually fitting inside its container
     fitStatusLabel(statusEl);
   }
 
@@ -1633,7 +1610,6 @@ function renderTiles() {
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
-    // Initial content (same logic as before)
     if (t.booked) {
       status.textContent = 'BOOKED';
       const line1 = (() => {
@@ -1661,11 +1637,7 @@ function renderTiles() {
       sub.textContent = 'You cannot work this shift as it will breach the 6 days in a row rule.';
     } else if (t.effectiveLabel === 'NOT AVAILABLE') {
       status.textContent = 'NOT AVAILABLE';
-      if (t.effectiveLabel !== t.baselineLabel) {
-        sub.innerHTML = `<span class="edit-note">Pending change</span>`;
-      } else {
-        sub.textContent = '';
-      }
+      sub.innerHTML = (t.effectiveLabel !== t.baselineLabel) ? `<span class="edit-note">Pending change</span>` : '';
     } else if (
       t.effectiveLabel === 'LONG DAY' ||
       t.effectiveLabel === 'NIGHT' ||
@@ -1675,11 +1647,9 @@ function renderTiles() {
       const availability =
         t.effectiveLabel === 'LONG DAY' ? 'LONG DAY ONLY' :
         t.effectiveLabel === 'NIGHT' ? 'NIGHT ONLY' : 'LONG DAY AND NIGHT';
-      if (t.effectiveLabel !== t.baselineLabel) {
-        sub.innerHTML = `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`;
-      } else {
-        sub.textContent = availability;
-      }
+      sub.innerHTML = (t.effectiveLabel !== t.baselineLabel)
+        ? `<span class="edit-note">Pending change</span><br>${escapeHtml(availability)}`
+        : availability;
     } else {
       const displayLabel = displayPendingLabelForTile(t);
       status.textContent = displayLabel;
@@ -1688,11 +1658,7 @@ function renderTiles() {
         card.classList.add('needs-attention', 'attention-border');
       }
 
-      if (t.effectiveLabel !== t.baselineLabel) {
-        sub.innerHTML = `<span class="edit-note">Pending change</span>`;
-      } else {
-        sub.textContent = '';
-      }
+      sub.innerHTML = (t.effectiveLabel !== t.baselineLabel) ? `<span class="edit-note">Pending change</span>` : '';
     }
 
     card.append(header, status, sub);
@@ -1703,7 +1669,6 @@ function renderTiles() {
       card.style.borderColor = '#ffffff';
     }
 
-    // Tap handler → incremental update only
     const editable = (!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
     if (editable) {
       card.style.cursor = 'pointer';
@@ -1717,10 +1682,8 @@ function renderTiles() {
         const canEdit   = card.dataset.editable === 'true';
         if (!canEdit) return;
 
-        // Cycle label, persist, and update only this card
         const currentLabel = draft[ymd] ?? baselineLabel;
         const nextLabel = nextStatus(currentLabel);
-
         toggledThisSession.add(ymd);
 
         if (nextLabel === baselineLabel) {
@@ -1731,15 +1694,12 @@ function renderTiles() {
         persistDraft();
         registerUserEdit();
 
-        // Refresh card UI only (no grid rebuild, no equalization here)
         const effective = draft[ymd] ?? baselineLabel;
         updateCardUI(card, ymd, baselineLabel, effective, isBooked, isBlocked, canEdit);
 
-        // Refresh tooltip/hint for the new cycle state
         const pseudoTile = { ymd, baselineLabel, effectiveLabel: effective };
         card.title = buildCycleHint(pseudoTile);
 
-        // Footer visibility/animation can update safely
         showFooterIfNeeded();
       });
     } else {
@@ -1750,18 +1710,9 @@ function renderTiles() {
 
   // Equalize only on initial/full render, not on tap
   equalizeTileHeights({ reset: true });
-  // No sizeGrid() here; avoids layout shifts when footer toggles.
 
-  // --- Keep EMERGENCY state in sync with the freshly rendered tiles ---
-  try {
-    // Uses current baseline to compute eligible shifts and toggle the button.
-    // Safe if function is absent; we fail closed (button hidden/disabled).
-   refreshEmergencyEligibility({ silent: true });
-
-  } catch (e) {
-    try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
-    console.warn('Emergency eligibility sync (post-render) failed:', e);
-  }
+  // No network calls here anymore; button state comes from cache set in loadFromServer().
+  updateEmergencyButtonFromCache();
 }
 
 
@@ -1810,15 +1761,17 @@ function authToken() {
 }
 
 // ---------- Load + Submit ----------
+// ───────────────────────── CHANGED ─────────────────────────
 async function loadFromServer({ force=false } = {}) {
+  // Single-flight guard (coalesce bursts)
+  if (loadFromServer._inflight && !force) return loadFromServer._inflight;
+
   if (!authToken()) {
-    // Hide/disable EMERGENCY on auth/token problems
     try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
     showAuthError('Missing or invalid token');
     throw new Error('__AUTH_STOP__');
   }
   if (!identity || !identity.msisdn) {
-    // Not signed in yet; hide/disable EMERGENCY and show login if possible
     try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
     if (!isBlockingOverlayOpen()) openLoginOverlay();
     return;
@@ -1829,91 +1782,90 @@ async function loadFromServer({ force=false } = {}) {
 
   showLoading();
 
-  try {
-    const { res, json } = await apiGET({});
-    if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
-      // Busy → keep EMERGENCY hidden/disabled
-      try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
-      showToast('Server is busy, please try again.');
-      return;
-    }
-
-    const errCode = (json && json.error) || '';
-    if (!res.ok) {
-      if (res.status === 400 || res.status === 401 || res.status === 403) {
-        // Unauth → hide/disable EMERGENCY
-        try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
-        clearSavedIdentity();
-        showAuthError('Not an authorised user');
-        throw new Error('__AUTH_STOP__');
-      }
-      throw new Error(errCode || `HTTP ${res.status}`);
-    }
-
-    if (json && json.ok === false) {
-      const unauthErrors = new Set([
-        'INVALID_OR_UNKNOWN_IDENTITY',
-        'NOT_IN_CANDIDATE_LIST',
-        'FORBIDDEN'
+  // Orchestrate a SINGLE trip: baseline + emergency window in parallel
+  const work = (async () => {
+    try {
+      const [basePair, emergencyWin] = await Promise.all([
+        apiGET({}),                    // baseline
+        apiGetEmergencyWindow().catch(() => ({ ok:false })) // emergency window (best-effort)
       ]);
-      if (unauthErrors.has(errCode)) {
-        // Unauth → hide/disable EMERGENCY
+
+      const { res, json } = basePair;
+
+      if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
         try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
-        clearSavedIdentity();
-        if (!isBlockingOverlayOpen()) openLoginOverlay();
+        showToast('Server is busy, please try again.');
         return;
       }
-      throw new Error(errCode || 'SERVER_ERROR');
-    }
 
-    baseline = json;
-
-    // Update UI name
-    const name =
-      (json.candidateName && String(json.candidateName).trim()) ||
-      (json.candidate && [json.candidate.firstName, json.candidate.surname].filter(Boolean).join(' ').trim()) ||
-      '';
-    if (els.candidateName) {
-      if (name) {
-        els.candidateName.textContent = name;
-        els.candidateName.classList.remove('hidden');
-      } else {
-        els.candidateName.textContent = '';
-        els.candidateName.classList.add('hidden');
+      const errCode = (json && json.error) || '';
+      if (!res.ok) {
+        if (res.status === 400 || res.status === 401 || res.status === 403) {
+          try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+          clearSavedIdentity();
+          showAuthError('Not an authorised user');
+          throw new Error('__AUTH_STOP__');
+        }
+        throw new Error(errCode || `HTTP ${res.status}`);
       }
+
+      if (json && json.ok === false) {
+        const unauthErrors = new Set(['INVALID_OR_UNKNOWN_IDENTITY','NOT_IN_CANDIDATE_LIST','FORBIDDEN']);
+        if (unauthErrors.has(errCode)) {
+          try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+          clearSavedIdentity();
+          if (!isBlockingOverlayOpen()) openLoginOverlay();
+          return;
+        }
+        throw new Error(errCode || 'SERVER_ERROR');
+      }
+
+      // ------- baseline UI/data -------
+      baseline = json;
+
+      const name =
+        (json.candidateName && String(json.candidateName).trim()) ||
+        (json.candidate && [json.candidate.firstName, json.candidate.surname].filter(Boolean).join(' ').trim()) || '';
+      if (els.candidateName) {
+        if (name) {
+          els.candidateName.textContent = name;
+          els.candidateName.classList.remove('hidden');
+        } else {
+          els.candidateName.textContent = '';
+          els.candidateName.classList.add('hidden');
+        }
+      }
+
+      if (baseline && baseline.candidate && baseline.candidate.email) {
+        rememberEmailLocal(String(baseline.candidate.email).trim().toLowerCase());
+      }
+
+      saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
+
+      const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
+      for (const k of Object.keys(draft)) {
+        if (!validYmd.has(k)) delete draft[k];
+      }
+
+      renderTiles();
+      showFooterIfNeeded();
+      maybeShowWelcome();
+
+      // ------- emergency eligibility (from the SAME trip) -------
+      if (emergencyWin && emergencyWin.ok && Array.isArray(emergencyWin.eligible)) {
+        emergencyEligibilityCache = { eligible: emergencyWin.eligible };
+      } else {
+        // No eligibility or server declined → keep cache empty
+        emergencyEligibilityCache = { eligible: [] };
+      }
+      updateEmergencyButtonFromCache();
+    } finally {
+      hideLoading();
     }
+  })();
 
-    // capture candidate email to assist Change Password flow
-    if (baseline && baseline.candidate && baseline.candidate.email) {
-      rememberEmailLocal(String(baseline.candidate.email).trim().toLowerCase());
-    }
-
-    // Last loaded
-    saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
-
-    // Drop draft for unknown tiles
-    const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
-    for (const k of Object.keys(draft)) {
-      if (!validYmd.has(k)) delete draft[k];
-    }
-
-    renderTiles();
-    showFooterIfNeeded();
-    maybeShowWelcome(); // uses ios/android-specific messages if provided
-
-    // ---- EMERGENCY eligibility + UI sync (NEW) ----
-    try {
-      await refreshEmergencyEligibility({ silent: true });
-      // ^ This should (a) compute/fetch eligible shifts, (b) cache them for the modal,
-      // and (c) show/enable or hide/disable els.emergencyBtn accordingly.
-    } catch (e) {
-      // If eligibility sync fails, keep the button hidden/disabled and log gently.
-      try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
-      console.warn('Emergency eligibility sync failed:', e);
-    }
-  } finally {
-    hideLoading();
-  }
+  loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
+  return loadFromServer._inflight;
 }
 
 async function submitChanges() {
@@ -2007,7 +1959,7 @@ async function submitChanges() {
 
 }
 
-
+// ───────────────────────── CHANGED ─────────────────────────
 function clearChanges() {
   draft = {};
   persistDraft();
@@ -2017,9 +1969,9 @@ function clearChanges() {
   cancelSubmitNudge();
   nudgeShown = false;
   lastEditAt = 0;
-    try { refreshEmergencyEligibility({ silent:true }); } catch {}
 
-
+  // No network fetch here. Button state derives from existing cache.
+  updateEmergencyButtonFromCache();
 }
 
 // ---------- UI events ----------
@@ -2035,16 +1987,14 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
   }
   showLoading();
   try {
-    await loadFromServer({ force: true });
+    await refreshAppState({ force: true }); // single path: coalesces and fills caches
   } catch (e) {
     if (!AUTH_DENIED) showToast('Reload failed: ' + e.message);
-   } finally {
+  } finally {
     hideLoading();
-    try { refreshEmergencyEligibility({ silent:true }); } catch {}
-
   }
-
 });
+
 
 // ---------- Keep CSS vars fresh ----------
 window.addEventListener('resize', () => { 
@@ -2444,6 +2394,7 @@ async function refreshEmergencyEligibility({ silent = false } = {}) {
   try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI(eligible); } catch {}
 }
 
+// ───────────────────────── CHANGED ─────────────────────────
 async function openEmergencyOverlay() {
   if (isBlockingOverlayOpen()) return;
 
@@ -2452,15 +2403,22 @@ async function openEmergencyOverlay() {
   if (btn) { btn.dataset.busy = '1'; btn.style.opacity = '.9'; btn.style.pointerEvents = 'none'; }
 
   try {
-    // Use the single cached window; only fetch if missing
+    // Prefer cached eligibility. If missing (first run / invalidated), do a single orchestrated refresh.
     if (!emergencyEligibilityCache) {
-      const { ok, eligible, error } = await apiGetEmergencyWindow();
-      if (!ok) { showToast(mapServerErrorToMessage(error)); return; }
-      emergencyEligibilityCache = { eligible };
+      try {
+        await refreshAppState({ force: true }); // fills baseline + emergency cache in one go
+      } catch (e) {
+        showToast('Could not refresh emergency details. Please try again.');
+        return;
+      }
     }
 
     resetEmergencyState();
-    emergencyState.eligible = emergencyEligibilityCache.eligible || [];
+    emergencyState.eligible = (emergencyEligibilityCache && emergencyEligibilityCache.eligible) || [];
+    if (!emergencyState.eligible.length) {
+      showToast('No eligible shifts right now.');
+      return;
+    }
     emergencyState.step = 'PICK_SHIFT';
 
     openOverlay('emergencyOverlay', '#emergencyClose');
@@ -2469,6 +2427,8 @@ async function openEmergencyOverlay() {
     if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
   }
 }
+
+
 function renderEmergencyStep() {
   const body = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
@@ -3517,6 +3477,30 @@ async function apiPostRunningLatePreview(shiftOrContext, etaLabel) {
   }
 }
 
+// ───────────────────────── NEW helper ─────────────────────────
+function updateEmergencyButtonFromCache() {
+  try {
+    const hasEligible = !!(emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible) && emergencyEligibilityCache.eligible.length);
+    if (els.emergencyBtn) {
+      els.emergencyBtn.hidden   = !hasEligible;
+      els.emergencyBtn.disabled = !hasEligible;
+    }
+  } catch {}
+}
+
+// ───────────────────────── NEW orchestrator ─────────────────────────
+// Centralised refresh: invalidate caches, then call loadFromServer() once.
+async function refreshAppState({ force = true } = {}) {
+  try {
+    // Invalidate local caches before refetching
+    emergencyEligibilityCache = null;
+    // Any other local "derived" caches can be reset here as needed.
+
+    return await loadFromServer({ force });
+  } catch (e) {
+    throw e;
+  }
+}
 
 function sizeGrid() {
   if (!els.grid) return;
@@ -3557,35 +3541,28 @@ function routeFromURL() {
 window.addEventListener('hashchange', routeFromURL);
 
 // ---------- Boot ----------
+// ───────────────────────── CHANGED (IIFE) ─────────────────────────
 (async function init() {
-  // Identity from storage
   identity = loadSavedIdentity();
 
-  // Build overlays/menu early
   ensureLoadingOverlay();
   ensureMenu();
-  ensureEmergencyButton(); // <-- make sure the button exists early (idempotent)
+  ensureEmergencyButton(); // idempotent creation of the button
 
-  // If reset link present, show reset (blocking)
   const hasK = new URLSearchParams(location.search).has('k');
   if (hasK) {
     openResetOverlay();
   } else if (!identity.msisdn) {
-    // Ensure EMERGENCY button is hidden when not signed in
-   try { if (els.emergencyBtn) { els.emergencyBtn.hidden = true; els.emergencyBtn.disabled = true; } } catch {}
-
-
-    // Attempt silent auto-sign-in on Android/Chrome
+    try { if (els.emergencyBtn) { els.emergencyBtn.hidden = true; els.emergencyBtn.disabled = true; } } catch {}
     const autoOK = await tryAutoLoginViaCredentialsAPI();
     if (!autoOK && !isBlockingOverlayOpen()) openLoginOverlay();
   }
 
-  // Draft + initial load (only if already signed in)
   loadDraft();
   if (identity && identity.msisdn) {
     showLoading();
     try {
-      await loadFromServer({ force: true });
+      await loadFromServer({ force: true }); // single orchestrated fetch
     } catch (e) {
       if (String(e && e.message) !== '__AUTH_STOP__') {
         showToast('Load failed: ' + e.message, 5000);
@@ -3594,12 +3571,10 @@ window.addEventListener('hashchange', routeFromURL);
       sizeGrid();
       equalizeTileHeights({ reset: true });
       hideLoading();
-      ensurePastShiftsButton();
 
-      // Initial EMERGENCY visibility + wiring
-      try { refreshEmergencyEligibility({ silent:true }); } catch {}
-
+      // Button wiring only; visibility already set from cache by loadFromServer()
       try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
+      ensurePastShiftsButton();
     }
   }
 
