@@ -866,6 +866,45 @@ function nextStatus(currentLabel) {
   const idx = STATUS_ORDER.indexOf(currentLabel);
   return STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
 }
+
+// ───────────────────────── NEW (background single-flight) ─────────────────────────
+async function prefetchEmergencyEligibility({ priority = 'normal', onReady } = {}) {
+  // If we already have eligibility cached and non-empty, nothing to do
+  if (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible) && emergencyEligibilityCache.eligible.length) {
+    // Ensure button reflects current cache
+    updateEmergencyButtonFromCache();
+    if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
+    return;
+  }
+
+  // Single-flight guard: avoid duplicate background calls
+  if (prefetchEmergencyEligibility._inflight) {
+    try { await prefetchEmergencyEligibility._inflight; } catch (_) {}
+    // After existing inflight finishes, reflect result & notify
+    updateEmergencyButtonFromCache();
+    if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
+    return;
+  }
+
+  prefetchEmergencyEligibility._inflight = (async () => {
+    try {
+      const { ok, eligible } = await apiGetEmergencyWindow();
+      if (ok && Array.isArray(eligible)) {
+        emergencyEligibilityCache = { eligible };
+      } else {
+        // Keep an empty cache on failure; UI will remain disabled, which is safe
+        emergencyEligibilityCache = { eligible: [] };
+      }
+      updateEmergencyButtonFromCache();
+      if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
+    } finally {
+      prefetchEmergencyEligibility._inflight = null;
+    }
+  })();
+
+  return prefetchEmergencyEligibility._inflight;
+}
+
 function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
   if (els.footer) els.footer.classList.toggle('hidden', !dirty);
@@ -1762,6 +1801,7 @@ function authToken() {
 
 // ---------- Load + Submit ----------
 // ───────────────────────── CHANGED ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
 async function loadFromServer({ force=false } = {}) {
   // Single-flight guard (coalesce bursts)
   if (loadFromServer._inflight && !force) return loadFromServer._inflight;
@@ -1777,20 +1817,20 @@ async function loadFromServer({ force=false } = {}) {
     return;
   }
 
-  // Default-safe state for EMERGENCY button before we know eligibility
-  try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+  // Safe default: button invisible until eligibility arrives
+  try {
+    if (els.emergencyBtn) {
+      els.emergencyBtn.hidden   = true;  // keep hidden while we background-load
+      els.emergencyBtn.disabled = true;  // defensive; won’t be seen anyway
+    }
+  } catch {}
 
   showLoading();
 
-  // Orchestrate a SINGLE trip: baseline + emergency window in parallel
   const work = (async () => {
     try {
-      const [basePair, emergencyWin] = await Promise.all([
-        apiGET({}),                    // baseline
-        apiGetEmergencyWindow().catch(() => ({ ok:false })) // emergency window (best-effort)
-      ]);
-
-      const { res, json } = basePair;
+      // ── fetch BASELINE ONLY; do not block on emergency ──
+      const { res, json } = await apiGET({});
 
       if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
         try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
@@ -1851,14 +1891,12 @@ async function loadFromServer({ force=false } = {}) {
       showFooterIfNeeded();
       maybeShowWelcome();
 
-      // ------- emergency eligibility (from the SAME trip) -------
-      if (emergencyWin && emergencyWin.ok && Array.isArray(emergencyWin.eligible)) {
-        emergencyEligibilityCache = { eligible: emergencyWin.eligible };
-      } else {
-        // No eligibility or server declined → keep cache empty
-        emergencyEligibilityCache = { eligible: [] };
-      }
+      // Reflect whatever cache exists now (likely empty → stays hidden)
       updateEmergencyButtonFromCache();
+
+      // ── kick off EMERGENCY eligibility in the background; do not await ──
+      prefetchEmergencyEligibility().catch(() => { /* fail closed; stays hidden */ });
+
     } finally {
       hideLoading();
     }
@@ -1867,6 +1905,7 @@ async function loadFromServer({ force=false } = {}) {
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
+
 
 async function submitChanges() {
   if (AUTH_DENIED) return;
@@ -2094,51 +2133,64 @@ async function apiPostEmergencyRaise(shift, issueType, issuePayload) {
 
 /** Create the bright red EMERGENCY button next to Refresh (once). Hidden by default. */
 function ensureEmergencyButton() {
+  // If it already exists, keep els in sync and bail.
   const existing = document.getElementById('emergencyBtn');
-  if (existing) { 
-    els.emergencyBtn = existing; // keep els in sync if already present
-    return; 
+  if (existing) {
+    els.emergencyBtn = existing;
+    return;
   }
 
-  // Find header and refresh button
-  const header = document.querySelector('header');
-  if (!header || !els.refreshBtn) return;
+  // Try to find an anchor to place the button next to.
+  const tryFindAnchor = () => {
+    // Prefer an explicit refresh button if present.
+    if (els.refreshBtn && els.refreshBtn instanceof HTMLElement) return els.refreshBtn;
 
-  // Create button
-  const btn = document.createElement('button');
-  btn.id = 'emergencyBtn';
-  btn.type = 'button';
-  btn.textContent = 'EMERGENCY';
-  btn.setAttribute('aria-label', 'Report an emergency');
-  btn.className = ''; // do not inherit standard .btn styling
-  Object.assign(btn.style, {
-    background: '#e06666',
-    color: '#ffffff',
-    fontWeight: '900',
-    borderRadius: '10px',
-    padding: '.5rem .7rem',
-    border: '0',
-    cursor: 'pointer',
-    fontSize: '.9rem',
-    outline: '0',
-    transition: 'transform .08s ease, opacity .15s ease',
-    boxShadow: '0 0 0 1px rgba(0,0,0,.2) inset',
-  });
-  btn.onpointerdown = () => { btn.style.transform = 'scale(0.98)'; };
-  btn.onpointerup = () => { btn.style.transform = 'scale(1)'; };
+    // Common fallbacks (tweak selectors to match your layout if needed).
+    const headerActions =
+      document.querySelector('#header .actions, .header .actions, .topbar .actions, .toolbar, #menuRight');
 
-  // Hidden by default
-  btn.hidden = true;
+    if (headerActions) return headerActions;
 
-  // Insert immediately after Refresh
-  els.refreshBtn.insertAdjacentElement('afterend', btn);
-  els.emergencyBtn = btn; // <-- keep els in sync
+    // Absolute last resort: the header itself or the app container.
+    return document.getElementById('header') ||
+           document.querySelector('#app, body');
+  };
 
-  // Wire click
-  btn.addEventListener('click', () => {
-    if (btn.dataset.busy === '1') return;
-    openEmergencyOverlay();
-  });
+  const createBtn = (anchor) => {
+    if (!anchor) return false;
+
+    const btn = document.createElement('button');
+    btn.id = 'emergencyBtn';
+    btn.type = 'button';
+    btn.textContent = 'Emergency';
+    btn.hidden = true;       // visibility/wiring decided elsewhere
+    btn.disabled = true;     // enabled when eligible
+    btn.className = 'btn btn-danger'; // keep whatever your project uses
+
+    // Place it next to the refresh button if that exists,
+    // otherwise append into the anchor container.
+    if (anchor === els.refreshBtn && anchor.parentElement) {
+      anchor.parentElement.insertBefore(btn, anchor.nextSibling);
+    } else {
+      anchor.appendChild(btn);
+    }
+
+    els.emergencyBtn = btn;
+    return true;
+  };
+
+  // Create immediately if we can…
+  if (createBtn(tryFindAnchor())) return;
+
+  // …otherwise retry briefly until the layout finishes mounting.
+  // (bounded retries so we don't loop forever)
+  let attempts = 0;
+  const maxAttempts = 20;   // ~5s at 250ms intervals
+  const timer = setInterval(() => {
+    attempts += 1;
+    const ok = createBtn(tryFindAnchor());
+    if (ok || attempts >= maxAttempts) clearInterval(timer);
+  }, 250);
 }
 
 /** Show/hide the EMERGENCY button based on eligible shifts. */
@@ -2395,30 +2447,31 @@ async function refreshEmergencyEligibility({ silent = false } = {}) {
 }
 
 // ───────────────────────── CHANGED ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
 async function openEmergencyOverlay() {
   if (isBlockingOverlayOpen()) return;
+
+  // Only open if eligibility already exists (button is visible only in that case anyway)
+  const haveEligible =
+    emergencyEligibilityCache &&
+    Array.isArray(emergencyEligibilityCache.eligible) &&
+    emergencyEligibilityCache.eligible.length > 0;
+
+  if (!haveEligible) {
+    // Ensure a high-priority background fetch; overlay stays closed
+    prefetchEmergencyEligibility({ priority: 'high' }).catch(() => {});
+    try { showToast('No eligible shifts right now.'); } catch {}
+    return;
+  }
 
   ensureEmergencyOverlay();
   const btn = document.getElementById('emergencyBtn');
   if (btn) { btn.dataset.busy = '1'; btn.style.opacity = '.9'; btn.style.pointerEvents = 'none'; }
 
   try {
-    // Prefer cached eligibility. If missing (first run / invalidated), do a single orchestrated refresh.
-    if (!emergencyEligibilityCache) {
-      try {
-        await refreshAppState({ force: true }); // fills baseline + emergency cache in one go
-      } catch (e) {
-        showToast('Could not refresh emergency details. Please try again.');
-        return;
-      }
-    }
-
     resetEmergencyState();
-    emergencyState.eligible = (emergencyEligibilityCache && emergencyEligibilityCache.eligible) || [];
-    if (!emergencyState.eligible.length) {
-      showToast('No eligible shifts right now.');
-      return;
-    }
+    emergencyState.eligible = emergencyEligibilityCache.eligible || [];
     emergencyState.step = 'PICK_SHIFT';
 
     openOverlay('emergencyOverlay', '#emergencyClose');
@@ -2427,6 +2480,7 @@ async function openEmergencyOverlay() {
     if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
   }
 }
+
 
 
 function renderEmergencyStep() {
@@ -3478,28 +3532,34 @@ async function apiPostRunningLatePreview(shiftOrContext, etaLabel) {
 }
 
 // ───────────────────────── NEW helper ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
 function updateEmergencyButtonFromCache() {
   try {
     const hasEligible = !!(emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible) && emergencyEligibilityCache.eligible.length);
     if (els.emergencyBtn) {
+      // Only show the button when eligibility exists; otherwise keep it invisible
       els.emergencyBtn.hidden   = !hasEligible;
-      els.emergencyBtn.disabled = !hasEligible;
+      els.emergencyBtn.disabled = !hasEligible; // optional but safe
     }
   } catch {}
 }
 
+
 // ───────────────────────── NEW orchestrator ─────────────────────────
 // Centralised refresh: invalidate caches, then call loadFromServer() once.
+// ───────────────────────── CHANGED ─────────────────────────
 async function refreshAppState({ force = true } = {}) {
-  try {
-    // Invalidate local caches before refetching
-    emergencyEligibilityCache = null;
-    // Any other local "derived" caches can be reset here as needed.
+  // Invalidate emergency cache so we’ll refresh it (in the background) after baseline
+  emergencyEligibilityCache = null;
 
-    return await loadFromServer({ force });
-  } catch (e) {
-    throw e;
-  }
+  // Refresh baseline (single-flight inside loadFromServer)
+  const out = await loadFromServer({ force });
+
+  // Fire-and-forget: refresh emergency eligibility in background after baseline refresh
+  prefetchEmergencyEligibility().catch(() => {});
+
+  return out;
 }
 
 function sizeGrid() {
@@ -3542,12 +3602,15 @@ window.addEventListener('hashchange', routeFromURL);
 
 // ---------- Boot ----------
 // ───────────────────────── CHANGED (IIFE) ─────────────────────────
-(async function init() {
+async function init() {
   identity = loadSavedIdentity();
 
   ensureLoadingOverlay();
   ensureMenu();
-  ensureEmergencyButton(); // idempotent creation of the button
+
+  // Defer button creation until after menu/header likely exist.
+  // (Still safe if they already did; ensureEmergencyButton is idempotent.)
+  ensureEmergencyButton();
 
   const hasK = new URLSearchParams(location.search).has('k');
   if (hasK) {
@@ -3559,6 +3622,7 @@ window.addEventListener('hashchange', routeFromURL);
   }
 
   loadDraft();
+
   if (identity && identity.msisdn) {
     showLoading();
     try {
@@ -3572,7 +3636,11 @@ window.addEventListener('hashchange', routeFromURL);
       equalizeTileHeights({ reset: true });
       hideLoading();
 
-      // Button wiring only; visibility already set from cache by loadFromServer()
+      // Last-chance: if the button wasn't created earlier (e.g. anchor mounted late),
+      // create it now before wiring/visibility.
+      ensureEmergencyButton();
+
+      // Wire handlers; visibility/enabled state is decided using the cached/server data.
       try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
       ensurePastShiftsButton();
     }
