@@ -3647,4 +3647,11 @@ async function init() {
   }
 
   routeFromURL();
-})();
+}
+
+// Ensure init runs exactly once on load.
+if (document.readyState !== 'loading') {
+  init();
+} else {
+  window.addEventListener('DOMContentLoaded', init, { once: true });
+}
