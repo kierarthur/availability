@@ -2140,6 +2140,12 @@ function ensureEmergencyButton() {
     btn.style.background = '#d32f2f';
     btn.style.color = '#fff';
     btn.style.border = '1px solid #b71c1c';
+
+    // --- keep it visually and interactively separate from Refresh ---
+    btn.style.marginLeft = '.5rem';   // small visual gap from Refresh
+    btn.style.position = 'relative';  // create a local stacking context
+    btn.style.zIndex = '3';           // sit above anything behind
+    btn.style.pointerEvents = 'auto'; // be explicit
   }
 
   // Finish setup so the click works on first render
@@ -2204,7 +2210,6 @@ function ensureEmergencyButton() {
     if (createBtn(tryFindAnchor()) || attempts >= maxAttempts) clearInterval(timer);
   }, 250);
 }
-
 /** Show/hide the EMERGENCY button based on eligible shifts. */
 function syncEmergencyButtonVisibility(eligible) {
   const btn = document.getElementById('emergencyBtn');
@@ -2418,20 +2423,25 @@ function syncEmergencyEligibilityUI(eligible) {
   }
 }
 
-
 function wireEmergencyButton() {
   const btn = document.getElementById('emergencyBtn');
   if (!btn) return;
+
   const clone = btn.cloneNode(true);
   btn.replaceWith(clone);
+
   // keep our cache in sync with the live node
   els.emergencyBtn = document.getElementById('emergencyBtn');
-  els.emergencyBtn.addEventListener('click', () => {
+
+  // prevent any parent/neighbor listeners from seeing this click
+  els.emergencyBtn.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    e.stopImmediatePropagation();
     if (els.emergencyBtn.dataset.busy === '1') return;
     openEmergencyOverlay();
   });
 }
-
 // =========================
 // SERVER-AUTHORITATIVE FLOW
 // =========================
