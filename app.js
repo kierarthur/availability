@@ -2581,27 +2581,45 @@ function renderEmergencyStep() {
   }
 
   else if (state.step === 'PICK_ISSUE') {
-    title.textContent = 'Please select your emergency';
+  title.textContent = 'Please select your emergency';
 
-    const s = state.selectedShift || {};
-    let allowed = [];
+  const s = state.selectedShift || {};
+  let allowed = [];
 
-    if (Array.isArray(s.allowed_issues) && s.allowed_issues.length) {
-      allowed = s.allowed_issues.map(x => String(x).toUpperCase());
-    } else if (Array.isArray(s.allowedActions) && s.allowedActions.length) {
-      allowed = s.allowedActions.map(x => String(x).toUpperCase());
-    } else {
-      if (s.canRunLate === true)     allowed.push('RUNNING_LATE');
-      if (s.canCancel === true)      allowed.push('CANNOT_ATTEND');
-      if (s.canLeaveEarly === true)  allowed.push('LEAVE_EARLY');
-      if (s.canDNA === true)         allowed.push('DNA'); // tolerant fallback
-    }
+  // 1) Start with server-declared allowed list (if present)
+  if (Array.isArray(s.allowed_issues) && s.allowed_issues.length) {
+    allowed = s.allowed_issues.map(x => String(x).toUpperCase());
+  } else if (Array.isArray(s.allowedActions) && s.allowedActions.length) {
+    allowed = s.allowedActions.map(x => String(x).toUpperCase());
+  }
 
-    const choices = document.createElement('div');
-    choices.setAttribute('role', 'group');
-    choices.style.display = 'flex';
-    choices.style.flexDirection = 'column';
-    choices.style.gap = '.5rem';
+  // 2) Merge in tolerant signals (DON'T replace — union instead)
+  const merged = new Set(allowed);
+
+  // Running Late should appear if server signalled *either* canRunLate
+  // or provided concrete late_options (even if not listed in allowed_issues)
+  if (s.canRunLate === true || (Array.isArray(s.late_options) && s.late_options.length > 0)) {
+    merged.add('RUNNING_LATE');
+  }
+
+  // Keep these tolerant merges too (backend sometimes sends booleans)
+  if (s.canCancel === true)     merged.add('CANNOT_ATTEND');
+  if (s.canLeaveEarly === true) merged.add('LEAVE_EARLY');
+  if (s.canDNA === true || s.canDna === true) merged.add('DNA');
+
+  allowed = Array.from(merged);
+
+  // (Optional: quick debug so you can verify in DevTools)
+  // console.log('[PICK_ISSUE] resolved allowed =', allowed, {
+  //   canRunLate: s.canRunLate, late_options_len: s.late_options?.length || 0
+  // });
+
+  const choices = document.createElement('div');
+  choices.setAttribute('role', 'group');
+  choices.style.display = 'flex';
+  choices.style.flexDirection = 'column';
+  choices.style.gap = '.5rem';
+
 
     function addOption(key, label, help) {
       const id = `emIssue_${key}`;
