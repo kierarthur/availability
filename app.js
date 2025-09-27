@@ -2407,20 +2407,16 @@ function syncEmergencyEligibilityUI(eligible) {
 }
 
 
-
 function wireEmergencyButton() {
   const btn = document.getElementById('emergencyBtn');
   if (!btn) return;
-
-  // Remove any old click handlers to avoid duplicates
   const clone = btn.cloneNode(true);
   btn.replaceWith(clone);
-  const freshBtn = document.getElementById('emergencyBtn');
-
-  // Delegate to the canonical entrypoint
-  freshBtn.addEventListener('click', () => {
-    if (freshBtn.dataset.busy === '1') return; // respect busy state if set
-    openEmergencyOverlay(); // this handles cache/fetch, overlay open, and rendering
+  // keep our cache in sync with the live node
+  els.emergencyBtn = document.getElementById('emergencyBtn');
+  els.emergencyBtn.addEventListener('click', () => {
+    if (els.emergencyBtn.dataset.busy === '1') return;
+    openEmergencyOverlay();
   });
 }
 
@@ -3536,15 +3532,16 @@ async function apiPostRunningLatePreview(shiftOrContext, etaLabel) {
 // ───────────────────────── CHANGED ─────────────────────────
 function updateEmergencyButtonFromCache() {
   try {
-    const hasEligible = !!(emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible) && emergencyEligibilityCache.eligible.length);
-    if (els.emergencyBtn) {
-      // Only show the button when eligibility exists; otherwise keep it invisible
-      els.emergencyBtn.hidden   = !hasEligible;
-      els.emergencyBtn.disabled = !hasEligible; // optional but safe
+    const hasEligible = !!(emergencyEligibilityCache &&
+                           Array.isArray(emergencyEligibilityCache.eligible) &&
+                           emergencyEligibilityCache.eligible.length);
+    const btn = document.getElementById('emergencyBtn'); // always fresh
+    if (btn) {
+      btn.hidden   = !hasEligible;
+      btn.disabled = !hasEligible;
     }
   } catch {}
 }
-
 
 // ───────────────────────── NEW orchestrator ─────────────────────────
 // Centralised refresh: invalidate caches, then call loadFromServer() once.
