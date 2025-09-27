@@ -321,6 +321,90 @@
     /* Thin red border highlight for attention tiles */
     .attention-border { border-color: var(--danger) !important; }
   </style>
+
+  <!-- Emergency button compatibility shim (for old cached builds) -->
+  <script>
+    (function () {
+      // 1) Minimal visibility helper if the new one doesn't exist
+      if (!window.updateEmergencyButtonFromCache) {
+        window.emergencyEligibilityCache = window.emergencyEligibilityCache || { eligible: [] };
+        window.updateEmergencyButtonFromCache = function () {
+          try {
+            var btn = document.getElementById('emergencyBtn');
+            if (!btn) return;
+            var has = Array.isArray(window.emergencyEligibilityCache.eligible) &&
+                      window.emergencyEligibilityCache.eligible.length > 0;
+            btn.hidden = !has;
+            btn.disabled = !has;
+            // bright red + white text
+            btn.className = 'btn btn-danger';
+            btn.style.background = '#d32f2f';
+            btn.style.color = '#fff';
+            btn.style.border = '1px solid #b71c1c';
+          } catch {}
+        };
+      }
+
+      // 2) Minimal creator/wirer if the new one doesn't exist
+      if (!window.ensureEmergencyButton) {
+        window.ensureEmergencyButton = function () {
+          var existing = document.getElementById('emergencyBtn');
+          if (existing) { window.updateEmergencyButtonFromCache(); return; }
+
+          var anchor =
+            document.getElementById('refreshBtn') ||
+            document.querySelector('#header .actions, .header .actions, .topbar .actions, .toolbar, #menuRight') ||
+            document.getElementById('header') ||
+            document.body;
+
+          var btn = document.createElement('button');
+          btn.id = 'emergencyBtn';
+          btn.type = 'button';
+          btn.textContent = 'Emergency';
+          btn.hidden = true;
+          btn.disabled = true;
+          btn.className = 'btn btn-danger';
+          btn.style.background = '#d32f2f';
+          btn.style.color = '#fff';
+          btn.style.border = '1px solid #b71c1c';
+
+          anchor.appendChild(btn);
+
+          // If the old app doesn't have openEmergencyOverlay, show a helpful prompt.
+          btn.addEventListener('click', function () {
+            if (window.openEmergencyOverlay) {
+              window.openEmergencyOverlay();
+            } else {
+              alert('Emergency is available after the app updates. Please refresh or reopen the app.');
+            }
+          });
+
+          window.updateEmergencyButtonFromCache();
+        };
+
+        if (document.readyState === 'loading') {
+          document.addEventListener('DOMContentLoaded', window.ensureEmergencyButton, { once: true });
+        } else {
+          window.ensureEmergencyButton();
+        }
+      }
+
+      // 3) (Optional) If your constants exist, try to fetch eligibility once
+      // so the button can appear even on very old builds.
+      try {
+        if (window.API_BASE_URL && typeof window.authToken === 'function') {
+          fetch(window.API_BASE_URL + '?t=' + encodeURIComponent(window.authToken()) + '&view=emergency_window', {
+            method: 'GET', credentials: 'omit'
+          }).then(function(r){ return r.json(); }).then(function(j){
+            if (j && Array.isArray(j.eligible)) {
+              window.emergencyEligibilityCache = { eligible: j.eligible };
+              window.updateEmergencyButtonFromCache();
+            }
+          }).catch(function(){});
+        }
+      } catch {}
+    })();
+  </script>
 </head>
 
 <body>
