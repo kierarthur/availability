@@ -2133,27 +2133,44 @@ async function apiPostEmergencyRaise(shift, issueType, issuePayload) {
 
 /** Create the bright red EMERGENCY button next to Refresh (once). Hidden by default. */
 function ensureEmergencyButton() {
-  // If it already exists, keep els in sync and bail.
-  const existing = document.getElementById('emergencyBtn');
-  if (existing) {
-    els.emergencyBtn = existing;
-    return;
+  // Apply bright red styles
+  function applyStyles(btn) {
+    if (!btn) return;
+    btn.className = 'btn btn-danger';
+    btn.style.background = '#d32f2f';
+    btn.style.color = '#fff';
+    btn.style.border = '1px solid #b71c1c';
   }
 
-  // Try to find an anchor to place the button next to.
+  // Finish setup so the click works on first render
+  function finalize(btn) {
+    els.emergencyBtn = btn;
+
+    // Wire first (wireEmergencyButton clones the node)
+    try { wireEmergencyButton(); } catch {}
+
+    // Rebind to the live (possibly cloned) node, then style + show/hide from cache
+    const live = document.getElementById('emergencyBtn') || btn;
+    applyStyles(live);
+    els.emergencyBtn = live;
+
+    try { updateEmergencyButtonFromCache(); } catch {}
+    // In case eligibility arrived just before the button existed, run once more on next tick
+    setTimeout(() => { try { updateEmergencyButtonFromCache(); } catch {} }, 0);
+  }
+
+  // If it already exists, sync, wire, and style it
+  const existing = document.getElementById('emergencyBtn');
+  if (existing) { finalize(existing); return; }
+
+  // Find where to place it
   const tryFindAnchor = () => {
-    // Prefer an explicit refresh button if present.
     if (els.refreshBtn && els.refreshBtn instanceof HTMLElement) return els.refreshBtn;
-
-    // Common fallbacks (tweak selectors to match your layout if needed).
-    const headerActions =
-      document.querySelector('#header .actions, .header .actions, .topbar .actions, .toolbar, #menuRight');
-
-    if (headerActions) return headerActions;
-
-    // Absolute last resort: the header itself or the app container.
-    return document.getElementById('header') ||
-           document.querySelector('#app, body');
+    return (
+      document.querySelector('#header .actions, .header .actions, .topbar .actions, .toolbar, #menuRight') ||
+      document.getElementById('header') ||
+      document.querySelector('#app, body')
+    );
   };
 
   const createBtn = (anchor) => {
@@ -2163,33 +2180,28 @@ function ensureEmergencyButton() {
     btn.id = 'emergencyBtn';
     btn.type = 'button';
     btn.textContent = 'Emergency';
-    btn.hidden = true;       // visibility/wiring decided elsewhere
-    btn.disabled = true;     // enabled when eligible
-    btn.className = 'btn btn-danger'; // keep whatever your project uses
+    btn.hidden = true;    // safe default; visibility driven by cache
+    btn.disabled = true;  // safe default
 
-    // Place it next to the refresh button if that exists,
-    // otherwise append into the anchor container.
+    // Insert next to Refresh if possible, else append
     if (anchor === els.refreshBtn && anchor.parentElement) {
       anchor.parentElement.insertBefore(btn, anchor.nextSibling);
     } else {
       anchor.appendChild(btn);
     }
 
-    els.emergencyBtn = btn;
+    finalize(btn);
     return true;
   };
 
-  // Create immediately if we can…
+  // Create immediately if possible, otherwise retry briefly while header mounts
   if (createBtn(tryFindAnchor())) return;
 
-  // …otherwise retry briefly until the layout finishes mounting.
-  // (bounded retries so we don't loop forever)
   let attempts = 0;
-  const maxAttempts = 20;   // ~5s at 250ms intervals
+  const maxAttempts = 20; // ~5s at 250ms
   const timer = setInterval(() => {
     attempts += 1;
-    const ok = createBtn(tryFindAnchor());
-    if (ok || attempts >= maxAttempts) clearInterval(timer);
+    if (createBtn(tryFindAnchor()) || attempts >= maxAttempts) clearInterval(timer);
   }, 250);
 }
 
