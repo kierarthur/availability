@@ -337,10 +337,14 @@
             btn.hidden = !has;
             btn.disabled = !has;
             // bright red + white text
-            btn.className = 'btn btn-danger';
-            btn.style.background = '#d32f2f';
-            btn.style.color = '#fff';
-            btn.style.border = '1px solid #b71c1c';
+     btn.className = 'btn btn-danger';
+btn.style.background = '#d32f2f';
+btn.style.color = '#fff';
+btn.style.border = '1px solid #b71c1c';
+btn.style.marginLeft = '.5rem';   // NEW: gap from Refresh
+btn.style.position   = 'relative'; // NEW: create own stacking context
+btn.style.zIndex     = '3';        // NEW: sit above neighbors
+
           } catch {}
         };
       }
@@ -371,13 +375,17 @@
           anchor.appendChild(btn);
 
           // If the old app doesn't have openEmergencyOverlay, show a helpful prompt.
-          btn.addEventListener('click', function () {
-            if (window.openEmergencyOverlay) {
-              window.openEmergencyOverlay();
-            } else {
-              alert('Emergency is available after the app updates. Please refresh or reopen the app.');
-            }
-          });
+     btn.addEventListener('click', function (e) {
+  e.preventDefault();
+  e.stopPropagation();
+  e.stopImmediatePropagation();
+  if (window.openEmergencyOverlay) {
+    window.openEmergencyOverlay();
+  } else {
+    alert('There is an update to this app. Uninstall and close this down completely and reload. Please refresh or reopen the app.');
+  }
+});
+
 
           window.updateEmergencyButtonFromCache();
         };
