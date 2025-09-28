@@ -2344,8 +2344,129 @@ async function onRefreshClickForEmergency() {
 function ensureEmergencyOverlay() {
   if (document.getElementById('emergencyOverlay')) return;
 
-  ensureLoadingOverlay(); // ensures shared styles and focus-trap helpers exist
+  // Make sure base overlay utilities exist (focus trap, loading, etc.)
+  ensureLoadingOverlay();
 
+  // ─────────────────────────
+  // Inject Emergency-specific CSS once
+  // ─────────────────────────
+  if (!document.getElementById('emergencyOverlayStyles')) {
+    const style = document.createElement('style');
+    style.id = 'emergencyOverlayStyles';
+    style.textContent = `
+      /* Constrain the sheet so content never runs off small screens (e.g., iPhone) */
+      #emergencyOverlay .sheet {
+        width: min(720px, 96vw);
+        margin-top: min(8vh, 80px);
+        margin-bottom: 0;
+        max-height: calc(100vh - 12vh);
+        display: flex;
+        flex-direction: column;
+      }
+
+      /* Scroll body if content is long; no horizontal scroll */
+      #emergencyBody {
+        overflow-y: auto;
+        overflow-x: hidden;
+      }
+
+      /* A consistent, compact row layout for ALL option lists (shift/issue/late/DNA) */
+      #emergencyBody .em-list {
+        display: flex;
+        flex-direction: column;
+        gap: .5rem;
+        max-width: 100%;
+      }
+
+      /* Force labels (rows) to a simple flex row — overrides any inline 'grid' used elsewhere */
+      #emergencyBody label,
+      #emergencyBody label[role],
+      #emergencyBody .em-row {
+        display: flex !important;
+        align-items: center;
+        gap: .6rem;
+        padding: .55rem .7rem;
+        border: 1px solid #222a36;
+        background: #131926;
+        border-radius: 10px;
+        max-width: 100%;
+        box-sizing: border-box;
+      }
+
+      /* Keep the radio a sensible, consistent size and aligned */
+      #emergencyBody input[type="radio"] {
+        flex: 0 0 auto;
+        width: 18px;
+        height: 18px;
+        accent-color: #4f8cff; /* supported on modern mobile browsers */
+        margin: 0; /* remove default iOS margin that can push content */
+      }
+
+      /* Checkbox (DNA tried-calling) tidy sizing too */
+      #emergencyBody input[type="checkbox"] {
+        width: 18px;
+        height: 18px;
+        accent-color: #4f8cff;
+        margin: 0;
+      }
+
+      /* Text container next to the radio: fill remaining width, wrap nicely */
+      #emergencyBody label > div,
+      #emergencyBody .em-row > .em-text {
+        flex: 1 1 auto;
+        min-width: 0;                 /* prevents narrow columns that cause 2-3 words per line */
+        white-space: normal;          /* allow natural wrapping */
+        overflow-wrap: anywhere;      /* break long tokens/refs gracefully */
+        word-break: normal;
+        line-height: 1.35;
+      }
+
+      /* Headline text inside a row (e.g., shift label) */
+      #emergencyBody .em-title {
+        font-weight: 800;
+        margin: 0;
+      }
+
+      /* Subtext/help under a title inside a row */
+      #emergencyBody .em-help,
+      #emergencyBody .muted {
+        color: #a7b0c0;
+      }
+
+      /* Running-late option rows should be compact, not "massive" */
+      #emergencyBody .em-late-row {
+        padding: .5rem .7rem;
+        font-size: clamp(.95rem, 2.5vw, 1rem);
+      }
+
+      /* DNA instruction block and other inline notes keep to the viewport */
+      #emergencyBody .em-note {
+        margin-top: .6rem;
+        color: #a7b0c0;
+        max-width: 100%;
+        overflow-wrap: anywhere;
+      }
+
+      /* Footer buttons stay visible and tidy on small screens */
+      #emergencyFooter {
+        display: flex;
+        justify-content: flex-end;
+        gap: .5rem;
+        padding: .5rem .9rem 1rem;
+        flex: 0 0 auto;
+      }
+
+      /* Prevent any accidental horizontal scrolling on the overlay container */
+      #emergencyOverlay {
+        overflow: hidden;
+      }
+    `;
+    document.head.appendChild(style);
+  }
+
+  // ─────────────────────────
+  // Build overlay DOM
+  // ─────────────────────────
   const overlay = document.createElement('div');
   overlay.id = 'emergencyOverlay';
   overlay.innerHTML = `
@@ -2355,7 +2476,7 @@ function ensureEmergencyOverlay() {
         <button id="emergencyClose" class="sheet-close" aria-label="Close">✕</button>
       </div>
       <div id="emergencyBody" class="sheet-body"></div>
-      <div id="emergencyFooter" style="display:flex;justify-content:flex-end;gap:.5rem;padding:.5rem .9rem 1rem;"></div>
+      <div id="emergencyFooter"></div>
     </div>
   `;
   document.body.appendChild(overlay);
@@ -2500,7 +2621,6 @@ async function openEmergencyOverlay() {
 }
 
 
-
 function renderEmergencyStep() {
   const body = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
@@ -2545,24 +2665,16 @@ function renderEmergencyStep() {
 
     const list = document.createElement('div');
     list.setAttribute('role', 'list');
-    list.style.display = 'flex';
-    list.style.flexDirection = 'column';
-    list.style.gap = '.5rem';
+    list.className = 'em-list';
 
     state.eligible.forEach((shift, idx) => {
       const id = `emShift_${idx}`;
       const item = document.createElement('label');
       item.setAttribute('role', 'listitem');
-      item.style.border = '1px solid #222a36';
-      item.style.background = '#131926';
-      item.style.borderRadius = '10px';
-      item.style.padding = '.5rem .6rem';
-      item.style.display = 'flex';
-      item.style.alignItems = 'center';
-      item.style.gap = '.5rem';
+      item.className = 'em-row';
       item.innerHTML = `
         <input type="radio" name="emShift" id="${id}" value="${escapeHtml(shift.ymd || String(idx))}">
-        <div style="font-weight:700;">${escapeHtml(buildEmergencyShiftLabel(shift))}</div>
+        <div class="em-text"><div class="em-title">${escapeHtml(buildEmergencyShiftLabel(shift))}</div></div>
       `;
       item.querySelector('input')._shift = shift; // stash whole server object
       list.appendChild(item);
@@ -2581,61 +2693,47 @@ function renderEmergencyStep() {
   }
 
   else if (state.step === 'PICK_ISSUE') {
-  title.textContent = 'Please select your emergency';
+    title.textContent = 'Please select your emergency';
 
-  const s = state.selectedShift || {};
-  let allowed = [];
+    const s = state.selectedShift || {};
+    let allowed = [];
 
-  // 1) Start with server-declared allowed list (if present)
-  if (Array.isArray(s.allowed_issues) && s.allowed_issues.length) {
-    allowed = s.allowed_issues.map(x => String(x).toUpperCase());
-  } else if (Array.isArray(s.allowedActions) && s.allowedActions.length) {
-    allowed = s.allowedActions.map(x => String(x).toUpperCase());
-  }
+    // 1) Start with server-declared allowed list (if present)
+    if (Array.isArray(s.allowed_issues) && s.allowed_issues.length) {
+      allowed = s.allowed_issues.map(x => String(x).toUpperCase());
+    } else if (Array.isArray(s.allowedActions) && s.allowedActions.length) {
+      allowed = s.allowedActions.map(x => String(x).toUpperCase());
+    }
 
-  // 2) Merge in tolerant signals (DON'T replace — union instead)
-  const merged = new Set(allowed);
+    // 2) Merge in tolerant signals (DON'T replace — union instead)
+    const merged = new Set(allowed);
 
-  // Running Late should appear if server signalled *either* canRunLate
-  // or provided concrete late_options (even if not listed in allowed_issues)
-  if (s.canRunLate === true || (Array.isArray(s.late_options) && s.late_options.length > 0)) {
-    merged.add('RUNNING_LATE');
-  }
+    // Running Late should appear if server signalled *either* canRunLate
+    // or provided concrete late_options (even if not listed in allowed_issues)
+    if (s.canRunLate === true || (Array.isArray(s.late_options) && s.late_options.length > 0)) {
+      merged.add('RUNNING_LATE');
+    }
 
-  // Keep these tolerant merges too (backend sometimes sends booleans)
-  if (s.canCancel === true)     merged.add('CANNOT_ATTEND');
-  if (s.canLeaveEarly === true) merged.add('LEAVE_EARLY');
-  if (s.canDNA === true || s.canDna === true) merged.add('DNA');
+    // Keep these tolerant merges too (backend sometimes sends booleans)
+    if (s.canCancel === true)     merged.add('CANNOT_ATTEND');
+    if (s.canLeaveEarly === true) merged.add('LEAVE_EARLY');
+    if (s.canDNA === true || s.canDna === true) merged.add('DNA');
 
-  allowed = Array.from(merged);
+    allowed = Array.from(merged);
 
-  // (Optional: quick debug so you can verify in DevTools)
-  // console.log('[PICK_ISSUE] resolved allowed =', allowed, {
-  //   canRunLate: s.canRunLate, late_options_len: s.late_options?.length || 0
-  // });
-
-  const choices = document.createElement('div');
-  choices.setAttribute('role', 'group');
-  choices.style.display = 'flex';
-  choices.style.flexDirection = 'column';
-  choices.style.gap = '.5rem';
-
+    const choices = document.createElement('div');
+    choices.setAttribute('role', 'group');
+    choices.className = 'em-list';
 
     function addOption(key, label, help) {
       const id = `emIssue_${key}`;
       const row = document.createElement('label');
-      row.style.border = '1px solid #222a36';
-      row.style.background = '#131926';
-      row.style.borderRadius = '10px';
-      row.style.padding = '.5rem .6rem';
-      row.style.display = 'grid';
-      row.style.gridTemplateColumns = 'auto 1fr';
-      row.style.gap = '.6rem';
+      row.className = 'em-row';
       row.innerHTML = `
         <input type="radio" name="emIssue" id="${id}" value="${key}">
-        <div>
-          <div style="font-weight:800;">${escapeHtml(label)}</div>
-          ${help ? `<div class="muted" style="margin-top:.15rem">${escapeHtml(help)}</div>` : ''}
+        <div class="em-text">
+          <div class="em-title">${escapeHtml(label)}</div>
+          ${help ? `<div class="em-help" style="margin-top:.15rem">${escapeHtml(help)}</div>` : ''}
         </div>
       `;
       choices.appendChild(row);
@@ -2699,24 +2797,16 @@ function renderEmergencyStep() {
         optsWrap.innerHTML = '';
         const group = document.createElement('div');
         group.setAttribute('role', 'group');
-        group.style.display = 'flex';
-        group.style.flexDirection = 'column';
-        group.style.gap = '.5rem';
+        group.className = 'em-list';
 
         (state.lateOptions || []).forEach((opt, idx) => {
           const id = `lateOpt_${idx}`;
           const row = document.createElement('label');
-          row.style.border = '1px solid #222a36';
-          row.style.background = '#131926';
-          row.style.borderRadius = '10px';
-          row.style.padding = '.5rem .6rem';
-          row.style.display = 'flex';
-          row.style.alignItems = 'center';
-          row.style.gap = '.6rem';
+          row.className = 'em-row em-late-row';
           const labelText = typeof opt === 'string' ? opt : (opt.label || '');
           row.innerHTML = `
             <input type="radio" name="emLate" id="${id}" value="${escapeHtml(labelText)}">
-            <div style="font-weight:700;">${escapeHtml(labelText)}</div>
+            <div class="em-text"><div class="em-title">${escapeHtml(labelText)}</div></div>
           `;
           group.appendChild(row);
         });
@@ -2807,11 +2897,9 @@ function renderEmergencyStep() {
       timeWrap.appendChild(help);
 
       const rowNow = document.createElement('label');
-      rowNow.style.display = 'flex';
-      rowNow.style.alignItems = 'center';
-      rowNow.style.gap = '.5rem';
+      rowNow.className = 'em-row';
       rowNow.style.marginBottom = '.35rem';
-      rowNow.innerHTML = `<input type="radio" name="leaveTimeMode" value="NOW"> <div>NOW / ASAP</div>`;
+      rowNow.innerHTML = `<input type="radio" name="leaveTimeMode" value="NOW"> <div class="em-text">NOW / ASAP</div>`;
 
       const rowAt = document.createElement('div');
       rowAt.style.display = 'grid';
@@ -2820,10 +2908,11 @@ function renderEmergencyStep() {
       rowAt.style.gap = '.4rem';
 
       const atLabel = document.createElement('label');
-      atLabel.style.display = 'flex';
-      atLabel.style.alignItems = 'center';
-      atLabel.style.gap = '.5rem';
-      atLabel.innerHTML = `<input type="radio" name="leaveTimeMode" value="AT"> <div>At time:</div>`;
+      atLabel.className = 'em-row';
+      atLabel.style.padding = '0';
+      atLabel.style.border = '0';
+      atLabel.style.background = 'transparent';
+      atLabel.innerHTML = `<input type="radio" name="leaveTimeMode" value="AT"> <div class="em-text">At time:</div>`;
 
       const hh = document.createElement('input');
       hh.type = 'text';
@@ -2942,125 +3031,114 @@ function renderEmergencyStep() {
 
     // ───────────────────────── DNA ─────────────────────────
     else if (state.issueType === 'DNA') {
-  title.textContent = 'Who hasn’t arrived?';
+      title.textContent = 'Who hasn’t arrived?';
 
-  const s = state.selectedShift || {};
+      const s = state.selectedShift || {};
 
-  const peers =
-    (Array.isArray(s.cohort) && s.cohort) ||
-    (Array.isArray(s.cohort_peers) && s.cohort_peers) ||
-    (Array.isArray(s.peers) && s.peers) ||
-    (Array.isArray(s.shiftPeers) && s.shiftPeers) ||
-    [];
+      const peers =
+        (Array.isArray(s.cohort) && s.cohort) ||
+        (Array.isArray(s.cohort_peers) && s.cohort_peers) ||
+        (Array.isArray(s.peers) && s.peers) ||
+        (Array.isArray(s.shiftPeers) && s.shiftPeers) ||
+        [];
 
-  state.dnaOptions = Array.isArray(state.dnaOptions) && state.dnaOptions.length ? state.dnaOptions : peers;
+      state.dnaOptions = Array.isArray(state.dnaOptions) && state.dnaOptions.length ? state.dnaOptions : peers;
 
-  const info = document.createElement('div');
-  info.className = 'muted';
-  info.style.marginBottom = '.5rem';
-  info.textContent = 'Select the co-worker who has not arrived.';
-  body.appendChild(info);
+      const info = document.createElement('div');
+      info.className = 'muted';
+      info.style.marginBottom = '.5rem';
+      info.textContent = 'Select the co-worker who has not arrived.';
+      body.appendChild(info);
 
-  const list = document.createElement('div');
-  list.setAttribute('role', 'group');
-  list.style.display = 'flex';
-  list.style.flexDirection = 'column';
-  list.style.gap = '.5rem';
+      const list = document.createElement('div');
+      list.setAttribute('role', 'group');
+      list.className = 'em-list';
 
-  function getDisplayName(p) {
-    if (!p) return '';
-    if (p.displayName) return String(p.displayName);
-    const fn = p.firstName || p.firstname || '';
-    const ln = p.surname || p.lastName || p.lastname || p.last_name || '';
-    const nameKey = p.nameKey || '';
-    const full = [fn, ln].filter(Boolean).join(' ').trim();
-    return full || p.name || nameKey || '';
-  }
+      function getDisplayName(p) {
+        if (!p) return '';
+        if (p.displayName) return String(p.displayName);
+        const fn = p.firstName || p.firstname || '';
+        const ln = p.surname || p.lastName || p.lastname || p.last_name || '';
+        const nameKey = p.nameKey || '';
+        const full = [fn, ln].filter(Boolean).join(' ').trim();
+        return full || p.name || nameKey || '';
+      }
 
-  (state.dnaOptions || []).forEach((p, idx) => {
-    const id = `dnaOpt_${idx}`;
-    const name = getDisplayName(p);
-    const role = p.role || p.jobTitle || p.title || '';
-    const ms = p.msisdn07 || p.msisdn || p.mobile07 || p.mobile || null;
+      (state.dnaOptions || []).forEach((p, idx) => {
+        const id = `dnaOpt_${idx}`;
+        const name = getDisplayName(p);
+        const role = p.role || p.jobTitle || p.title || '';
+        const ms = p.msisdn07 || p.msisdn || p.mobile07 || p.mobile || null;
 
-    const row = document.createElement('label');
-    row.style.border = '1px solid #222a36';
-    row.style.background = '#131926';
-    row.style.borderRadius = '10px';
-    row.style.padding = '.5rem .6rem';
-    row.style.display = 'grid';
-    row.style.gridTemplateColumns = 'auto 1fr';
-    row.style.gap = '.6rem';
-    row.innerHTML = `
-      <input type="radio" name="dnaAbsentee" id="${id}" value="${escapeHtml(name)}">
-      <div>
-        <div style="font-weight:800;">${escapeHtml(name)}</div>
-        ${role ? `<div class="muted" style="margin-top:.15rem">${escapeHtml(role)}</div>` : ''}
-      </div>
-    `;
-    row.querySelector('input')._abs = { name, msisdn: ms || null };
-    list.appendChild(row);
-  });
+        const row = document.createElement('label');
+        row.className = 'em-row';
+        row.innerHTML = `
+          <input type="radio" name="dnaAbsentee" id="${id}" value="${escapeHtml(name)}">
+          <div class="em-text">
+            <div class="em-title">${escapeHtml(name)}</div>
+            ${role ? `<div class="em-help" style="margin-top:.15rem">${escapeHtml(role)}</div>` : ''}
+          </div>
+        `;
+        row.querySelector('input')._abs = { name, msisdn: ms || null };
+        list.appendChild(row);
+      });
 
-  if (!list.children.length) {
-    body.innerHTML = `<div class="muted">We can’t find your co-workers for this shift yet. Please go back and try again shortly.</div>`;
-    setFooter({ showCancel: true, cancelText: 'Back', showContinue: false });
-    return;
-  }
+      if (!list.children.length) {
+        body.innerHTML = `<div class="muted">We can’t find your co-workers for this shift yet. Please go back and try again shortly.</div>`;
+        setFooter({ showCancel: true, cancelText: 'Back', showContinue: false });
+        return;
+      }
 
-  body.appendChild(list);
+      body.appendChild(list);
 
-  // Instruction block (populated when absentee is selected)
-  const callInfo = document.createElement('div');
-  callInfo.className = 'muted';
-  callInfo.style.marginTop = '.6rem';
-  body.appendChild(callInfo);
-// Tried-calling checkbox
-const chkWrap = document.createElement('label');
-chkWrap.style.display = 'flex';
-chkWrap.style.alignItems = 'center';
-chkWrap.style.gap = '.5rem';
-chkWrap.style.marginTop = '.6rem';
-chkWrap.innerHTML = `<input type="checkbox" id="dnaTriedCalling"> <div>I tried calling them and could not reach them</div>`;
-body.appendChild(chkWrap);
+      // Instruction block (populated when absentee is selected)
+      const callInfo = document.createElement('div');
+      callInfo.className = 'em-note';
+      body.appendChild(callInfo);
 
-setFooter({ continueDisabled: true });
+      // Tried-calling checkbox
+      const chkWrap = document.createElement('label');
+      chkWrap.className = 'em-row';
+      chkWrap.style.marginTop = '.6rem';
+      chkWrap.innerHTML = `<input type="checkbox" id="dnaTriedCalling"> <div class="em-text">I tried calling them and could not reach them</div>`;
+      body.appendChild(chkWrap);
 
-const cont = document.getElementById('emergencyContinue');
-const chk = chkWrap.querySelector('#dnaTriedCalling');
+      setFooter({ continueDisabled: true });
 
+      const cont = document.getElementById('emergencyContinue');
+      const chk = chkWrap.querySelector('#dnaTriedCalling');
 
-function syncContinueGate() {
-  const chosen = body.querySelector('input[name="dnaAbsentee"]:checked');
-  if (chosen && chosen._abs) {
-    emergencyState.dnaAbsenteeName = chosen._abs.name || null;
-    emergencyState.dnaAbsenteeMsisdn = chosen._abs.msisdn || null;
+      function syncContinueGate() {
+        const chosen = body.querySelector('input[name="dnaAbsentee"]:checked');
+        if (chosen && chosen._abs) {
+          emergencyState.dnaAbsenteeName = chosen._abs.name || null;
+          emergencyState.dnaAbsenteeMsisdn = chosen._abs.msisdn || null;
 
-    const dispNum = formatMsisdn07Display(chosen._abs.msisdn);
-    if (dispNum) {
-      callInfo.textContent = `Please call ${chosen._abs.name} on ${dispNum}. If you can’t get a response after trying a couple of times, tick below and continue.`;
-    } else {
-      callInfo.textContent = `Please try calling ${chosen._abs.name} via your usual contact method. If you can’t get a response after trying a couple of times, tick below and continue.`;
+          const dispNum = formatMsisdn07Display(chosen._abs.msisdn);
+          if (dispNum) {
+            callInfo.textContent = `Please call ${chosen._abs.name} on ${dispNum}. If you can’t get a response after trying a couple of times, tick below and continue.`;
+          } else {
+            callInfo.textContent = `Please try calling ${chosen._abs.name} via your usual contact method. If you can’t get a response after trying a couple of times, tick below and continue.`;
+          }
+        }
+
+        const ok = !!chosen && !!chk.checked;
+        cont && (cont.disabled = !ok);
+        emergencyState.dnaTriedCalling = !!chk.checked;
+        emergencyState.confirmError = '';
+      }
+
+      body.addEventListener('change', (e) => {
+        if (e.target && (e.target.name === 'dnaAbsentee')) {
+          syncContinueGate();
+        }
+        if (e.target && e.target.id === 'dnaTriedCalling') {
+          syncContinueGate();
+        }
+      });
+
+      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
     }
-  }
-
-  const ok = !!chosen && !!chk.checked;
-  cont && (cont.disabled = !ok);
-  emergencyState.dnaTriedCalling = !!chk.checked;
-  emergencyState.confirmError = '';
-}
-
-  body.addEventListener('change', (e) => {
-    if (e.target && (e.target.name === 'dnaAbsentee')) {
-      syncContinueGate();
-    }
-    if (e.target && e.target.id === 'dnaTriedCalling') {
-      syncContinueGate();
-    }
-  });
-
-  cont && cont.addEventListener('click', handleEmergencyCollectDetails);
-}
 
   }
 
@@ -3107,8 +3185,138 @@ function syncContinueGate() {
     setFooter({ continueText: 'Yes, I am sure', cancelText: 'Cancel', continueDisabled: !!state.confirmError });
     const cont = document.getElementById('emergencyContinue');
     cont && cont.addEventListener('click', handleEmergencyConfirm);
+    
+
+  }
+  finalizeEmergencyStepLayout();
+}
+// === New helper functions for Emergency layout ===
+
+// 1) Inject a tiny, targeted stylesheet (idempotent)
+function injectEmergencyStyles() {
+  if (document.getElementById('emergencyStyles')) return;
+
+  const css = `
+    /* Container */
+    #emergencyOverlay .sheet-body { overflow:auto; }
+
+    /* Lists & rows */
+    .em-list {
+      display:flex; flex-direction:column; gap:.5rem;
+      max-width: min(780px, 96vw); margin: 0 auto;
+    }
+    .em-row {
+      display:grid; grid-template-columns:auto 1fr; align-items:center;
+      gap:.6rem; border:1px solid #222a36; background:#131926;
+      border-radius:10px; padding:.55rem .65rem;
+      width:100%;
+    }
+    .em-row > input[type="radio"],
+    .em-row > input[type="checkbox"] {
+      width:1.1rem; height:1.1rem; min-width:1.1rem; min-height:1.1rem;
+      margin:0; transform:none; /* keep controls compact */
+    }
+
+    /* Text wrapper keeps content on-grid */
+    .em-text { min-width:0; }
+    .em-title {
+      font-weight:800; line-height:1.28;
+      word-break:break-word; overflow-wrap:anywhere; hyphens:auto;
+    }
+    .em-help { color:#a7b0c0; line-height:1.25; }
+    .em-note { color:#a7b0c0; line-height:1.25; margin:.6rem 0; max-width:min(780px,96vw); margin-left:auto; margin-right:auto; }
+
+    /* Make long titles behave on narrow iPhones */
+    @media (max-width: 380px) {
+      .em-title { font-size:.95rem; }
+      .em-row { padding:.5rem .55rem; }
+    }
+
+    /* Keep the sheet within viewport width neatly */
+    #emergencyOverlay .sheet {
+      max-width: min(820px, 96vw);
+      margin-left:auto; margin-right:auto;
+    }
+  `;
+
+  const style = document.createElement('style');
+  style.id = 'emergencyStyles';
+  style.textContent = css;
+  document.head.appendChild(style);
+}
+
+// 2) Clamp the Emergency sheet/body to viewport (safe on resize; idempotent)
+function measureAndClampEmergencySheet() {
+  const overlay = document.getElementById('emergencyOverlay');
+  if (!overlay) return;
+
+  const sheet = overlay.querySelector('.sheet');
+  const body  = overlay.querySelector('.sheet-body');
+  if (sheet) {
+    sheet.style.maxWidth = 'min(820px, 96vw)';
+    sheet.style.marginLeft = 'auto';
+    sheet.style.marginRight = 'auto';
+  }
+  if (body) {
+    body.style.maxWidth = 'min(780px, 96vw)';
+    body.style.marginLeft = 'auto';
+    body.style.marginRight = 'auto';
   }
 }
+
+// 3) Normalize text blocks inside current Emergency step (safe to call after render)
+function normalizeEmergencyText() {
+  const overlay = document.getElementById('emergencyOverlay');
+  if (!overlay) return;
+
+  overlay.querySelectorAll('.em-title, .em-help, .em-text, .em-note').forEach(el => {
+    el.style.whiteSpace = 'normal';
+    el.style.wordBreak = 'break-word';
+    el.style.overflowWrap = 'anywhere';
+    el.style.hyphens = 'auto';
+  });
+}
+
+// 4) Apply list layout tweaks (compact radios/checkboxes, tidy alignment)
+function applyEmergencyListLayout() {
+  const overlay = document.getElementById('emergencyOverlay');
+  if (!overlay) return;
+
+  overlay.querySelectorAll('.em-row > input[type="radio"], .em-row > input[type="checkbox"]').forEach(inp => {
+    inp.style.width = '1.1rem';
+    inp.style.height = '1.1rem';
+    inp.style.minWidth = '1.1rem';
+    inp.style.minHeight = '1.1rem';
+    inp.style.margin = '0';
+  });
+
+  // Ensure text cell aligns and can wrap neatly
+  overlay.querySelectorAll('.em-row .em-text').forEach(div => {
+    div.style.alignSelf = 'center';
+    div.style.minWidth = '0';
+  });
+}
+
+// 5) Scroll the Emergency body to top (useful when switching steps)
+function scrollEmergencyToTop() {
+  const body = document.querySelector('#emergencyOverlay .sheet-body');
+  if (body) body.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+// 6) Hook for resize/orientation changes (optional; safe to call)
+function onEmergencyResize() {
+  measureAndClampEmergencySheet();
+}
+
+// (Optional) one-liner to run after each step render:
+function finalizeEmergencyStepLayout() {
+  injectEmergencyStyles();
+  measureAndClampEmergencySheet();
+  normalizeEmergencyText();
+  applyEmergencyListLayout();
+  scrollEmergencyToTop();
+}
+
 
 
 
