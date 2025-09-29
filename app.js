@@ -2331,8 +2331,9 @@ function mapServerErrorToMessage(err) {
 
 /** Call at the end of Refresh button flow to re-check eligibility. */
 async function onRefreshClickForEmergency() {
-  await refreshEmergencyEligibility({ silent: true });
+  await refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true });
 }
+
 
 
 /* =========================
@@ -2543,7 +2544,6 @@ function syncEmergencyEligibilityUI(eligible) {
     } catch {}
   }
 }
-
 function wireEmergencyButton() {
   const btn = document.getElementById('emergencyBtn');
   if (!btn) return;
@@ -2551,39 +2551,46 @@ function wireEmergencyButton() {
   const clone = btn.cloneNode(true);
   btn.replaceWith(clone);
 
-  // keep our cache in sync with the live node
   els.emergencyBtn = document.getElementById('emergencyBtn');
 
-  // prevent any parent/neighbor listeners from seeing this click
+  // Ensure it’s fully clickable (no leftover busy/disabled state)
+  setEmergencyButtonBusy(false);
+
   els.emergencyBtn.addEventListener('click', (e) => {
     e.preventDefault();
     e.stopPropagation();
     e.stopImmediatePropagation();
-    if (els.emergencyBtn.dataset.busy === '1') return;
     openEmergencyOverlay();
   });
 }
+
 // =========================
 // SERVER-AUTHORITATIVE FLOW
 // =========================
 
-async function refreshEmergencyEligibility({ silent = false } = {}) {
+async function refreshEmergencyEligibility({ silent = false, hideDuringRefresh = true } = {}) {
+  if (hideDuringRefresh) setEmergencyButtonBusy(true);
+
   const { ok, eligible, error } = await apiGetEmergencyWindow();
+
   if (!ok) {
-    // Fail soft: clear caches, hide button, keep app usable
     emergencyEligibilityCache = null;
     window._emergencyEligibleShifts = [];
-    syncEmergencyButtonVisibility([]);
+    try { syncEmergencyButtonVisibility([]); } catch {}
     try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI([]); } catch {}
     if (!silent) showToast(mapServerErrorToMessage(error));
+    setEmergencyButtonBusy(false);           // un-busy, will remain hidden by visibility sync above
     return;
   }
-  // Cache the entire server payload once; no client decisions
+
   emergencyEligibilityCache = { eligible };
   window._emergencyEligibleShifts = eligible;
-  syncEmergencyButtonVisibility(eligible);
+  try { syncEmergencyButtonVisibility(eligible); } catch {}
   try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI(eligible); } catch {}
+
+  setEmergencyButtonBusy(false);             // un-busy; visibility now reflects latest eligibility
 }
+
 
 // ───────────────────────── CHANGED ─────────────────────────
 // ───────────────────────── CHANGED ─────────────────────────
@@ -2591,32 +2598,30 @@ async function refreshEmergencyEligibility({ silent = false } = {}) {
 async function openEmergencyOverlay() {
   if (isBlockingOverlayOpen()) return;
 
-  // Only open if eligibility already exists (button is visible only in that case anyway)
-  const haveEligible =
-    emergencyEligibilityCache &&
+  // The button should only be visible if we *already* have eligibility.
+  const haveEligible = !!(emergencyEligibilityCache &&
     Array.isArray(emergencyEligibilityCache.eligible) &&
-    emergencyEligibilityCache.eligible.length > 0;
+    emergencyEligibilityCache.eligible.length);
 
   if (!haveEligible) {
-    // Ensure a high-priority background fetch; overlay stays closed
+    // Defensive: if somehow clicked while not eligible, just soft prompt and refresh.
     prefetchEmergencyEligibility({ priority: 'high' }).catch(() => {});
-    try { showToast('No eligible shifts right now.'); } catch {}
+    showToast('No eligible shifts right now.');
     return;
   }
 
   ensureEmergencyOverlay();
-  const btn = document.getElementById('emergencyBtn');
-  if (btn) { btn.dataset.busy = '1'; btn.style.opacity = '.9'; btn.style.pointerEvents = 'none'; }
 
+  // Make it feel snappy but don’t require a second click later.
+  setEmergencyButtonBusy(true);
   try {
     resetEmergencyState();
     emergencyState.eligible = emergencyEligibilityCache.eligible || [];
     emergencyState.step = 'PICK_SHIFT';
-
     openOverlay('emergencyOverlay', '#emergencyClose');
     renderEmergencyStep();
   } finally {
-    if (btn) { delete btn.dataset.busy; btn.style.opacity = ''; btn.style.pointerEvents = ''; }
+    setEmergencyButtonBusy(false);
   }
 }
 
@@ -3635,37 +3640,36 @@ async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTime
     bodyEl.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
     footer.innerHTML = '';
 
-    const x = document.getElementById('emergencyClose');
-    if (x) {
-      const newX = x.cloneNode(true);
-      x.parentNode.replaceChild(newX, x);
-      newX.addEventListener('click', () => closeEmergencyOverlay(true));
-    }
+    // header X
+const x = document.getElementById('emergencyClose');
+if (x) {
+  const newX = x.cloneNode(true);
+  x.parentNode.replaceChild(newX, x);
+  newX.addEventListener('click', () => closeEmergencyOverlay(true));
+}
+const close = document.createElement('button');
+close.type = 'button';
+close.textContent = 'Close';
+close.className = 'menu-item';
+close.style.border = '1px solid #2a3446';
+close.addEventListener('click', () => closeEmergencyOverlay(true));
+footer.appendChild(close);
 
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.textContent = 'Close';
-    close.className = 'menu-item';
-    close.style.border = '1px solid #2a3446';
-    close.addEventListener('click', () => closeEmergencyOverlay(true));
-    footer.appendChild(close);
+// Immediately refresh eligibility (button disappears during refresh)
+refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
+
   } finally {
     hideLoading();
   }
 }
 
-
-function closeEmergencyOverlay(reload = false) {
+function closeEmergencyOverlay(recheck = true) {
   closeOverlay('emergencyOverlay', /*force*/true);
   emergencyState = null;
 
-  if (reload === true) {
-    // Guard against multiple rapid clicks
-    if (!window.__reloadingFromEmergency) {
-      window.__reloadingFromEmergency = true;
-      // Allow overlay close animation to finish before reload
-      setTimeout(() => { window.location.reload(); }, 150);
-    }
+  // Only recheck the emergency window; do NOT reload tiles/page
+  if (recheck) {
+    refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
   }
 }
 
@@ -3714,20 +3718,24 @@ async function submitEmergencyRunningLate(ctx, label) {
     footer.innerHTML = '';
 
     // Make the header ✕ (close) also trigger a reload after success
-    const x = document.getElementById('emergencyClose');
-    if (x) {
-      const newX = x.cloneNode(true);
-      x.parentNode.replaceChild(newX, x);
-      newX.addEventListener('click', () => closeEmergencyOverlay(true));
-    }
+   // header X
+const x = document.getElementById('emergencyClose');
+if (x) {
+  const newX = x.cloneNode(true);
+  x.parentNode.replaceChild(newX, x);
+  newX.addEventListener('click', () => closeEmergencyOverlay(true));
+}
+const close = document.createElement('button');
+close.type = 'button';
+close.textContent = 'Close';
+close.className = 'menu-item';
+close.style.border = '1px solid #2a3446';
+close.addEventListener('click', () => closeEmergencyOverlay(true));
+footer.appendChild(close);
 
-    const close = document.createElement('button');
-    close.type = 'button';
-    close.textContent = 'Close';
-    close.className = 'menu-item';
-    close.style.border = '1px solid #2a3446';
-    close.addEventListener('click', () => closeEmergencyOverlay(true));
-    footer.appendChild(close);
+// Immediately refresh eligibility (button disappears during refresh)
+refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
+
   } finally {
     hideLoading();
   }
@@ -3780,16 +3788,19 @@ async function apiPostRunningLatePreview(shiftOrContext, etaLabel) {
 // ───────────────────────── CHANGED ─────────────────────────
 function updateEmergencyButtonFromCache() {
   try {
+    const btn = document.getElementById('emergencyBtn');
+    if (!btn) return;
     const hasEligible = !!(emergencyEligibilityCache &&
                            Array.isArray(emergencyEligibilityCache.eligible) &&
                            emergencyEligibilityCache.eligible.length);
-    const btn = document.getElementById('emergencyBtn'); // always fresh
-    if (btn) {
-      btn.hidden   = !hasEligible;
-      btn.disabled = !hasEligible;
-    }
+    // Clear any stale busy visuals
+    setEmergencyButtonBusy(false);
+
+    btn.hidden   = !hasEligible;
+    btn.disabled = !hasEligible;
   } catch {}
 }
+
 
 // ───────────────────────── NEW orchestrator ─────────────────────────
 // Centralised refresh: invalidate caches, then call loadFromServer() once.
@@ -3805,6 +3816,25 @@ async function refreshAppState({ force = true } = {}) {
   prefetchEmergencyEligibility().catch(() => {});
 
   return out;
+}
+
+function setEmergencyButtonBusy(isBusy) {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+  if (isBusy) {
+    btn.hidden = true;          // disappear during refresh
+    btn.disabled = true;
+    btn.dataset.busy = '1';
+    btn.setAttribute('aria-busy', 'true');
+    btn.style.pointerEvents = 'none';
+    btn.style.opacity = '.9';
+  } else {
+    delete btn.dataset.busy;
+    btn.removeAttribute('aria-busy');
+    btn.style.pointerEvents = '';
+    btn.style.opacity = '';
+    // visibility (hidden/disabled) will be set by updateEmergencyButtonFromCache()
+  }
 }
 
 function sizeGrid() {
