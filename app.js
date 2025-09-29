@@ -6,6 +6,13 @@ const API_SHARED_TOKEN = 't9x_93HDa8nL0PQ6RvzX4wqZ'; // <-- REPLACE
 const PENDING_LABEL_DEFAULT = 'PLEASE PROVIDE YOUR AVAILABILITY';
 const PENDING_LABEL_WRAPPED = 'NOT SURE OF MY AVAILABILITY YET';
 
+// 30s poll (coalesces)
+const DRAFT_KEY = 'rota_avail_draft_v1';
+const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
+const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1';
+const LAST_EMAIL_KEY = 'rota_last_login_email_v1';
+const REFRESH_SNOOZE_UNTIL_KEY = 'rota_refresh_snooze_until_v1'; // ← hoisted
+
 const STATUS_ORDER = [
   PENDING_LABEL_DEFAULT,
   'NOT AVAILABLE',
@@ -87,10 +94,6 @@ let draft = {};               // ymd -> status LABEL (diffs from baseline)
 let identity = {};            // { msisdn?:string }
 let lastHiddenAt = null;      // timestamp when page becomes hidden
 
-const DRAFT_KEY = 'rota_avail_draft_v1';
-const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
-const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1';
-const LAST_EMAIL_KEY = 'rota_last_login_email_v1';     // for prefilling login/forgot
 // Note: we do NOT store passwords. Password managers handle that with biometrics.
 
 // Per-session memory of tiles the user has tapped at least once this session.
@@ -556,20 +559,30 @@ function ensureLoadingOverlay() {
 
   // Backdrop click → only if dismissible
   overlay.addEventListener('click', (e) => {
-    if (e.target !== overlay) return;
-    if (!cfg.dismissible) { e.stopPropagation(); return; }
+  if (e.target !== overlay) return;
+  if (!cfg.dismissible) { e.stopPropagation(); return; }
+  if (overlayId === 'emergencyOverlay') {
+    closeEmergencyOverlay(true); // close + recheck emergency eligibility
+  } else {
     closeOverlay(overlayId);
-  });
+  }
+});
+
 
   // Close button → only wired if exists and dismissible
   if (closeId) {
     const btn = document.getElementById(closeId);
-    if (btn) {
-      btn.addEventListener('click', () => {
-        if (!cfg.dismissible) return;
-        closeOverlay(overlayId);
-      });
+   if (btn) {
+  btn.addEventListener('click', () => {
+    if (!cfg.dismissible) return;
+    if (overlayId === 'emergencyOverlay') {
+      closeEmergencyOverlay(true); // close + recheck emergency eligibility
+    } else {
+      closeOverlay(overlayId);
     }
+  });
+}
+
   }
 });
 
@@ -588,7 +601,14 @@ document.addEventListener('keydown', (e) => {
   ].forEach(id => {
     const ov = document.getElementById(id);
     const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
-    if (ov && ov.classList.contains('show') && cfg.dismissible) closeOverlay(id);
+    if (ov && ov.classList.contains('show') && cfg.dismissible) {
+  if (id === 'emergencyOverlay') {
+    closeEmergencyOverlay(true); // close + recheck emergency eligibility
+  } else {
+    closeOverlay(id);
+  }
+}
+
   });
 });
 
@@ -819,6 +839,7 @@ document.addEventListener('DOMContentLoaded', () => {
 });
 // ───────────────────────── CHANGED ─────────────────────────
 // Single, minimal place to refresh on visibility change.
+// ── Resume logic (unchanged) + periodic visible refresh ──
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     cancelSubmitNudge();
@@ -830,24 +851,29 @@ document.addEventListener('visibilitychange', () => {
   const wasAwayLong = lastHiddenAt && (Date.now() - lastHiddenAt > 3 * 60 * 1000);
   lastHiddenAt = null;
 
-  // If there were local edits, clear them consistently (same as before)
+  // Always refresh the Emergency eligibility/button on resume (non-blocking)
+  refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
+
+  // Clear local edits after long away
   if (wasAwayLong && Object.keys(draft).length) {
     draft = {};
     persistDraft();
     showToast('Unsaved changes were cleared after inactivity.');
   }
 
-  // Only one path to refresh: the orchestrator. Coalesces via loadFromServer() guard.
-  const needsRefresh = wasAwayLong || !Object.keys(draft).length;
-  if (needsRefresh) {
-    showLoading();
-    refreshAppState({ force: true })
-      .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
-      .finally(() => { hideLoading(); });
-  }
+  // Only refresh baseline/tiles if away ≥ 3 minutes and there are no local edits
+  // Only refresh baseline/tiles if away ≥ 3 minutes, no local edits, and overlay not open
+const hasDraft = Object.keys(draft).length > 0;
+if (!hasDraft && wasAwayLong && !emergencyOpen()) {
+  showLoading();
+  refreshAppState({ force: true })
+    .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
+    .finally(() => { hideLoading(); });
+}
 
-  if (Object.keys(draft).length) scheduleSubmitNudge();
+  if (hasDraft) scheduleSubmitNudge();
 });
+
 
 
 // ---------- Helpers ----------
@@ -2341,7 +2367,6 @@ async function onRefreshClickForEmergency() {
  * ========================= */
 
 /** Lazily create the Emergency overlay DOM (uses existing overlay system). */
-
 function ensureEmergencyOverlay() {
   if (document.getElementById('emergencyOverlay')) return;
 
@@ -2484,11 +2509,11 @@ function ensureEmergencyOverlay() {
 
   // Close button — emergency overlay is dismissible
   const closeBtn = overlay.querySelector('#emergencyClose');
-  if (closeBtn) closeBtn.addEventListener('click', () => closeEmergencyOverlay(false));
+  if (closeBtn) closeBtn.addEventListener('click', () => closeEmergencyOverlay(true)); // <-- recheck on close
 
   // Backdrop click to close (consistent with dismissible overlays)
   overlay.addEventListener('click', (e) => {
-    if (e.target === overlay) closeEmergencyOverlay(false);
+    if (e.target === overlay) closeEmergencyOverlay(true); // <-- recheck on close
   });
 }
 
@@ -2641,7 +2666,8 @@ function renderEmergencyStep() {
       cancel.textContent = cancelText;
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', () => closeEmergencyOverlay(false));
+      cancel.addEventListener('click', () => closeEmergencyOverlay(true));
+
       footer.appendChild(cancel);
     }
     if (showContinue) {
@@ -3619,7 +3645,8 @@ async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTime
       cancel.textContent = 'Cancel';
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', () => closeEmergencyOverlay(false));
+     cancel.addEventListener('click', () => closeEmergencyOverlay(true)); // close + recheck eligibility
+
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.textContent = 'Try again';
@@ -3662,15 +3689,30 @@ refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() 
     hideLoading();
   }
 }
-
 function closeEmergencyOverlay(recheck = true) {
+  // Snooze refresh by +1 min, but never beyond (lastLoaded + 3 min)
+  try {
+    const lastAt = localStorage.getItem(LAST_LOADED_KEY);
+    const threeMinCap = lastAt ? (Date.parse(lastAt) + 3 * 60 * 1000) : (Date.now() + 60 * 1000);
+    const want = Date.now() + 60 * 1000; // +1 minute
+    const snoozeUntil = Math.min(want, threeMinCap);
+    if (snoozeUntil > Date.now()) {
+      localStorage.setItem(REFRESH_SNOOZE_UNTIL_KEY, String(snoozeUntil));
+    }
+  } catch {}
+
   closeOverlay('emergencyOverlay', /*force*/true);
   emergencyState = null;
 
-  // Only recheck the emergency window; do NOT reload tiles/page
   if (recheck) {
     refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
   }
+}
+
+// Simple helper used by polling/guards
+function emergencyOpen() {
+  const ov = document.getElementById('emergencyOverlay');
+  return !!(ov && ov.classList.contains('show'));
 }
 
 async function submitEmergencyRunningLate(ctx, label) {
@@ -3702,7 +3744,8 @@ async function submitEmergencyRunningLate(ctx, label) {
       cancel.textContent = 'Cancel';
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-      cancel.addEventListener('click', () => closeEmergencyOverlay(false));
+     cancel.addEventListener('click', () => closeEmergencyOverlay(true)); // close + recheck eligibility
+
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.textContent = 'Try again';
@@ -3805,18 +3848,38 @@ function updateEmergencyButtonFromCache() {
 // ───────────────────────── NEW orchestrator ─────────────────────────
 // Centralised refresh: invalidate caches, then call loadFromServer() once.
 // ───────────────────────── CHANGED ─────────────────────────
-async function refreshAppState({ force = true } = {}) {
-  // Invalidate emergency cache so we’ll refresh it (in the background) after baseline
+// Make coalescing the default
+async function refreshAppState({ force = false } = {}) {
   emergencyEligibilityCache = null;
-
-  // Refresh baseline (single-flight inside loadFromServer)
   const out = await loadFromServer({ force });
-
-  // Fire-and-forget: refresh emergency eligibility in background after baseline refresh
   prefetchEmergencyEligibility().catch(() => {});
-
   return out;
 }
+
+
+
+setInterval(() => {
+  if (document.visibilityState !== 'visible') return;
+  if (emergencyOpen()) return;
+  if (Object.keys(draft).length) return;
+
+  // Respect post-emergency snooze, but let it expire naturally
+  const snoozeUntil = Number(localStorage.getItem(REFRESH_SNOOZE_UNTIL_KEY) || 0);
+  if (snoozeUntil) {
+    if (Date.now() < snoozeUntil) return;
+    // expired — clean up
+    localStorage.removeItem(REFRESH_SNOOZE_UNTIL_KEY);
+  }
+
+  const lastAt = localStorage.getItem(LAST_LOADED_KEY);
+  if (lastAt && (Date.now() - Date.parse(lastAt) >= 3 * 60 * 1000)) {
+    refreshAppState({ /* force:false */ }).catch(() => {});
+  }
+}, 30 * 1000);
+
+
+// Manual refresh stays forceful
+
 
 function setEmergencyButtonBusy(isBusy) {
   const btn = document.getElementById('emergencyBtn');
