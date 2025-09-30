@@ -1402,15 +1402,29 @@ function maybeShowWelcome() {
 
 // ---------- Auth overlays logic ----------
 function openLoginOverlay() {
-  if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
+  // Don’t open on top of blocking flows (reset/alert/login already open)
+  if (isBlockingOverlayOpen && isBlockingOverlayOpen()) return;
+
+  // If we already have a persisted identity, avoid popping Login over a signed-in UI.
+  // Also clear any lingering #/login so router won’t bring it back.
+  if (identity && identity.msisdn) {
+    try {
+      if (/^#\/login/.test(location.hash)) {
+        history.replaceState(null, '', location.pathname + location.search);
+      }
+    } catch {}
+    return;
+  }
+
+  // Normal login open path (pre-fill remembered email)
   const email = getRememberedEmail();
   const le = document.getElementById('loginEmail');
-  const lp = document.getElementById('loginPassword');
   const lerr = document.getElementById('loginErr');
   if (le) le.value = email;
   if (lerr) lerr.textContent = '';
   openOverlay('loginOverlay', email ? '#loginPassword' : '#loginEmail');
 }
+
 function openForgotOverlay() {
   if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
   const fe = document.getElementById('forgotEmail');
@@ -1442,7 +1456,6 @@ function openResetOverlay() {
     });
   }
 }
-
 function wireAuthForms() {
   // Login
   const lf  = document.getElementById('loginForm');
@@ -1466,36 +1479,56 @@ function wireAuthForms() {
         lerr.textContent = (msg === 'INVALID_CREDENTIALS') ? 'Email or password is incorrect.' : (msg || 'Sign-in failed.');
         return;
       }
+
+      // Persist identity (stateless pattern) & remembered email; store creds (Chrome/Android)
       identity = { msisdn: json.msisdn }; saveIdentity(identity);
       rememberEmailLocal(email);
-      await storeCredentialIfSupported(email, pw); // Chrome/Android
+      await storeCredentialIfSupported(email, pw);
 
-      // Clear password field
+      // Clear password field for safety
       lp.value = '';
-      // *** FIX: force-close the blocking login overlay after successful auth ***
+
+      // Force-close the blocking Login overlay so it cannot “sit” over a signed-in UI
       closeOverlay('loginOverlay', /* force */ true);
 
+      // IMPORTANT: clear any #/login hash so router can’t reopen it on next route/change
+      try {
+        if (/^#\/login/.test(location.hash)) {
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+      } catch {}
+
+      // Hard refresh baseline as an authenticated user (coalesced inside loadFromServer)
       await loadFromServer({ force: true });
+
+      // (Optional but harmless) refresh emergency eligibility silently
+      try { refreshEmergencyEligibility({ silent: true }); } catch {}
     } finally {
       hideLoading(); ls.disabled = false;
     }
   });
-  lfg?.addEventListener('click', () => { closeOverlay('loginOverlay', /* force */ true); openForgotOverlay(); });
+
+  // “Forgot password” from login
+  lfg?.addEventListener('click', () => {
+    closeOverlay('loginOverlay', /* force */ true);
+    openForgotOverlay();
+  });
 
   // Forgot
   const ff   = document.getElementById('forgotForm');
   const fe   = document.getElementById('forgotEmail');
   const fs   = document.getElementById('forgotSubmit');
   const fmsg = document.getElementById('forgotMsg');
+
   ff?.addEventListener('submit', async (e) => {
     e.preventDefault();
     const email = (fe.value || '').trim().toLowerCase();
     if (!email) return;
     try {
       fs.disabled = true; showLoading('Sending link...');
-      await apiForgotPassword(email); // always ok UX (neutral; no enumeration)
+      await apiForgotPassword(email); // neutral UX
       rememberEmailLocal(email);
-      // *** Requested exact wording for unauthenticated flow ***
+      // Requested wording
       fmsg.textContent = 'Password Reset request has been sent by email if email exists';
       setTimeout(() => { closeOverlay('forgotOverlay'); openLoginOverlay(); }, 1200);
     } finally {
@@ -1515,37 +1548,29 @@ function wireAuthForms() {
   function meetsPolicy(pw) {
     return !!(pw && pw.length >= 8 && /[a-z]/.test(pw) && /[A-Z]/.test(pw) && /[0-9]/.test(pw));
   }
-  function same(p, c) {
-    return p === c && p.length > 0;
-  }
+  function same(p, c) { return p === c && p.length > 0; }
+
   function validateReset() {
     const k = new URLSearchParams(location.search).get('k') || '';
     const p = rp ? rp.value : '';
     const c = rc ? rc.value : '';
-    let ok = true;
-    let msg = '';
+    let ok = true, msg = '';
 
     if (!k) {
-      ok = false;
-      msg = 'This reset link is invalid or missing.';
+      ok = false; msg = 'This reset link is invalid or missing.';
     } else if (!meetsPolicy(p)) {
-      ok = false;
-      msg = 'Use at least 8 chars with uppercase, lowercase, and a number.';
+      ok = false; msg = 'Use at least 8 chars with uppercase, lowercase, and a number.';
     } else if (!same(p, c)) {
-      ok = false;
-      msg = "Passwords don't match.";
+      ok = false; msg = "Passwords don't match.";
     }
-
     if (rerr) rerr.textContent = msg;
     if (rs) rs.disabled = !ok;
     return ok;
   }
 
-  // Live validation on input
   rp?.addEventListener('input', validateReset);
   rc?.addEventListener('input', validateReset);
 
-  // Eye toggles
   pwEye?.addEventListener('click', () => {
     const isText = rp.type === 'text';
     rp.type = isText ? 'password' : 'text';
@@ -1563,7 +1588,6 @@ function wireAuthForms() {
     rc.focus({ preventScroll: true });
   });
 
-  // Submit handler
   rf?.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!validateReset()) return;
@@ -1571,7 +1595,7 @@ function wireAuthForms() {
     const pw = rp.value || '';
     const k = new URLSearchParams(location.search).get('k') || '';
     if (!k) {
-      // Defensive: should be handled earlier
+      // Defensive: already handled above, but keep UX smooth
       closeOverlay('resetOverlay', /*force*/true);
       showBlockingAlert('This reset link is invalid or missing.', () => {
         const clean = location.pathname + (location.hash || '');
@@ -1587,7 +1611,6 @@ function wireAuthForms() {
       if (!res.ok || !json || json.ok === false) {
         const msg = (json && json.error) || `HTTP ${res.status}`;
         if (msg === 'INVALID_OR_EXPIRED_RESET') {
-          // Close reset → blocking OK → clean URL → to Login
           closeOverlay('resetOverlay', /*force*/true);
           showBlockingAlert('This link has expired. Please request a new one.', () => {
             const clean = location.pathname + (location.hash || '');
@@ -1601,11 +1624,12 @@ function wireAuthForms() {
         }
         return;
       }
-      // Strip ?k=… from URL (reset is one-time)
+
+      // Strip ?k=… from URL (one-time link)
       const clean = location.pathname + (location.hash || '');
       history.replaceState(null, '', clean);
 
-      // Force-close non-dismissable overlay after success
+      // Close reset, prompt sign-in
       closeOverlay('resetOverlay', /* force */ true);
       showToast('Password updated. Please sign in.');
       openLoginOverlay();
@@ -1619,6 +1643,7 @@ function wireAuthForms() {
     }
   });
 }
+
 // ---------- Credential Management API (Android/Chrome) ----------
 async function storeCredentialIfSupported(email, password) {
   try {
@@ -1637,6 +1662,17 @@ async function tryAutoLoginViaCredentialsAPI() {
       if (res.ok && json && json.ok && json.msisdn) {
         identity = { msisdn: json.msisdn }; saveIdentity(identity);
         rememberEmailLocal(cred.id);
+
+        // In case a stale #/login was in the URL, remove it to prevent re-opening.
+        try {
+          if (/^#\/(login|forgot|reset)/.test(location.hash || '')) {
+            history.replaceState(null, '', location.pathname + (location.search || ''));
+          }
+        } catch {}
+
+        // If a login overlay was open for any reason, force close it.
+        try { closeOverlay('loginOverlay', /*force*/ true); } catch {}
+
         await loadFromServer({ force: true });
         return true;
       }
@@ -2080,6 +2116,13 @@ async function loadFromServer({ force = false } = {}) {
 
       // Keep button visible; eligibility refresh will decide final state
       updateEmergencyButtonFromCache();
+
+      // If we’re signed in, scrub any auth-related hash to prevent a future reload from reopening login.
+      try {
+        if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
+          history.replaceState(null, '', location.pathname + (location.search || ''));
+        }
+      } catch {}
     } finally {
       if (showedLoader) hideLoading();
     }
@@ -4445,9 +4488,16 @@ async function tilesResumeHandler() {
 // Tiles driver only. Do nothing while Emergency overlay is open.
 // Emergency eligibility is handled by the cadence chain, not here.
 async function refreshAppState({ force = false } = {}) {
+  // Don’t refresh underneath the Emergency flow or any blocking modal.
   if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
-  return loadFromServer({ force });
+  if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen()) return;
+
+  // Funnel through the single-flight chain to avoid races (pull-to-refresh, visibility, manual).
+  // This mirrors the old “one inflight” pattern and prevents a stray call from deciding
+  // “no identity yet → open login” while another succeeds.
+  return startTilesThenEmergencyChain({ force });
 }
+
 
 
 
@@ -4499,23 +4549,72 @@ function sizeGrid() {
 }
 
 // ---------- Simple router for auth flows ----------
-function routeFromURL() {
-  const hash = location.hash || '';
-  const hasMsisdn = !!(identity && identity.msisdn);
+async function init() {
+  // Rehydrate identity (do NOT open login here)
+  identity = loadSavedIdentity();
 
-  // If a blocking overlay is active, ignore route changes
-  if (isBlockingOverlayOpen()) return;
+  // Chrome + furniture
+  ensureLoadingOverlay();
+  ensureMenu();
+  ensureEmergencyButton();
 
-  // If a reset token is present in the QUERY (?k=...), show reset
-  const k = new URLSearchParams(location.search).get('k');
-  if (k) { openResetOverlay(); return; }
+  // If we arrived on a password-reset link, open that flow (non-dismissable)
+  if (new URLSearchParams(location.search).has('k')) {
+    openResetOverlay();
+  }
 
-  if (/^#\/login/.test(hash))  { openLoginOverlay(); return; }
-  if (/^#\/forgot/.test(hash)) { openForgotOverlay(); return; }
-  if (/^#\/reset/.test(hash))  { openResetOverlay(); return; }
+  // Restore any local draft
+  loadDraft();
 
-  if (!hasMsisdn) { openLoginOverlay(); return; }
+  // Try silent auto-login (Credentials API) if we don't have an identity.
+  // Do NOT open login here; let loadFromServer() decide from the server.
+  let autoOK = false;
+  if (!identity.msisdn) {
+    try { if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; } } catch {}
+    try { autoOK = await tryAutoLoginViaCredentialsAPI(); } catch {}
+  }
+
+  try {
+    if (!autoOK) {
+      // Show loader only on true cold start (handled inside loadFromServer)
+      await loadFromServer({ force: true });
+    }
+    // Kick emergency eligibility quietly in background
+    try { refreshEmergencyEligibility({ silent: true }); } catch {}
+  } catch (e) {
+    // Only surface non-auth failures; auth failures show login inside loadFromServer
+    if (String(e && e.message) !== '__AUTH_STOP__') {
+      showToast('Load failed: ' + (e.message || e), 5000);
+    }
+  } finally {
+    sizeGrid();
+    equalizeTileHeights({ reset: true });
+
+    // Ensure the Emergency button exists and is wired (idempotent)
+    ensureEmergencyButton();
+    try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
+
+    ensurePastShiftsButton();
+  }
+
+  // If we’re signed in, scrub any leftover #/login|#/forgot|#/reset hash so a reload doesn’t reopen the modal.
+  try {
+    if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
+      history.replaceState(null, '', location.pathname + (location.search || ''));
+    }
+  } catch {}
+
+  // Wire Refresh to the unified chain (no premature login)
+  if (els.refreshBtn && !els.refreshBtn.__wired) {
+    els.refreshBtn.__wired = true;
+    els.refreshBtn.addEventListener('click', () => {
+      startTilesThenEmergencyChain({ force: true }).catch(() => {});
+    });
+  }
+
+  routeFromURL && routeFromURL();
 }
+
 window.addEventListener('hashchange', routeFromURL);
 
 // ---------- Boot ----------
@@ -4571,6 +4670,13 @@ async function init() {
     ensurePastShiftsButton();
   }
 
+  // If we’re signed in, scrub any leftover #/login|#/forgot|#/reset hash so a reload doesn’t reopen the modal.
+  try {
+    if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
+      history.replaceState(null, '', location.pathname + (location.search || ''));
+    }
+  } catch {}
+
   // Wire Refresh to the unified chain (no premature login)
   if (els.refreshBtn && !els.refreshBtn.__wired) {
     els.refreshBtn.__wired = true;
@@ -4580,13 +4686,6 @@ async function init() {
   }
 
   routeFromURL && routeFromURL();
-}
-
-// Ensure init runs exactly once on load.
-if (document.readyState !== 'loading') {
-  init();
-} else {
-  window.addEventListener('DOMContentLoaded', init, { once: true });
 }
 
 
