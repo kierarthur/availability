@@ -635,6 +635,45 @@ function openOverlay(overlayId, focusSel) {
   // When blocking is active, prevent other overlays from opening later
   trapFocus(overlay);
 }
+// Close Emergency overlay, then either Tiles→Emergency (if tiles due within 1 min) or just Emergency.
+// Cadence restart is handled by startTilesThenEmergencyChain when available.
+// Close Emergency overlay, then either Tiles→Emergency (if tiles due within 1 min) or just Emergency.
+// Cadence restart is handled by startTilesThenEmergencyChain when available.
+async function closeEmergencyOverlay(recheck = true) {
+  // Close immediately
+  closeOverlay('emergencyOverlay', /*force*/ true);
+  emergencyState = null;
+
+  if (!recheck) return;
+
+  // Determine whether tiles are due within the next minute
+  let tilesDueSoon = false;
+  try {
+    const lastAtStr = localStorage.getItem(LAST_LOADED_KEY);
+    const lastAt = lastAtStr ? Date.parse(lastAtStr) : 0;
+    const nextDue = lastAt ? (lastAt + 3 * 60 * 1000) : 0;
+    tilesDueSoon = !!(nextDue && (nextDue - Date.now() <= 60 * 1000));
+  } catch {}
+
+  if (tilesDueSoon) {
+    if (typeof startTilesThenEmergencyChain === 'function') {
+      // Preferred: single-flight chain + cadence restart from chain completion
+      await startTilesThenEmergencyChain({ force: true });
+    } else {
+      // Fallback: manual tiles then emergency, then restart cadence
+      try { await loadFromServer({ force: true }); } catch {}
+      await refreshEmergencyEligibility({ silent: true }).catch(() => {});
+      try {
+        // Restart the 3-minute cadence from “now”
+        scheduleNextTilesRefresh(Date.now());
+      } catch {}
+    }
+  } else {
+    // Only emergency refresh
+    await refreshEmergencyEligibility({ silent: true }).catch(() => {});
+  }
+}
+
 
 function closeOverlay(overlayId, force=false) {
   const overlay = document.getElementById(overlayId);
@@ -701,18 +740,50 @@ function showBlockingAlert(message, onOk) {
   const ok = document.getElementById('alertOk');
   const title = document.getElementById('alertTitle');
   if (!body || !ok) return;
+
   title.textContent = 'Notice';
   body.innerHTML = `<div class="muted">${message || ''}</div>`;
-  // Replace previous click
+
+  // Replace previous click; primary button semantics: enable → on click disable + "Please wait…" until close
   const newOk = ok.cloneNode(true);
   ok.parentNode.replaceChild(newOk, ok);
-  newOk.addEventListener('click', () => {
+  newOk.disabled = false;
+  const normal = (newOk.textContent || 'OK').trim();
+  newOk.textContent = normal;
+
+  newOk.addEventListener('click', async () => {
+    newOk.disabled = true;
+    newOk.textContent = 'Please wait…';
     closeOverlay('alertOverlay', /*force*/true);
     if (typeof onOk === 'function') onOk();
   });
+
   openOverlay('alertOverlay', '#alertOk');
 }
 
+
+async function onRefreshClickForEmergency() {
+  await refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true });
+}
+
+
+function equalizeTileHeights({ reset = false } = {}) {
+  const tiles = Array.from(els.grid.querySelectorAll('.tile'));
+  if (!tiles.length) return;
+
+  if (reset || cachedTileHeight === 0) {
+    tiles.forEach(t => t.style.minHeight = '');
+    let max = 0;
+    tiles.forEach(t => {
+      max = Math.max(max, Math.ceil(t.getBoundingClientRect().height));
+    });
+    cachedTileHeight = max;
+  }
+
+  tiles.forEach(t => {
+    t.style.minHeight = cachedTileHeight + 'px';
+  });
+}
 /* ---------- PWA install prompt (improved) ---------- */
 let deferredPrompt = null;
 
@@ -842,17 +913,16 @@ document.addEventListener('DOMContentLoaded', () => {
 // ── Resume logic (unchanged) + periodic visible refresh ──
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    // Going to background
     cancelSubmitNudge();
     lastHiddenAt = Date.now();
     persistDraft();
     return;
   }
 
+  // Coming to foreground
   const wasAwayLong = lastHiddenAt && (Date.now() - lastHiddenAt > 3 * 60 * 1000);
   lastHiddenAt = null;
-
-  // Always refresh the Emergency eligibility/button on resume (non-blocking)
-  refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
 
   // Clear local edits after long away
   if (wasAwayLong && Object.keys(draft).length) {
@@ -861,33 +931,39 @@ document.addEventListener('visibilitychange', () => {
     showToast('Unsaved changes were cleared after inactivity.');
   }
 
-  // Only refresh baseline/tiles if away ≥ 3 minutes and there are no local edits
-  // Only refresh baseline/tiles if away ≥ 3 minutes, no local edits, and overlay not open
-const hasDraft = Object.keys(draft).length > 0;
-if (!hasDraft && wasAwayLong && !emergencyOpen()) {
-  showLoading();
-  refreshAppState({ force: true })
-    .catch(err => { if (!AUTH_DENIED) showToast('Reload failed: ' + err.message); })
-    .finally(() => { hideLoading(); });
-}
+  // If Emergency overlay is open → pause everything (no cadence work on resume)
+  if (typeof emergencyOpen === 'function' ? emergencyOpen() : false) {
+    if (Object.keys(draft).length) scheduleSubmitNudge();
+    return;
+  }
 
-  if (hasDraft) scheduleSubmitNudge();
+  // Resume behaviour (non-blocking):
+  // Immediately start the Tiles → Emergency chain (single-flight guarded).
+  // The chain itself will refresh tiles, then run one emergency refresh,
+  // then restart the 3-minute cadence from completion time.
+  startTilesThenEmergencyChain({ force: false }).catch(() => {});
+
+  // If drafts exist (post-clear), continue nudging
+  if (Object.keys(draft).length) scheduleSubmitNudge();
 });
 
 
 
+
 // ---------- Helpers ----------
+// Map status to semantic class; backgrounds/text tones are applied in renderTiles via tile--bg-* and tile--tone-*
 function statusClass(label) {
   switch (label) {
-    case 'BOOKED': return 'status-booked';
-    case 'BLOCKED': return 'status-blocked';
-    case 'NOT AVAILABLE': return 'status-na';
-    case 'LONG DAY': return 'status-ld';
-    case 'NIGHT': return 'status-n';
-    case 'LONG DAY/NIGHT': return 'status-ldn';
-    default: return 'status-pending';
+    case 'BOOKED':           return 'status-booked';
+    case 'BLOCKED':          return 'status-blocked';
+    case 'NOT AVAILABLE':    return 'status-na';
+    case 'LONG DAY':         return 'status-ld';
+    case 'NIGHT':            return 'status-n';
+    case 'LONG DAY/NIGHT':   return 'status-ldn';
+    default:                 return 'status-pending';
   }
 }
+
 function nextStatus(currentLabel) {
   const idx = STATUS_ORDER.indexOf(currentLabel);
   return STATUS_ORDER[(idx + 1) % STATUS_ORDER.length];
@@ -895,41 +971,29 @@ function nextStatus(currentLabel) {
 
 // ───────────────────────── NEW (background single-flight) ─────────────────────────
 async function prefetchEmergencyEligibility({ priority = 'normal', onReady } = {}) {
-  // If we already have eligibility cached and non-empty, nothing to do
-  if (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible) && emergencyEligibilityCache.eligible.length) {
-    // Ensure button reflects current cache
-    updateEmergencyButtonFromCache();
+  // If we already have eligibility cached (even empty), still reflect UI; only skip net call if non-empty.
+  if (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible)) {
+    syncEmergencyButtonVisibility(emergencyEligibilityCache.eligible);
     if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
-    return;
+    if (emergencyEligibilityCache.eligible.length) return;
   }
 
-  // Single-flight guard: avoid duplicate background calls
+  // Avoid duplicate calls
   if (prefetchEmergencyEligibility._inflight) {
-    try { await prefetchEmergencyEligibility._inflight; } catch (_) {}
-    // After existing inflight finishes, reflect result & notify
-    updateEmergencyButtonFromCache();
+    try { await prefetchEmergencyEligibility._inflight; } catch {}
+    syncEmergencyButtonVisibility(emergencyEligibilityCache && emergencyEligibilityCache.eligible || []);
     if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
     return;
   }
 
   prefetchEmergencyEligibility._inflight = (async () => {
-    try {
-      const { ok, eligible } = await apiGetEmergencyWindow();
-      if (ok && Array.isArray(eligible)) {
-        emergencyEligibilityCache = { eligible };
-      } else {
-        // Keep an empty cache on failure; UI will remain disabled, which is safe
-        emergencyEligibilityCache = { eligible: [] };
-      }
-      updateEmergencyButtonFromCache();
-      if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
-    } finally {
-      prefetchEmergencyEligibility._inflight = null;
-    }
+    await refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true });
+    if (typeof onReady === 'function') try { onReady(emergencyEligibilityCache); } catch {}
   })();
 
-  return prefetchEmergencyEligibility._inflight;
+  try { await prefetchEmergencyEligibility._inflight; } finally { prefetchEmergencyEligibility._inflight = null; }
 }
+
 
 function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
@@ -1290,11 +1354,9 @@ function ensureMenu() {
 function maybeShowWelcome() {
   if (!baseline) return;
 
-  // Server can provide device-specific hints; we pick best match.
   const isIOS = isiOS();
   const isAnd = isAndroid();
 
-  // Priority: platform-specific → generic fallback
   const hint =
     (isIOS && baseline.newUserHintIos) ? baseline.newUserHintIos :
     (isAnd && baseline.newUserHintAndroid) ? baseline.newUserHintAndroid :
@@ -1304,24 +1366,34 @@ function maybeShowWelcome() {
 
   const titleEl = document.getElementById('welcomeTitle');
   const bodyEl  = document.getElementById('welcomeBody');
-  if (!titleEl || !bodyEl) return;
+  const cta     = document.getElementById('welcomeDismiss');
+  if (!titleEl || !bodyEl || !cta) return;
 
   titleEl.textContent = (hint.title || 'Welcome').trim();
   bodyEl.innerHTML = hint.html || '';
-  openOverlay('welcomeOverlay', '#welcomeDismiss');
 
-  const dismiss = document.getElementById('welcomeDismiss');
-  // Make CTA more prominent
-  dismiss.style.background = '#1b2331';
-  dismiss.style.fontWeight = '800';
-  dismiss.style.border = '1px solid #2a3446';
-  dismiss.style.padding = '.6rem 1rem';
-  dismiss.style.borderRadius = '10px';
+  // Primary button behaviour: enabled with normal label; on click → disable + "Please wait…" until overlay closes
+  const normalLabel = (cta.textContent || 'OK').trim();
+  cta.disabled = false;
+  cta.textContent = normalLabel;
+  cta.style.background = '#1b2331';
+  cta.style.fontWeight = '800';
+  cta.style.border = '1px solid #2a3446';
+  cta.style.padding = '.6rem 1rem';
+  cta.style.borderRadius = '10px';
 
-  dismiss.onclick = async () => {
+  // Replace handler
+  const newCta = cta.cloneNode(true);
+  cta.parentNode.replaceChild(newCta, cta);
+  newCta.addEventListener('click', async () => {
+    newCta.disabled = true;
+    newCta.textContent = 'Please wait…';
     try { await apiPOST({ action:'MARK_MESSAGE_SEEN' }); } catch {}
     closeOverlay('welcomeOverlay', /* force */ true);
-  };
+    // On next open, label is restored above
+  });
+
+  openOverlay('welcomeOverlay', '#welcomeDismiss');
 }
 
 // ---------- Auth overlays logic ----------
@@ -1589,13 +1661,50 @@ function renderTiles() {
     return { ...t, baselineLabel, effectiveLabel };
   });
 
+  // Helper: set background + text tone per new colour rules
+  function applyTileTheme(card, label, isBooked, isBlocked) {
+    // Reset
+    card.classList.remove(
+      'tile--bg-booked','tile--bg-blocked','tile--bg-notavail',
+      'tile--bg-available','tile--bg-pending','tile--tone-dark','tile--tone-light'
+    );
+
+    let bgClass = 'tile--bg-pending';
+    let tone = 'tile--tone-light'; // default for black
+
+    if (isBooked) {
+      bgClass = 'tile--bg-booked';     // light blue
+      tone   = 'tile--tone-dark';      // dark text
+    } else if (isBlocked || label === 'BLOCKED') {
+      bgClass = 'tile--bg-blocked';    // light red
+      tone   = 'tile--tone-dark';      // dark text
+    } else if (label === 'NOT AVAILABLE') {
+      bgClass = 'tile--bg-notavail';   // bright red
+      tone   = 'tile--tone-light';     // white text
+    } else if (label === 'LONG DAY' || label === 'NIGHT' || label === 'LONG DAY/NIGHT') {
+      bgClass = 'tile--bg-available';  // light green
+      tone   = 'tile--tone-dark';      // dark text
+    } else {
+      bgClass = 'tile--bg-pending';    // black
+      tone   = 'tile--tone-light';     // white text
+    }
+
+    card.classList.add(bgClass, tone);
+  }
+
   function updateCardUI(card, ymd, baselineLabel, newLabel, isBooked, isBlocked, editable) {
     const statusEl = card.querySelector('.tile-status');
     const subEl    = card.querySelector('.tile-sub');
     statusEl.className = 'tile-status ' + statusClass(newLabel);
 
+    // Apply background + text tone every time state changes
+    applyTileTheme(card, newLabel, isBooked, isBlocked);
+
     if (isBooked) {
       statusEl.textContent = 'BOOKED';
+      subEl && (subEl.innerHTML = subEl.innerHTML || '');
+      card.classList.remove('needs-attention', 'attention-border');
+      fitStatusLabel(statusEl);
       return;
     }
 
@@ -1675,6 +1784,7 @@ function renderTiles() {
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
+    // Seed content as before
     if (t.booked) {
       status.textContent = 'BOOKED';
       const line1 = (() => {
@@ -1726,6 +1836,9 @@ function renderTiles() {
       sub.innerHTML = (t.effectiveLabel !== t.baselineLabel) ? `<span class="edit-note">Pending change</span>` : '';
     }
 
+    // Apply the new theme classes (bg + tone) based on state
+    applyTileTheme(card, t.effectiveLabel, !!t.booked, t.status === 'BLOCKED');
+
     card.append(header, status, sub);
     els.grid.appendChild(card);
     fitStatusLabel(status);
@@ -1776,35 +1889,12 @@ function renderTiles() {
   // Equalize only on initial/full render, not on tap
   equalizeTileHeights({ reset: true });
 
-  // No network calls here anymore; button state comes from cache set in loadFromServer().
+  // Button state comes from cache and the chained eligibility refresh.
   updateEmergencyButtonFromCache();
 }
 
 
 let cachedTileHeight = 0; // global cache
-
-function equalizeTileHeights({ reset = false } = {}) {
-  const tiles = Array.from(els.grid.querySelectorAll('.tile'));
-  if (!tiles.length) return;
-
-  // On a full render / resize we recompute the max
-  if (reset || cachedTileHeight === 0) {
-    // Clear previous minHeight so we can measure natural heights
-    tiles.forEach(t => t.style.minHeight = '');
-
-    let max = 0;
-    tiles.forEach(t => {
-      max = Math.max(max, Math.ceil(t.getBoundingClientRect().height));
-    });
-
-    cachedTileHeight = max;
-  }
-
-  // Apply cached uniform height to all tiles
-  tiles.forEach(t => {
-    t.style.minHeight = cachedTileHeight + 'px';
-  });
-}
 
 function escapeHtml(s) {
   return String(s || '')
@@ -1833,33 +1923,32 @@ async function loadFromServer({ force=false } = {}) {
   if (loadFromServer._inflight && !force) return loadFromServer._inflight;
 
   if (!authToken()) {
-    try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+    try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
     showAuthError('Missing or invalid token');
     throw new Error('__AUTH_STOP__');
   }
   if (!identity || !identity.msisdn) {
-    try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+    try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
     if (!isBlockingOverlayOpen()) openLoginOverlay();
     return;
   }
 
-  // Safe default: button invisible until eligibility arrives
+  // Never hide the button; default to grey & disabled while we (re)establish state.
   try {
     if (els.emergencyBtn) {
-      els.emergencyBtn.hidden   = true;  // keep hidden while we background-load
-      els.emergencyBtn.disabled = true;  // defensive; won’t be seen anyway
+      els.emergencyBtn.hidden = false;
+      els.emergencyBtn.disabled = true;
     }
   } catch {}
 
-  showLoading();
+  showLoading('Updating…');
 
   const work = (async () => {
     try {
-      // ── fetch BASELINE ONLY; do not block on emergency ──
+      // ── fetch BASELINE ONLY ──
       const { res, json } = await apiGET({});
 
       if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
-        try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
         showToast('Server is busy, please try again.');
         return;
       }
@@ -1867,7 +1956,7 @@ async function loadFromServer({ force=false } = {}) {
       const errCode = (json && json.error) || '';
       if (!res.ok) {
         if (res.status === 400 || res.status === 401 || res.status === 403) {
-          try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+          try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
           showAuthError('Not an authorised user');
           throw new Error('__AUTH_STOP__');
@@ -1878,7 +1967,7 @@ async function loadFromServer({ force=false } = {}) {
       if (json && json.ok === false) {
         const unauthErrors = new Set(['INVALID_OR_UNKNOWN_IDENTITY','NOT_IN_CANDIDATE_LIST','FORBIDDEN']);
         if (unauthErrors.has(errCode)) {
-          try { els.emergencyBtn && (els.emergencyBtn.hidden = true, els.emergencyBtn.disabled = true); } catch {}
+          try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
           if (!isBlockingOverlayOpen()) openLoginOverlay();
           return;
@@ -1887,6 +1976,7 @@ async function loadFromServer({ force=false } = {}) {
       }
 
       // ------- baseline UI/data -------
+      const prevBaseline = baseline;         // keep to support draft-merge rule
       baseline = json;
 
       const name =
@@ -1908,21 +1998,73 @@ async function loadFromServer({ force=false } = {}) {
 
       saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
 
-      const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
-      for (const k of Object.keys(draft)) {
-        if (!validYmd.has(k)) delete draft[k];
+      // Cull drafts ONLY where server tile changed (unchanged-tile merge rule).
+      try {
+        if (prevBaseline && prevBaseline.tiles && baseline && baseline.tiles) {
+         const oldMap = new Map((prevBaseline.tiles || []).map(t => [t.ymd, JSON.stringify({
+  ymd: t.ymd,
+  booked: !!t.booked,
+  blocked: t.status === 'BLOCKED',
+  status: t.status,
+  shiftInfo: t.shiftInfo || '',
+  hospital: t.hospital || t.location || '',
+  ward: t.ward || '',
+  jobTitle: t.jobTitle || '',
+  bookingRef: t.bookingRef || '',
+  display: t.display_label || '',
+  time: t.time_range_label || '',
+  type: t.shift_type_label || '',
+  editable: t.editable !== false               // ← NEW
+})]));
+          const newMap = new Map((baseline.tiles || []).map(t => [t.ymd, JSON.stringify({
+  ymd: t.ymd,
+  booked: !!t.booked,
+  blocked: t.status === 'BLOCKED',
+  status: t.status,
+  shiftInfo: t.shiftInfo || '',
+  hospital: t.hospital || t.location || '',
+  ward: t.ward || '',
+  jobTitle: t.jobTitle || '',
+  bookingRef: t.bookingRef || '',
+  display: t.display_label || '',
+  time: t.time_range_label || '',
+  type: t.shift_type_label || '',
+  editable: t.editable !== false               // ← NEW
+})]));
+
+          for (const ymd of Object.keys(draft)) {
+            const before = oldMap.get(ymd);
+            const after  = newMap.get(ymd);
+            // If tile moved out/in window, became booked/blocked, or ANY field differs → drop draft.
+            if (!before || !after || before !== after) {
+              delete draft[ymd];
+            }
+          }
+          persistDraft();
+        } else {
+          // If there was no previous baseline, keep existing draft filtering to known days only
+          const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
+          for (const k of Object.keys(draft)) {
+            if (!validYmd.has(k)) delete draft[k];
+          }
+        }
+      } catch {
+        // On any compare error, fall back to conservative keep-valid-ymd rule
+        const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
+        for (const k of Object.keys(draft)) {
+          if (!validYmd.has(k)) delete draft[k];
+        }
       }
 
       renderTiles();
       showFooterIfNeeded();
       maybeShowWelcome();
 
-      // Reflect whatever cache exists now (likely empty → stays hidden)
+      // Button colour/state now depends on cache or upcoming eligibility refresh;
+      // do NOT hide — keep grey/disabled until eligibility completes.
       updateEmergencyButtonFromCache();
 
-      // ── kick off EMERGENCY eligibility in the background; do not await ──
-      prefetchEmergencyEligibility().catch(() => { /* fail closed; stays hidden */ });
-
+      // NOTE: Emergency refresh is now chained by refreshAppState/cadence, not fired here.
     } finally {
       hideLoading();
     }
@@ -1948,10 +2090,9 @@ async function submitChanges() {
     return;
   }
 
-  // Map for quick lookup of the code we attempted to set per day
   const changeMap = new Map(changes.map(c => [c.ymd, c.code]));
 
-  showLoading('Saving...');
+  showLoading('Saving…');
 
   try {
     const { res, json, text } = await apiPOST({ changes });
@@ -1977,23 +2118,20 @@ async function submitChanges() {
     const applied  = results.filter(r => r.applied);
     const rejected = results.filter(r => !r.applied);
 
-    // Optimistically update local baseline for successfully applied days
+    // Optimistically update local baseline
     if (baseline && Array.isArray(baseline.tiles) && applied.length) {
       const byYmd = new Map(baseline.tiles.map(t => [t.ymd, t]));
       for (const r of applied) {
         const tile = byYmd.get(r.ymd);
         if (!tile) continue;
-        // Prefer code from server result if present, else fall back to what we sent
         const newCode = (r.code !== undefined && r.code !== null) ? r.code : changeMap.get(r.ymd);
         if (newCode !== undefined) {
-          tile.status = newCode; // keep booked/blocked flags as-is; server rules will sync on next real refresh
+          tile.status = newCode;
         }
       }
-      // Bump the "last loaded" timestamp locally to avoid stale-looking UI
       saveLastLoaded(new Date().toISOString());
     }
 
-    // User feedback
     if (rejected.length) {
       const reasons = rejected.slice(0,3).map(r => `${r.ymd}: ${r.reason}`).join(', ');
       showToast(`Saved ${applied.length}. Skipped ${rejected.length} (${reasons}${rejected.length>3?', …':''}).`, 4200);
@@ -2001,7 +2139,6 @@ async function submitChanges() {
       showToast(`Saved ${applied.length} change${applied.length===1?'':'s'}.`);
     }
 
-    // Clear local edit state
     draft = {};
     persistDraft();
     cancelSubmitNudge();
@@ -2009,7 +2146,6 @@ async function submitChanges() {
     lastEditAt = 0;
     toggledThisSession.clear();
 
-    // Re-render locally (no full reload)
     renderTiles();
     showFooterIfNeeded();
   } catch (err) {
@@ -2017,11 +2153,9 @@ async function submitChanges() {
       showToast('Submit failed: ' + (err.message || err));
     }
   } finally {
-  hideLoading();
-  try { refreshEmergencyEligibility({ silent:true }); } catch {}
-
-}
-
+    hideLoading();
+    try { refreshEmergencyEligibility({ silent:true }); } catch {}
+  }
 }
 
 // ───────────────────────── CHANGED ─────────────────────────
@@ -2050,13 +2184,11 @@ els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
     if (!confirm('You have unsaved changes. Reload and lose them?')) return;
     clearChanges();
   }
-  showLoading();
+
   try {
-    await refreshAppState({ force: true }); // single path: coalesces and fills caches
+    await startTilesThenEmergencyChain({ force: true }); // tiles → emergency; cadence restarts on completion
   } catch (e) {
     if (!AUTH_DENIED) showToast('Reload failed: ' + e.message);
-  } finally {
-    hideLoading();
   }
 });
 
@@ -2159,7 +2291,7 @@ async function apiPostEmergencyRaise(shift, issueType, issuePayload) {
 
 /** Create the bright red EMERGENCY button next to Refresh (once). Hidden by default. */
 function ensureEmergencyButton() {
-  // Apply bright red styles
+  // Apply base styles (red theme); actual state (grey/red & enabled/disabled) is controlled elsewhere.
   function applyStyles(btn) {
     if (!btn) return;
     btn.className = 'btn btn-danger';
@@ -2167,35 +2299,37 @@ function ensureEmergencyButton() {
     btn.style.color = '#fff';
     btn.style.border = '1px solid #b71c1c';
 
-    // --- keep it visually and interactively separate from Refresh ---
-    btn.style.marginLeft = '.5rem';   // small visual gap from Refresh
-    btn.style.position = 'relative';  // create a local stacking context
-    btn.style.zIndex = '3';           // sit above anything behind
-    btn.style.pointerEvents = 'auto'; // be explicit
+    // keep it visually and interactively separate from Refresh
+    btn.style.marginLeft = '.5rem';
+    btn.style.position = 'relative';
+    btn.style.zIndex = '3';
+    btn.style.pointerEvents = 'auto';
   }
 
-  // Finish setup so the click works on first render
   function finalize(btn) {
     els.emergencyBtn = btn;
 
     // Wire first (wireEmergencyButton clones the node)
     try { wireEmergencyButton(); } catch {}
 
-    // Rebind to the live (possibly cloned) node, then style + show/hide from cache
+    // Rebind to the live (possibly cloned) node, then style + state from cache
     const live = document.getElementById('emergencyBtn') || btn;
     applyStyles(live);
     els.emergencyBtn = live;
 
+    // Default state: visible but grey & disabled until eligibility loads.
+    live.hidden = false;
+    live.disabled = true;
+    live.style.filter = 'grayscale(1)';
+    live.style.opacity = '.85';
+
     try { updateEmergencyButtonFromCache(); } catch {}
-    // In case eligibility arrived just before the button existed, run once more on next tick
     setTimeout(() => { try { updateEmergencyButtonFromCache(); } catch {} }, 0);
   }
 
-  // If it already exists, sync, wire, and style it
   const existing = document.getElementById('emergencyBtn');
   if (existing) { finalize(existing); return; }
 
-  // Find where to place it
   const tryFindAnchor = () => {
     if (els.refreshBtn && els.refreshBtn instanceof HTMLElement) return els.refreshBtn;
     return (
@@ -2212,10 +2346,11 @@ function ensureEmergencyButton() {
     btn.id = 'emergencyBtn';
     btn.type = 'button';
     btn.textContent = 'Emergency';
-    btn.hidden = true;    // safe default; visibility driven by cache
-    btn.disabled = true;  // safe default
+    btn.hidden = false;     // always visible
+    btn.disabled = true;    // greyed until eligibility loads
+    btn.style.filter = 'grayscale(1)';
+    btn.style.opacity = '.85';
 
-    // Insert next to Refresh if possible, else append
     if (anchor === els.refreshBtn && anchor.parentElement) {
       anchor.parentElement.insertBefore(btn, anchor.nextSibling);
     } else {
@@ -2226,7 +2361,6 @@ function ensureEmergencyButton() {
     return true;
   };
 
-  // Create immediately if possible, otherwise retry briefly while header mounts
   if (createBtn(tryFindAnchor())) return;
 
   let attempts = 0;
@@ -2236,12 +2370,45 @@ function ensureEmergencyButton() {
     if (createBtn(tryFindAnchor()) || attempts >= maxAttempts) clearInterval(timer);
   }, 250);
 }
+
 /** Show/hide the EMERGENCY button based on eligible shifts. */
 function syncEmergencyButtonVisibility(eligible) {
-  const btn = document.getElementById('emergencyBtn');
-  if (!btn) return;
-  const hasEligible = Array.isArray(eligible) && eligible.length > 0;
-  btn.hidden = !hasEligible;
+  // Revised: never hide; reflect GREYED vs BRIGHT RED based on eligibility array
+  try {
+    const btn = document.getElementById('emergencyBtn');
+    if (!btn) return;
+
+    // Cache if provided so the rest of the app stays consistent
+    if (Array.isArray(eligible)) {
+      emergencyEligibilityCache = { eligible };
+    }
+
+    btn.hidden = false; // always visible
+
+    const hasEligible = Array.isArray(eligible) && eligible.length > 0;
+    if (btn.dataset.busy === '1') {
+      // Busy → greyed & disabled
+      btn.disabled = true;
+      btn.style.filter = 'grayscale(1)';
+      btn.style.opacity = '.85';
+      return;
+    }
+
+    if (hasEligible) {
+      // BRIGHT RED & enabled
+      btn.disabled = false;
+      btn.style.filter = '';
+      btn.style.opacity = '';
+      btn.style.background = '#d32f2f';
+      btn.style.border = '1px solid #b71c1c';
+      btn.style.color = '#fff';
+    } else {
+      // Greyed & disabled
+      btn.disabled = true;
+      btn.style.filter = 'grayscale(1)';
+      btn.style.opacity = '.85';
+    }
+  } catch {}
 }
 
 /** Open the Emergency overlay, seeding state from cached/fetched eligibility. */
@@ -2356,9 +2523,7 @@ function mapServerErrorToMessage(err) {
 
 
 /** Call at the end of Refresh button flow to re-check eligibility. */
-async function onRefreshClickForEmergency() {
-  await refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true });
-}
+
 
 
 
@@ -2545,30 +2710,6 @@ function populateEmergencyModalStart(eligible) {
   if (typeof renderEmergencyStep === 'function') renderEmergencyStep();
 }
 
-function syncEmergencyEligibilityUI(eligible) {
-  try {
-    const btn = document.getElementById('emergencyBtn');
-    if (!btn) return;
-
-    // Prefer explicit arg → cache → global fallback (tolerates older call sites)
-    const list =
-      Array.isArray(eligible) ? eligible :
-      (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible))
-        ? emergencyEligibilityCache.eligible
-        : (window._emergencyEligibleShifts || []);
-
-    const hasEligible = Array.isArray(list) && list.length > 0;
-    btn.hidden = !hasEligible;     // ← use attribute, not class
-    btn.disabled = !hasEligible;
-
-  } catch {
-    // Defensive: hide if anything goes wrong
-    try {
-      const btn = document.getElementById('emergencyBtn');
-      if (btn) { btn.hidden = true; btn.disabled = true; }  // ← use attribute, not class
-    } catch {}
-  }
-}
 function wireEmergencyButton() {
   const btn = document.getElementById('emergencyBtn');
   if (!btn) return;
@@ -2592,52 +2733,71 @@ function wireEmergencyButton() {
 // =========================
 // SERVER-AUTHORITATIVE FLOW
 // =========================
+async function refreshEmergencyEligibility({ silent = false /*, hideDuringRefresh ignored */ } = {}) {
+  // Pause while the Emergency overlay is open (it's dismissible, so don't use isBlockingOverlayOpen)
+  if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
 
-async function refreshEmergencyEligibility({ silent = false, hideDuringRefresh = true } = {}) {
-  if (hideDuringRefresh) setEmergencyButtonBusy(true);
+  // Single-flight + cooldown
+  if (window.emergencyInFlight) return;
+  const now = Date.now();
+  if (window.emergencyCooldownUntil && now < window.emergencyCooldownUntil) return;
 
-  const { ok, eligible, error } = await apiGetEmergencyWindow();
+  window.emergencyInFlight = true;
+  window.emergencyCooldownUntil = now + 8000; // ~8s
 
-  if (!ok) {
-    emergencyEligibilityCache = null;
-    window._emergencyEligibleShifts = [];
-    try { syncEmergencyButtonVisibility([]); } catch {}
-    try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI([]); } catch {}
-    if (!silent) showToast(mapServerErrorToMessage(error));
-    setEmergencyButtonBusy(false);           // un-busy, will remain hidden by visibility sync above
-    return;
+  // Busy → visible, greyed, disabled
+  setEmergencyButtonBusy(true);
+
+  let ok = false, eligible = [], error = null;
+
+  try {
+    const res = await apiGetEmergencyWindow();
+    ok = !!res.ok;
+    eligible = Array.isArray(res.eligible) ? res.eligible : [];
+    error = res.error || null;
+  } catch (e) {
+    ok = false;
+    error = e && e.message;
   }
 
-  emergencyEligibilityCache = { eligible };
-  window._emergencyEligibleShifts = eligible;
-  try { syncEmergencyButtonVisibility(eligible); } catch {}
-  try { typeof syncEmergencyEligibilityUI === 'function' && syncEmergencyEligibilityUI(eligible); } catch {}
+  if (!ok) {
+    emergencyEligibilityCache = { eligible: [] };
+    window._emergencyEligibleShifts = [];
+    try { syncEmergencyButtonVisibility([]); } catch {}
+    if (!silent) showToast(mapServerErrorToMessage(error));
+  } else {
+    emergencyEligibilityCache = { eligible };
+    window._emergencyEligibleShifts = eligible;
+    try { syncEmergencyButtonVisibility(eligible); } catch {}
+  }
 
-  setEmergencyButtonBusy(false);             // un-busy; visibility now reflects latest eligibility
+  setEmergencyButtonBusy(false);  // un-busy; cache decides final colour/enabled
+
+  window.emergencyInFlight = false;
 }
 
+// ───────────────────────── CHANGED ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
+// ───────────────────────── CHANGED ─────────────────────────
 
-// ───────────────────────── CHANGED ─────────────────────────
-// ───────────────────────── CHANGED ─────────────────────────
-// ───────────────────────── CHANGED ─────────────────────────
 async function openEmergencyOverlay() {
   if (isBlockingOverlayOpen()) return;
 
-  // The button should only be visible if we *already* have eligibility.
+  // Use cached eligibility; do not trigger background refresh while opening.
   const haveEligible = !!(emergencyEligibilityCache &&
     Array.isArray(emergencyEligibilityCache.eligible) &&
     emergencyEligibilityCache.eligible.length);
 
   if (!haveEligible) {
-    // Defensive: if somehow clicked while not eligible, just soft prompt and refresh.
-    prefetchEmergencyEligibility({ priority: 'high' }).catch(() => {});
+    // Defensive: if clicked while not eligible, soft prompt and background check once.
+    refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
     showToast('No eligible shifts right now.');
     return;
   }
 
   ensureEmergencyOverlay();
 
-  // Make it feel snappy but don’t require a second click later.
+  // Keep button interactive state predictable (brief busy for UX tightness; it stays visible & greyed if busy)
   setEmergencyButtonBusy(true);
   try {
     resetEmergencyState();
@@ -2649,6 +2809,8 @@ async function openEmergencyOverlay() {
     setEmergencyButtonBusy(false);
   }
 }
+
+
 
 
 function renderEmergencyStep() {
@@ -3501,7 +3663,7 @@ function formatMsisdn07Display(msisdn) {
 async function handleEmergencyConfirm() {
   if (!emergencyState || !emergencyState.selectedShift || !emergencyState.issueType) return;
 
-  // --- double-submit guard ---
+  // double-submit guard
   if (emergencyState.__confirmSubmitting) return;
   emergencyState.__confirmSubmitting = true;
 
@@ -3509,14 +3671,14 @@ async function handleEmergencyConfirm() {
   const cancel = document.getElementById('emergencyCancel');
   const origText = cont ? cont.textContent : '';
 
-  if (cont) { cont.disabled = true; cont.textContent = 'Sending…'; }
+  if (cont) { cont.disabled = true; cont.textContent = 'Please wait…'; }
   if (cancel) cancel.disabled = true;
 
-  function reenable() {
+  const reenable = () => {
     if (cont) { cont.disabled = false; cont.textContent = origText || 'Continue'; }
     if (cancel) cancel.disabled = false;
     emergencyState.__confirmSubmitting = false;
-  }
+  };
 
   try {
     if (emergencyState.issueType === 'RUNNING_LATE') {
@@ -3542,9 +3704,7 @@ async function handleEmergencyConfirm() {
       let isValidTime = false;
 
       if (/^\d{2}:\d{2}$/.test(lbl)) {
-        const parts = lbl.split(':');
-        const hh = parseInt(parts[0], 10);
-        const mm = parseInt(parts[1], 10);
+        const [hh, mm] = lbl.split(':').map(v => parseInt(v, 10));
         isValidTime = Number.isInteger(hh) && Number.isInteger(mm) && hh >= 0 && hh <= 23 && mm >= 0 && mm <= 59;
       }
 
@@ -3600,34 +3760,33 @@ async function handleEmergencyConfirm() {
     return;
   }
 
-  // Success → keep disabled; submitters will replace footer/overlay
+  // Success → keep disabled; submitters will replace footer/overlay and trigger refresh
 }
 
+// Raise emergency issue; fixes border string bug and keeps button/eligibility flow intact.
 async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTimeLabel) {
   const bodyEl = document.getElementById('emergencyBody');
-  const title = document.getElementById('emergencyTitle');
+  const title  = document.getElementById('emergencyTitle');
   const footer = document.getElementById('emergencyFooter');
   if (!bodyEl || !title || !footer || !emergencyState) return;
 
-  // Compute robust defaults
   const it = String(issueType || '').toUpperCase();
-  const leaveLabel = (it === 'LEAVE_EARLY') ? (emergencyState.selectedLateLabel || etaOrLeaveTimeLabel || 'N/A') : 'N/A';
+  const leaveLabel = (it === 'LEAVE_EARLY')
+    ? (emergencyState.selectedLateLabel || etaOrLeaveTimeLabel || 'N/A')
+    : 'N/A';
   const reason = String(reasonText || emergencyState.reasonText || '').trim();
 
-  // Build a tolerant issue payload for apiPostEmergencyRaise
   let issuePayload;
   if (it === 'DNA') {
     issuePayload = {
       type: 'DNA',
-      subject_name: emergencyState.dnaAbsenteeName || '',
-      // Optional but recommended; server will normalise if present
+      subject_name:  emergencyState.dnaAbsenteeName || '',
       subject_msisdn: emergencyState.dnaAbsenteeMsisdn || undefined,
-      // Optional – server also auto-composes DNA reason text if omitted
-      reason_text: reason || ''
+      reason_text:   reason || ''
     };
   } else {
     issuePayload = {
-      issue_type: it, // legacy shape
+      issue_type: it,
       eta_or_leave_time_label: leaveLabel || '',
       reason_text: reason || ''
     };
@@ -3640,19 +3799,21 @@ async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTime
     if (!ok) {
       bodyEl.innerHTML = `<div class="muted">${escapeHtml(mapServerErrorToMessage(error))}</div>`;
       footer.innerHTML = '';
+
       const cancel = document.createElement('button');
       cancel.type = 'button';
       cancel.textContent = 'Cancel';
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-     cancel.addEventListener('click', () => closeEmergencyOverlay(true)); // close + recheck eligibility
+      cancel.addEventListener('click', () => closeEmergencyOverlay(true));
 
       const retry = document.createElement('button');
       retry.type = 'button';
       retry.textContent = 'Try again';
       retry.className = 'menu-item';
-      retry.style.border = '1px solid #2a3446';
+      retry.style.border = '1px solid #2a3446';  // ← fixed string
       retry.addEventListener('click', handleEmergencyConfirm);
+
       footer.append(cancel, retry);
       return;
     }
@@ -3667,54 +3828,34 @@ async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTime
     bodyEl.innerHTML = `<div>${escapeHtml(successMsg)}</div>`;
     footer.innerHTML = '';
 
-    // header X
-const x = document.getElementById('emergencyClose');
-if (x) {
-  const newX = x.cloneNode(true);
-  x.parentNode.replaceChild(newX, x);
-  newX.addEventListener('click', () => closeEmergencyOverlay(true));
-}
-const close = document.createElement('button');
-close.type = 'button';
-close.textContent = 'Close';
-close.className = 'menu-item';
-close.style.border = '1px solid #2a3446';
-close.addEventListener('click', () => closeEmergencyOverlay(true));
-footer.appendChild(close);
+    const x = document.getElementById('emergencyClose');
+    if (x) {
+      const newX = x.cloneNode(true);
+      x.parentNode.replaceChild(newX, x);
+      newX.addEventListener('click', () => closeEmergencyOverlay(true));
+    }
 
-// Immediately refresh eligibility (button disappears during refresh)
-refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', () => closeEmergencyOverlay(true));
+    footer.appendChild(close);
 
+    // Immediately refresh eligibility (button greyed while loading)
+    refreshEmergencyEligibility({ silent: true }).catch(() => {});
   } finally {
     hideLoading();
   }
 }
-function closeEmergencyOverlay(recheck = true) {
-  // Snooze refresh by +1 min, but never beyond (lastLoaded + 3 min)
-  try {
-    const lastAt = localStorage.getItem(LAST_LOADED_KEY);
-    const threeMinCap = lastAt ? (Date.parse(lastAt) + 3 * 60 * 1000) : (Date.now() + 60 * 1000);
-    const want = Date.now() + 60 * 1000; // +1 minute
-    const snoozeUntil = Math.min(want, threeMinCap);
-    if (snoozeUntil > Date.now()) {
-      localStorage.setItem(REFRESH_SNOOZE_UNTIL_KEY, String(snoozeUntil));
-    }
-  } catch {}
 
-  closeOverlay('emergencyOverlay', /*force*/true);
-  emergencyState = null;
-
-  if (recheck) {
-    refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
-  }
-}
 
 // Simple helper used by polling/guards
 function emergencyOpen() {
   const ov = document.getElementById('emergencyOverlay');
   return !!(ov && ov.classList.contains('show'));
 }
-
 async function submitEmergencyRunningLate(ctx, label) {
   const body = document.getElementById('emergencyBody');
   const title = document.getElementById('emergencyTitle');
@@ -3744,7 +3885,7 @@ async function submitEmergencyRunningLate(ctx, label) {
       cancel.textContent = 'Cancel';
       cancel.className = 'menu-item';
       cancel.style.border = '1px solid #2a3446';
-     cancel.addEventListener('click', () => closeEmergencyOverlay(true)); // close + recheck eligibility
+      cancel.addEventListener('click', () => closeEmergencyOverlay(true));
 
       const retry = document.createElement('button');
       retry.type = 'button';
@@ -3757,28 +3898,27 @@ async function submitEmergencyRunningLate(ctx, label) {
     }
 
     title.textContent = 'Sent';
-    body.innerHTML = `<div> Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
+    body.innerHTML = `<div>Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
     footer.innerHTML = '';
 
-    // Make the header ✕ (close) also trigger a reload after success
-   // header X
-const x = document.getElementById('emergencyClose');
-if (x) {
-  const newX = x.cloneNode(true);
-  x.parentNode.replaceChild(newX, x);
-  newX.addEventListener('click', () => closeEmergencyOverlay(true));
-}
-const close = document.createElement('button');
-close.type = 'button';
-close.textContent = 'Close';
-close.className = 'menu-item';
-close.style.border = '1px solid #2a3446';
-close.addEventListener('click', () => closeEmergencyOverlay(true));
-footer.appendChild(close);
+    // header X → also triggers a reload after success
+    const x = document.getElementById('emergencyClose');
+    if (x) {
+      const newX = x.cloneNode(true);
+      x.parentNode.replaceChild(newX, x);
+      newX.addEventListener('click', () => closeEmergencyOverlay(true));
+    }
 
-// Immediately refresh eligibility (button disappears during refresh)
-refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.textContent = 'Close';
+    close.className = 'menu-item';
+    close.style.border = '1px solid #2a3446';
+    close.addEventListener('click', () => closeEmergencyOverlay(true));
+    footer.appendChild(close);
 
+    // Immediately refresh eligibility (button greyed while loading)
+    refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
   } finally {
     hideLoading();
   }
@@ -3833,72 +3973,485 @@ function updateEmergencyButtonFromCache() {
   try {
     const btn = document.getElementById('emergencyBtn');
     if (!btn) return;
+
+    // Never hide; default grey & disabled.
+    btn.hidden = false;
+
+    const isBusy = btn.dataset.busy === '1';
     const hasEligible = !!(emergencyEligibilityCache &&
                            Array.isArray(emergencyEligibilityCache.eligible) &&
                            emergencyEligibilityCache.eligible.length);
-    // Clear any stale busy visuals
-    setEmergencyButtonBusy(false);
 
-    btn.hidden   = !hasEligible;
-    btn.disabled = !hasEligible;
+    if (isBusy) {
+      // Busy state already set by setEmergencyButtonBusy(true); keep disabled/grey
+      btn.disabled = true;
+      btn.style.filter = 'grayscale(1)';
+      btn.style.opacity = '.85';
+      return;
+    }
+
+    if (hasEligible) {
+      // BRIGHT RED & enabled
+      btn.disabled = false;
+      btn.style.filter = '';
+      btn.style.opacity = '';
+      btn.style.background = '#d32f2f';
+      btn.style.border = '1px solid #b71c1c';
+      btn.style.color = '#fff';
+    } else {
+      // Greyed & disabled
+      btn.disabled = true;
+      btn.style.filter = 'grayscale(1)';
+      btn.style.opacity = '.85';
+      // Keep brand red base but visually greyed via filter; alternatively set neutral grey bg.
+    }
+  } catch {}
+}
+
+// ===== Cache helpers =====
+
+const BASELINE_CACHE_KEY = 'baseline_cache_v1';
+const EMERGENCY_CACHE_KEY = 'emergency_cache_v1';
+const NEXT_TILES_DUE_AT_KEY = 'next_tiles_due_at';
+
+/**
+ * Load the last saved baseline (tiles) payload from localStorage.
+ * Returns { baseline, lastLoadedAt } or null if absent/invalid.
+ */
+function loadBaselineCache() {
+  try {
+    const raw = localStorage.getItem(BASELINE_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== 'object') return null;
+    // Minimal sanity check: must have tiles array if present
+    if (parsed.baseline && parsed.baseline.tiles && !Array.isArray(parsed.baseline.tiles)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save the current baseline and timestamp to localStorage.
+ * @param {object} baseline - server baseline payload (including tiles[])
+ * @param {string} [lastLoadedAt=new Date().toISOString()]
+ */
+function saveBaselineCache(baseline, lastLoadedAt) {
+  try {
+    if (!baseline || typeof baseline !== 'object') return;
+    const payload = {
+      baseline,
+      lastLoadedAt: lastLoadedAt || new Date().toISOString()
+    };
+    localStorage.setItem(BASELINE_CACHE_KEY, JSON.stringify(payload));
+  } catch {}
+}
+
+/**
+ * Load cached emergency eligibility.
+ * Returns { eligible: [] } or null if absent/invalid.
+ */
+function loadEmergencyEligibilityCache() {
+  try {
+    const raw = localStorage.getItem(EMERGENCY_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (!parsed || !Array.isArray(parsed.eligible)) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Save emergency eligibility to localStorage.
+ * @param {{eligible: Array}} cache
+ */
+function saveEmergencyEligibilityCache(cache) {
+  try {
+    if (!cache || !Array.isArray(cache.eligible)) return;
+    localStorage.setItem(EMERGENCY_CACHE_KEY, JSON.stringify({ eligible: cache.eligible }));
   } catch {}
 }
 
 
-// ───────────────────────── NEW orchestrator ─────────────────────────
-// Centralised refresh: invalidate caches, then call loadFromServer() once.
-// ───────────────────────── CHANGED ─────────────────────────
-// Make coalescing the default
-async function refreshAppState({ force = false } = {}) {
-  emergencyEligibilityCache = null;
-  const out = await loadFromServer({ force });
-  prefetchEmergencyEligibility().catch(() => {});
+// ===== Draft merge helpers =====
+
+/**
+ * Compute a stable, comparable signature for a tile based on all
+ * server-controlled attributes that, if changed, should discard drafts.
+ * The signature MUST NOT include any local draft edits.
+ * @param {object} t - tile from server baseline
+ * @returns {string} JSON string signature
+ */
+function computeTileSignature(t) {
+  if (!t) return '∅';
+  // Normalise key fields that drive the card UI and editability
+  const norm = {
+    ymd: String(t.ymd || ''),
+    booked: !!t.booked,
+    statusCode: t.status ?? null,              // server status code
+    blocked: (t.status === 'BLOCKED') || !!t.blocked, // be tolerant to shapes
+    editable: (t.editable !== false) && !t.booked && t.status !== 'BLOCKED',
+
+    // Card-visible fields (any change nukes draft)
+    shiftInfo: (t.shiftInfo || '').trim(),
+    hospital: (t.hospital || '').trim(),
+    location: (t.location || '').trim(),
+    ward: (t.ward || '').trim(),
+    jobTitle: (t.jobTitle || '').trim(),
+    bookingRef: (t.bookingRef || '').trim(),
+
+    // Server-provided labels often used in UI
+    display_label: (t.display_label || '').trim(),
+    time_range_label: (t.time_range_label || '').trim(),
+    shift_type_label: (t.shift_type_label || '').trim(),
+  };
+
+  return JSON.stringify(norm);
+}
+
+/**
+ * Merge/cull drafts against a new baseline based on unchanged-tile rule.
+ * Server wins on ANY change between old vs new tile signatures.
+ *
+ * @param {object|null} oldBaseline - previously rendered baseline (may be null)
+ * @param {object} newBaseline - fresh baseline from server
+ * @param {object} drafts - current draft map { [ymd]: 'LABEL' }
+ * @returns {object} survivingDrafts - filtered draft map
+ */
+function mergeDraftsAgainstNewBaseline(oldBaseline, newBaseline, drafts) {
+  if (!drafts || !newBaseline || !Array.isArray(newBaseline.tiles)) return {};
+  const out = {};
+  const oldTiles = (oldBaseline && Array.isArray(oldBaseline.tiles)) ? oldBaseline.tiles : [];
+
+  const oldByYmd = new Map(oldTiles.map(t => [String(t.ymd), t]));
+  const newByYmd = new Map(newBaseline.tiles.map(t => [String(t.ymd), t]));
+
+  for (const [ymd, draftLabel] of Object.entries(drafts)) {
+    const oldTile = oldByYmd.get(ymd) || null;
+    const newTile = newByYmd.get(ymd) || null;
+
+    // If the day left or entered the window → discard
+    if (!oldTile || !newTile) continue;
+
+    // If editability flipped to non-editable → discard
+    const newEditable = (newTile.editable !== false) && !newTile.booked && newTile.status !== 'BLOCKED';
+    if (!newEditable) continue;
+
+    // Compare server → server signatures (not vs draft)
+    const oldSig = computeTileSignature(oldTile);
+    const newSig = computeTileSignature(newTile);
+
+    if (oldSig === newSig) {
+      out[ymd] = draftLabel; // tile unchanged → keep draft
+    }
+    // else: any change → discard draft
+  }
+
   return out;
 }
 
 
+// ===== Cadence / orchestration helpers =====
 
-setInterval(() => {
-  if (document.visibilityState !== 'visible') return;
-  if (emergencyOpen()) return;
-  if (Object.keys(draft).length) return;
+/**
+ * Is a tiles refresh due now, considering 3-minute cadence and any snooze?
+ * Returns true only when overlay is closed and current time >= due time and >= snooze.
+ */
+function isTilesRefreshDue() {
+  if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen('emergencyOverlay')) return false;
 
-  // Respect post-emergency snooze, but let it expire naturally
-  const snoozeUntil = Number(localStorage.getItem(REFRESH_SNOOZE_UNTIL_KEY) || 0);
-  if (snoozeUntil) {
-    if (Date.now() < snoozeUntil) return;
-    // expired — clean up
-    localStorage.removeItem(REFRESH_SNOOZE_UNTIL_KEY);
+  const now = Date.now();
+  let dueAt = 0;
+  let snoozeUntil = 0;
+
+  try {
+    const dueStr = localStorage.getItem(NEXT_TILES_DUE_AT_KEY);
+    const snoozeStr = localStorage.getItem(REFRESH_SNOOZE_UNTIL_KEY);
+    dueAt = dueStr ? parseInt(dueStr, 10) : 0;
+    snoozeUntil = snoozeStr ? parseInt(snoozeStr, 10) : 0;
+  } catch {}
+
+  if (snoozeUntil && now < snoozeUntil) return false;
+  if (!dueAt) return true; // no schedule yet → allow a run
+  return now >= dueAt;
+}
+
+// Cadence state
+
+// ===== Cadence (Tiles drive; Emergency is chained) =====
+
+// ===== Cadence (Tiles drive; Emergency is chained) =====
+const NEXT_KEY   = (typeof NEXT_TILES_DUE_AT_KEY === 'string' ? NEXT_TILES_DUE_AT_KEY : 'next_tiles_due_at');
+const SNOOZE_KEY = (typeof REFRESH_SNOOZE_UNTIL_KEY === 'string' ? REFRESH_SNOOZE_UNTIL_KEY : 'rota_refresh_snooze_until_v1');
+
+let tilesInFlight  = false;
+let nextTilesDueAt = 0; // epoch ms for next tiles refresh
+
+// Driver chain: Tiles → Emergency → restart 3-minute clock
+async function startTilesThenEmergencyChain({ force = false } = {}) {
+  // Pause entirely if Emergency overlay is open
+  if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
+
+  if (tilesInFlight) return;      // coalesce bursts
+  tilesInFlight = true;
+
+  try {
+    await loadFromServer({ force });                     // Tiles (baseline)
+    await refreshEmergencyEligibility({ silent: true }); // Emergency
+  } finally {
+    tilesInFlight = false;
+    // Restart the cadence from the end of the chain (+3 minutes)
+    scheduleNextTilesRefresh(Date.now());
+  }
+}
+
+// 30s poller: only evaluates Tiles due-ness; NEVER calls emergency directly
+(function ensureTilesPoller() {
+  if (window._tilesPollerId) return; // avoid duplicate intervals on hot-reload
+  window._tilesPollerId = setInterval(async () => {
+    if (typeof emergencyOpen === 'function' && emergencyOpen()) return; // pause while overlay open
+    if (tilesInFlight) return;
+
+    const now   = Date.now();
+    const dueAt = nextTilesDueAt || Number(localStorage.getItem(NEXT_KEY) || 0);
+    if (dueAt && now < dueAt) return;
+
+    const snoozeUntil = Number(localStorage.getItem(SNOOZE_KEY) || 0);
+    if (snoozeUntil && now < snoozeUntil) return;
+
+    await startTilesThenEmergencyChain({ force: false });
+  }, 30000);
+})();
+
+// Bootstrap cadence on first load:
+//  - Restore a persisted next-due (if any), otherwise allow immediate run.
+//  - Kick the first chain right away (guards prevent double-runs).
+// Bootstrap cadence on first load:
+//  - Restore a persisted next-due (if any), otherwise leave as 0 to allow immediate chain kick,
+//  - Kick the first chain right away; the chain will set next due = now + 3m on completion.
+(function bootstrapCadence() {
+  try {
+    const restored = Number(localStorage.getItem(NEXT_KEY) || 0);
+    if (restored) {
+      nextTilesDueAt = restored;
+    } else {
+      nextTilesDueAt = 0; // allow immediate first run; chain will set +3m on completion
+    }
+  } catch {
+    nextTilesDueAt = 0;
   }
 
-  const lastAt = localStorage.getItem(LAST_LOADED_KEY);
-  if (lastAt && (Date.now() - Date.parse(lastAt) >= 3 * 60 * 1000)) {
-    refreshAppState({ /* force:false */ }).catch(() => {});
+  // Kick once now; subsequent runs are timer-driven
+  startTilesThenEmergencyChain({ force: false }).catch(() => {});
+})();
+
+
+// Optional helper if you want to set next-due explicitly elsewhere.
+function scheduleNextTilesRefresh(fromEpochMs) {
+  const base = Number.isFinite(fromEpochMs) ? fromEpochMs : Date.now();
+  const next = base + 3 * 60 * 1000;
+  nextTilesDueAt = next;
+  try { localStorage.setItem(NEXT_KEY, String(next)); } catch {}
+  return next;
+}
+
+
+/**
+ * Start the Tiles → Emergency chain with single-flight guards and cadence restart.
+ * Use this for: resume, timer tick when due, and "bump forward" on emergency close.
+ */
+
+/**
+ * Can we start an emergency refresh right now?
+ * Enforces: overlay closed, not inflight, and not within cooldown.
+ */
+function canRunEmergencyRefreshNow() {
+  if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen('emergencyOverlay')) return false;
+  if (window.emergencyInFlight) return false;
+  const now = Date.now();
+  return !(window.emergencyCooldownUntil && now < window.emergencyCooldownUntil);
+}
+
+/**
+ * Set a short cooldown to deduplicate overlapping emergency triggers.
+ * @param {number} ms default 8000ms
+ */
+function markEmergencyCooldown(ms = 8000) {
+  try { window.emergencyCooldownUntil = Date.now() + Math.max(0, ms); } catch {}
+  return window.emergencyCooldownUntil;
+}
+
+
+// ===== Tile theming & emergency button state helpers =====
+
+/**
+ * Apply background + text tone to a tile/card based on the effective status.
+ * @param {HTMLElement} card - the tile element
+ * @param {string} statusLabel - one of BOOKED/BLOCKED/NOT AVAILABLE/LONG DAY/NIGHT/LONG DAY/NIGHT/PENDING...
+ */
+function applyTileThemeForStatus(card, statusLabel) {
+  if (!card) return;
+
+  // Clear prior tone classes
+  card.classList.remove('tile-bg-blue', 'tile-bg-soft-red', 'tile-bg-bright-red', 'tile-bg-green', 'tile-bg-black');
+  card.classList.remove('tile-text-dark', 'tile-text-light');
+
+  const headline = card.querySelector('.tile-status');
+  const subtext  = card.querySelector('.tile-sub');
+
+  // Helper to set text tone across both
+  const setTone = (tone /* 'dark' | 'light' */) => {
+    const dark = tone === 'dark';
+    card.classList.add(dark ? 'tile-text-dark' : 'tile-text-light');
+    if (headline) headline.classList.toggle('text-light', !dark);
+    if (headline) headline.classList.toggle('text-dark',  dark);
+    if (subtext)  subtext.classList.toggle('text-light', !dark);
+    if (subtext)  subtext.classList.toggle('text-dark',  dark);
+  };
+
+  const upper = String(statusLabel || '').toUpperCase();
+
+  if (upper === 'BOOKED') {
+    card.classList.add('tile-bg-blue');
+    setTone('dark');
+  } else if (upper === 'BLOCKED') {
+    card.classList.add('tile-bg-soft-red');
+    setTone('dark');
+  } else if (upper === 'NOT AVAILABLE') {
+    card.classList.add('tile-bg-bright-red');
+    setTone('light');
+  } else if (upper === 'LONG DAY' || upper === 'NIGHT' || upper === 'LONG DAY/NIGHT' || upper === 'AVAILABLE' || upper === 'AVAILABLE FOR') {
+    card.classList.add('tile-bg-green');
+    setTone('dark');
+  } else if (upper === 'PLEASE PROVIDE YOUR AVAILABILITY' || upper === 'NOT SURE OF MY AVAILABILITY YET' || upper === 'PENDING') {
+    card.classList.add('tile-bg-black');
+    setTone('light');
+  } else {
+    // Default to pending/unknown → keep readable
+    card.classList.add('tile-bg-black');
+    setTone('light');
   }
-}, 30 * 1000);
+}
+
+/** Greyed state for emergency button (visible & disabled). */
+function setEmergencyButtonStateGreyed() {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+  btn.hidden = false;
+  btn.disabled = true;
+  btn.style.filter = 'grayscale(1)';
+  btn.style.opacity = '.85';
+  btn.style.background = '#6b6b6b';
+  btn.style.border = '1px solid #5a5a5a';
+  btn.style.color = '#fff';
+}
+
+/** BRIGHT RED enabled state for emergency button. */
+function setEmergencyButtonStateRed() {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+  btn.hidden = false;
+  btn.disabled = false;
+  btn.style.filter = '';
+  btn.style.opacity = '';
+  btn.style.background = '#d32f2f';
+  btn.style.border = '1px solid #b71c1c';
+  btn.style.color = '#fff';
+}
+
+/**
+ * Overlay primary button busy semantics: disable + "Please wait…" until caller resets/closes.
+ * @param {HTMLElement} btn
+ */
+function setOverlayPrimaryButtonBusy(btn) {
+  if (!btn) return;
+  btn.dataset._normalLabel = (btn.textContent || '').trim();
+  btn.disabled = true;
+  btn.textContent = 'Please wait…';
+}
+
+/**
+ * Restore overlay primary button to its normal label and enabled state.
+ * @param {HTMLElement} btn
+ */
+function resetOverlayPrimaryButton(btn) {
+  if (!btn) return;
+  const normal = btn.dataset._normalLabel || 'OK';
+  delete btn.dataset._normalLabel;
+  btn.disabled = false;
+  btn.textContent = normal;
+}
 
 
-// Manual refresh stays forceful
+// ===== Emergency-close & resume helpers =====
+
+/**
+ * Decide if tiles should be "bumped forward" on emergency overlay close.
+ * Return true when the next tiles refresh is due within 60s.
+ */
+function shouldBumpTilesOnEmergencyClose() {
+  try {
+    const lastAt = localStorage.getItem(LAST_LOADED_KEY);
+    const nextDue = lastAt ? (Date.parse(lastAt) + 3 * 60 * 1000) : 0;
+    if (!nextDue) return true; // no history → safe to run
+    return (nextDue - Date.now()) <= 60 * 1000;
+  } catch {
+    return true;
+  }
+}
+
+/**
+ * Resume handler: when app/tab becomes visible and overlay is closed,
+ * immediately start the Tiles → Emergency chain and restart cadence from completion.
+ */
+async function tilesResumeHandler() {
+  if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
+  await startTilesThenEmergencyChain({ force: true });
+}
 
 
+
+
+// Tiles driver only. Do nothing while Emergency overlay is open.
+// Emergency eligibility is handled by the cadence chain, not here.
+async function refreshAppState({ force = false } = {}) {
+  if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
+  return loadFromServer({ force });
+}
+
+
+
+
+
+// Busy helper for the Emergency button — never hides; only greys/disable while busy.
+// On un-busy, defer final state to updateEmergencyButtonFromCache().
 function setEmergencyButtonBusy(isBusy) {
   const btn = document.getElementById('emergencyBtn');
   if (!btn) return;
+
   if (isBusy) {
-    btn.hidden = true;          // disappear during refresh
+    btn.hidden = false;                 // never hide
     btn.disabled = true;
     btn.dataset.busy = '1';
     btn.setAttribute('aria-busy', 'true');
     btn.style.pointerEvents = 'none';
-    btn.style.opacity = '.9';
+    btn.style.filter = 'grayscale(1)';
+    btn.style.opacity = '.85';
   } else {
     delete btn.dataset.busy;
     btn.removeAttribute('aria-busy');
     btn.style.pointerEvents = '';
+    btn.style.filter = '';
     btn.style.opacity = '';
-    // visibility (hidden/disabled) will be set by updateEmergencyButtonFromCache()
+    // Do not force-enable here; let the cache/state machine decide:
+    updateEmergencyButtonFromCache();
   }
 }
+
+
 
 function sizeGrid() {
   if (!els.grid) return;
@@ -3946,15 +4499,14 @@ async function init() {
   ensureLoadingOverlay();
   ensureMenu();
 
-  // Defer button creation until after menu/header likely exist.
-  // (Still safe if they already did; ensureEmergencyButton is idempotent.)
+  // Create the Emergency button early (idempotent); it will be grey/disabled until eligibility loads.
   ensureEmergencyButton();
 
   const hasK = new URLSearchParams(location.search).has('k');
   if (hasK) {
     openResetOverlay();
   } else if (!identity.msisdn) {
-    try { if (els.emergencyBtn) { els.emergencyBtn.hidden = true; els.emergencyBtn.disabled = true; } } catch {}
+    try { if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; } } catch {}
     const autoOK = await tryAutoLoginViaCredentialsAPI();
     if (!autoOK && !isBlockingOverlayOpen()) openLoginOverlay();
   }
@@ -3962,9 +4514,12 @@ async function init() {
   loadDraft();
 
   if (identity && identity.msisdn) {
-    showLoading();
+    // Boot path: block ONLY until tiles load, then unblock; emergency will run in background.
+    showLoading('Loading shifts…');
     try {
-      await loadFromServer({ force: true }); // single orchestrated fetch
+      await loadFromServer({ force: true });
+      // After first tiles load, kick emergency eligibility in the background (single-fire guard lives inside).
+      try { refreshEmergencyEligibility({ silent: true }); } catch {}
     } catch (e) {
       if (String(e && e.message) !== '__AUTH_STOP__') {
         showToast('Load failed: ' + e.message, 5000);
@@ -3974,11 +4529,10 @@ async function init() {
       equalizeTileHeights({ reset: true });
       hideLoading();
 
-      // Last-chance: if the button wasn't created earlier (e.g. anchor mounted late),
-      // create it now before wiring/visibility.
+      // Last-chance: if the button wasn't created earlier (e.g., anchor mounted late), create it now.
       ensureEmergencyButton();
 
-      // Wire handlers; visibility/enabled state is decided using the cached/server data.
+      // Wire handlers (click logic is already idempotent).
       try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
       ensurePastShiftsButton();
     }
