@@ -226,6 +226,24 @@
       overflow-wrap: anywhere;
     }
 
+    /* New theme classes applied by JS */
+    .tile.tile--bg-booked    { background: #dbe9ff; }  /* light blue */
+    .tile.tile--bg-blocked   { background: #ffe3e3; }  /* soft red  */
+    .tile.tile--bg-notavail  { background: #d32f2f; }  /* bright red */
+    .tile.tile--bg-available { background: #e7f5e7; }  /* light green */
+    .tile.tile--bg-pending   { background: #000; }     /* black */
+
+    /* Text tones override any .status-* colors inside the tile */
+    .tile.tile--tone-dark  .tile-status,
+    .tile.tile--tone-dark  .tile-sub,
+    .tile.tile--tone-dark  .edit-note { color: #0f1115; }
+
+    .tile.tile--tone-light .tile-status,
+    .tile.tile--tone-light .tile-sub,
+    .tile.tile--tone-light .edit-note { color: #fff; }
+
+    /* “Pending change” follows the tile tone rather than a fixed accent */
+    .tile .edit-note { color: inherit; font-size: .85rem; font-weight: 700; }
     .status-pending { color: var(--muted); }
     .status-na      { color: var(--danger); }
     .status-ld,
@@ -242,8 +260,6 @@
       word-break: break-word;
       overflow-wrap: anywhere;
     }
-
-    .tile .edit-note { color: var(--accent); font-size: .85rem; }
 
     /* Fixed footer (space reserved via --footer-h) */
     .footer {
@@ -328,25 +344,36 @@
       // 1) Minimal visibility helper if the new one doesn't exist
       if (!window.updateEmergencyButtonFromCache) {
         window.emergencyEligibilityCache = window.emergencyEligibilityCache || { eligible: [] };
-        window.updateEmergencyButtonFromCache = function () {
+               window.updateEmergencyButtonFromCache = function () {
           try {
             var btn = document.getElementById('emergencyBtn');
             if (!btn) return;
             var has = Array.isArray(window.emergencyEligibilityCache.eligible) &&
                       window.emergencyEligibilityCache.eligible.length > 0;
-            btn.hidden = !has;
-            btn.disabled = !has;
-            // bright red + white text
-     btn.className = 'btn btn-danger';
-btn.style.background = '#d32f2f';
-btn.style.color = '#fff';
-btn.style.border = '1px solid #b71c1c';
-btn.style.marginLeft = '.5rem';   // NEW: gap from Refresh
-btn.style.position   = 'relative'; // NEW: create own stacking context
-btn.style.zIndex     = '3';        // NEW: sit above neighbors
 
+            // Never hide; grey+disabled when not eligible/loading
+            btn.hidden = false;
+            btn.className = 'btn btn-danger';
+            btn.style.background = '#d32f2f';
+            btn.style.color = '#fff';
+            btn.style.border = '1px solid #b71c1c';
+
+            if (has) {
+              btn.disabled = false;
+              btn.style.filter = '';
+              btn.style.opacity = '';
+            } else {
+              btn.disabled = true;
+              btn.style.filter = 'grayscale(1)';
+              btn.style.opacity = '.85';
+            }
+
+            btn.style.marginLeft = '.5rem';   // gap from Refresh
+            btn.style.position   = 'relative';
+            btn.style.zIndex     = '3';
           } catch {}
         };
+
       }
 
       // 2) Minimal creator/wirer if the new one doesn't exist
@@ -361,16 +388,19 @@ btn.style.zIndex     = '3';        // NEW: sit above neighbors
             document.getElementById('header') ||
             document.body;
 
-          var btn = document.createElement('button');
+                    var btn = document.createElement('button');
           btn.id = 'emergencyBtn';
           btn.type = 'button';
           btn.textContent = 'Emergency';
-          btn.hidden = true;
+          // Always visible; start disabled & greyed until eligibility arrives
+          btn.hidden = false;
           btn.disabled = true;
           btn.className = 'btn btn-danger';
           btn.style.background = '#d32f2f';
           btn.style.color = '#fff';
           btn.style.border = '1px solid #b71c1c';
+          btn.style.filter = 'grayscale(1)';
+          btn.style.opacity = '.85';
 
           anchor.appendChild(btn);
 
