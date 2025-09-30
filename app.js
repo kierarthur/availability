@@ -1672,19 +1672,24 @@ function renderTiles() {
     let bgClass = 'tile--bg-pending';
     let tone = 'tile--tone-light'; // default for black
 
-    if (isBooked) {
-      bgClass = 'tile--bg-booked';     // light blue
-      tone   = 'tile--tone-dark';      // dark text
+     if (isBooked) {
+    bgClass = 'tile--bg-booked';     // vivid blue
+    tone   = 'tile--tone-light';     // white text for contrast
+
     } else if (isBlocked || label === 'BLOCKED') {
       bgClass = 'tile--bg-blocked';    // light red
       tone   = 'tile--tone-dark';      // dark text
     } else if (label === 'NOT AVAILABLE') {
       bgClass = 'tile--bg-notavail';   // bright red
       tone   = 'tile--tone-light';     // white text
-    } else if (label === 'LONG DAY' || label === 'NIGHT' || label === 'LONG DAY/NIGHT') {
-      bgClass = 'tile--bg-available';  // light green
-      tone   = 'tile--tone-dark';      // dark text
-    } else {
+    } else if (
+    label === 'LONG DAY' || label === 'NIGHT' || label === 'LONG DAY/NIGHT' ||
+    label === 'AVAILABLE' || label === 'AVAILABLE FOR'
+  ) {
+    bgClass = 'tile--bg-available';  // availability (LD/N/LDN or generic)
+    tone   = 'tile--tone-dark';      // dark text
+  } else {
+
       bgClass = 'tile--bg-pending';    // black
       tone   = 'tile--tone-light';     // white text
     }
