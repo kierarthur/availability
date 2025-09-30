@@ -2196,39 +2196,6 @@ els.submitBtn && els.submitBtn.addEventListener('click', () => {
   submitChanges().finally(() => { els.submitBtn.disabled = false; });
 });
 els.clearBtn && els.clearBtn.addEventListener('click', clearChanges);
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) {
-    // Going to background
-    cancelSubmitNudge();
-    lastHiddenAt = Date.now();
-    persistDraft();
-    return;
-  }
-
-  // Coming to foreground
-  const wasAwayLong = lastHiddenAt && (Date.now() - lastHiddenAt > 3 * 60 * 1000);
-  lastHiddenAt = null;
-
-  // Clear local edits after long away
-  if (wasAwayLong && Object.keys(draft).length) {
-    draft = {};
-    persistDraft();
-    showToast('Unsaved changes were cleared after inactivity.');
-  }
-
-  // If Emergency overlay is open → pause everything (no cadence work on resume)
-  if (typeof emergencyOpen === 'function' ? emergencyOpen() : false) {
-    if (Object.keys(draft).length) scheduleSubmitNudge();
-    return;
-  }
-
-  // Resume behaviour (non-blocking): background tiles → emergency chain; loader is gated inside loadFromServer for cold start
-  startTilesThenEmergencyChain({ force: false }).catch(() => {});
-
-  // If drafts exist (post-clear), continue nudging
-  if (Object.keys(draft).length) scheduleSubmitNudge();
-});
-
 
 
 // ---------- Keep CSS vars fresh ----------
@@ -4003,48 +3970,57 @@ async function apiPostRunningLatePreview(shiftOrContext, etaLabel) {
     return { ok: false, previewHtml: '', context: null, minutes: 0, arrivalByLabel: '', error: String(e && e.message) || 'NETWORK_ERROR' };
   }
 }
+// --- NEW: tiny helper used throughout emergency flow ---
+function setEmergencyButtonBusy(busy) {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+  btn.dataset.busy = busy ? '1' : '0';
+  // Reflect latest cache/busy state
+  syncEmergencyButtonVisibility(
+    (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible))
+      ? emergencyEligibilityCache.eligible
+      : []
+  );
+}
+
+// --- FINISH: previously truncated function ---
+function updateEmergencyButtonFromCache() {
+  const btn = document.getElementById('emergencyBtn');
+  if (!btn) return;
+
+  btn.hidden = false; // never hide
+  const busy = btn.dataset.busy === '1';
+  const eligible = (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible))
+    ? emergencyEligibilityCache.eligible
+    : [];
+
+  if (busy) {
+    btn.disabled = true;
+    btn.style.filter = 'grayscale(1)';
+    btn.style.opacity = '.85';
+    return;
+  }
+
+  if (eligible.length > 0) {
+    // Bright red & enabled
+    btn.disabled = false;
+    btn.style.filter = '';
+    btn.style.opacity = '';
+    btn.style.background = '#d32f2f';
+    btn.style.border = '1px solid #b71c1c';
+    btn.style.color = '#fff';
+  } else {
+    // Greyed & disabled
+    btn.disabled = true;
+    btn.style.filter = 'grayscale(1)';
+    btn.style.opacity = '.85';
+  }
+}
 
 // ───────────────────────── NEW helper ─────────────────────────
 // ───────────────────────── CHANGED ─────────────────────────
 // ───────────────────────── CHANGED ─────────────────────────
-function updateEmergencyButtonFromCache() {
-  try {
-    const btn = document.getElementById('emergencyBtn');
-    if (!btn) return;
 
-    // Never hide; default grey & disabled.
-    btn.hidden = false;
-
-    const isBusy = btn.dataset.busy === '1';
-    const hasEligible = !!(emergencyEligibilityCache &&
-                           Array.isArray(emergencyEligibilityCache.eligible) &&
-                           emergencyEligibilityCache.eligible.length);
-
-    if (isBusy) {
-      // Busy state already set by setEmergencyButtonBusy(true); keep disabled/grey
-      btn.disabled = true;
-      btn.style.filter = 'grayscale(1)';
-      btn.style.opacity = '.85';
-      return;
-    }
-
-    if (hasEligible) {
-      // BRIGHT RED & enabled
-      btn.disabled = false;
-      btn.style.filter = '';
-      btn.style.opacity = '';
-      btn.style.background = '#d32f2f';
-      btn.style.border = '1px solid #b71c1c';
-      btn.style.color = '#fff';
-    } else {
-      // Greyed & disabled
-      btn.disabled = true;
-      btn.style.filter = 'grayscale(1)';
-      btn.style.opacity = '.85';
-      // Keep brand red base but visually greyed via filter; alternatively set neutral grey bg.
-    }
-  } catch {}
-}
 
 // ===== Cache helpers =====
 
@@ -4229,22 +4205,35 @@ let tilesInFlight  = false;
 let nextTilesDueAt = 0; // epoch ms for next tiles refresh
 
 // Driver chain: Tiles → Emergency → restart 3-minute clock
+// --- NEW: single path for refresh UX ---
 async function startTilesThenEmergencyChain({ force = false } = {}) {
-  // Pause entirely if Emergency overlay is open
-  if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
+  if (startTilesThenEmergencyChain._inflight) return startTilesThenEmergencyChain._inflight;
 
-  if (tilesInFlight) return;      // coalesce bursts
-  tilesInFlight = true;
+  const work = (async () => {
+    try { await loadFromServer({ force }); }
+    catch (e) {
+      if (String(e && e.message) !== '__AUTH_STOP__') {
+        // Non-auth errors are already toasted inside loadFromServer when relevant.
+      }
+      return;
+    }
+    try { await refreshEmergencyEligibility({ silent: true }); } catch {}
+  })();
 
-  try {
-    await loadFromServer({ force });                     // Tiles (baseline)
-    await refreshEmergencyEligibility({ silent: true }); // Emergency
-  } finally {
-    tilesInFlight = false;
-    // Restart the cadence from the end of the chain (+3 minutes)
-    scheduleNextTilesRefresh(Date.now());
-  }
+  startTilesThenEmergencyChain._inflight = work.finally(() => { startTilesThenEmergencyChain._inflight = null; });
+  return startTilesThenEmergencyChain._inflight;
 }
+
+// Optional helper used by your closeEmergencyOverlay() fallback:
+function scheduleNextTilesRefresh(fromTs) {
+  try { clearTimeout(scheduleNextTilesRefresh._t); } catch {}
+  const THREE_MIN = 3 * 60 * 1000;
+  const delay = Math.max(0, THREE_MIN - (Date.now() - (fromTs || Date.now())));
+  scheduleNextTilesRefresh._t = setTimeout(() => {
+    startTilesThenEmergencyChain({ force: false }).catch(() => {});
+  }, delay);
+}
+
 
 // 30s poller: only evaluates Tiles due-ness; NEVER calls emergency directly
 (function ensureTilesPoller() {
@@ -4533,46 +4522,41 @@ window.addEventListener('hashchange', routeFromURL);
 // ───────────────────────── CHANGED (IIFE) ─────────────────────────
 
 // --- UPDATED ---
+// --- UPDATED: init() ---
 async function init() {
-  // 1) Rehydrate any saved identity (but do NOT open login yet)
+  // Rehydrate identity (do NOT open login here)
   identity = loadSavedIdentity();
 
-  // 2) Set up UI chrome
+  // Chrome + furniture
   ensureLoadingOverlay();
   ensureMenu();
   ensureEmergencyButton();
 
-  // 3) If arriving via password-reset link, open that flow (blocking)
-  const hasK = new URLSearchParams(location.search).has('k');
-  if (hasK) {
-    openResetOverlay(); // do not return; rest of init can still wire UI
+  // If we arrived on a password-reset link, open that flow (non-dismissable)
+  if (new URLSearchParams(location.search).has('k')) {
+    openResetOverlay();
   }
 
-  // 4) Restore any local draft
+  // Restore any local draft
   loadDraft();
 
-  // 5) If we don't have an identity, try silent auto-login (Credentials API).
-  //    Do NOT open the login modal here; let the server decide via loadFromServer().
+  // Try silent auto-login (Credentials API) if we don't have an identity.
+  // Do NOT open login here; let loadFromServer() decide from the server.
   let autoOK = false;
   if (!identity.msisdn) {
-    try {
-      if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; }
-    } catch {}
+    try { if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; } } catch {}
     try { autoOK = await tryAutoLoginViaCredentialsAPI(); } catch {}
   }
 
-  // 6) Always attempt to load tiles; loader is gated INSIDE loadFromServer()
   try {
-    // If auto-login succeeded, that helper already called loadFromServer(force:true).
-    // Calling again is safe (it becomes a background refresh if tiles exist), but we can skip for efficiency.
     if (!autoOK) {
+      // Show loader only on true cold start (handled inside loadFromServer)
       await loadFromServer({ force: true });
     }
-
-    // After first tiles load, kick emergency eligibility in the background.
+    // Kick emergency eligibility quietly in background
     try { refreshEmergencyEligibility({ silent: true }); } catch {}
   } catch (e) {
-    // Only surface non-auth failures. Auth failures will already have shown Login via loadFromServer().
+    // Only surface non-auth failures; auth failures show login inside loadFromServer
     if (String(e && e.message) !== '__AUTH_STOP__') {
       showToast('Load failed: ' + (e.message || e), 5000);
     }
@@ -4587,8 +4571,24 @@ async function init() {
     ensurePastShiftsButton();
   }
 
-  routeFromURL();
+  // Wire Refresh to the unified chain (no premature login)
+  if (els.refreshBtn && !els.refreshBtn.__wired) {
+    els.refreshBtn.__wired = true;
+    els.refreshBtn.addEventListener('click', () => {
+      startTilesThenEmergencyChain({ force: true }).catch(() => {});
+    });
+  }
+
+  routeFromURL && routeFromURL();
 }
+
+// Ensure init runs exactly once on load.
+if (document.readyState !== 'loading') {
+  init();
+} else {
+  window.addEventListener('DOMContentLoaded', init, { once: true });
+}
+
 
 // Ensure init runs exactly once on load.
 if (document.readyState !== 'loading') {
