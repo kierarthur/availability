@@ -158,10 +158,16 @@ function loadSavedIdentity() {
   } catch {}
   return {};
 }
+// --- UPDATED ---
 function clearSavedIdentity() {
+  // Clear localStorage copy…
   try { localStorage.removeItem(SAVED_IDENTITY_KEY); } catch {}
+  // …and also clear the in-memory identity so subsequent requests
+  // don’t keep sending a stale msisdn.
+  try { identity = {}; } catch {}
   // Keep LAST_EMAIL_KEY to help with login UX.
 }
+
 
 function rememberEmailLocal(email) {
   try { localStorage.setItem(LAST_EMAIL_KEY, email || ''); } catch {}
@@ -1921,15 +1927,16 @@ function authToken() {
 // ---------- Load + Submit ----------
 // ───────────────────────── CHANGED ─────────────────────────
 // ───────────────────────── CHANGED ─────────────────────────
-async function loadFromServer({ force=false } = {}) {
+
+// --- UPDATED ---
+async function loadFromServer({ force = false } = {}) {
   // Single-flight guard (coalesce bursts)
   if (loadFromServer._inflight && !force) return loadFromServer._inflight;
 
   // Do we already have tiles on screen? (controls loader UX only)
-  const hadBaseline =
-    !!(baseline && Array.isArray(baseline.tiles) && baseline.tiles.length > 0);
+  const hadBaseline = !!(baseline && Array.isArray(baseline.tiles) && baseline.tiles.length > 0);
 
-  // Auth pre-check: no token → require login immediately (regardless of tiles)
+  // Token missing → definitive unauth → show login (regardless of tiles)
   if (!authToken()) {
     try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
     showAuthError('Missing or invalid token');
@@ -1937,7 +1944,7 @@ async function loadFromServer({ force=false } = {}) {
     throw new Error('__AUTH_STOP__');
   }
 
-  // Never hide the button; default to grey & disabled while we (re)establish state.
+  // Keep Emergency button visible but disabled while (re)establishing state
   try {
     if (els.emergencyBtn) {
       els.emergencyBtn.hidden = false;
@@ -1945,7 +1952,7 @@ async function loadFromServer({ force=false } = {}) {
     }
   } catch {}
 
-  // Show loader only for cold-start (no tiles yet). Background otherwise.
+  // Loader only for cold-start (no tiles yet). Background otherwise.
   const shouldShowLoader = !hadBaseline;
   let showedLoader = false;
   if (shouldShowLoader) {
@@ -1958,14 +1965,16 @@ async function loadFromServer({ force=false } = {}) {
       // ── fetch BASELINE ONLY ──
       const { res, json } = await apiGET({});
 
+      // Transient busy → toast, no login
       if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
         showToast('Server is busy, please try again.');
         return;
       }
 
       const errCode = (json && json.error) || '';
+
+      // Definitive auth failures → clear identity + open Login (even if tiles exist)
       if (!res.ok) {
-        // Treat 401/403 as definitive auth failures → force login
         if (res.status === 401 || res.status === 403) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
@@ -1977,7 +1986,7 @@ async function loadFromServer({ force=false } = {}) {
       }
 
       if (json && json.ok === false) {
-        const unauthErrors = new Set(['INVALID_OR_UNKNOWN_IDENTITY','NOT_IN_CANDIDATE_LIST','FORBIDDEN']);
+        const unauthErrors = new Set(['INVALID_OR_UNKNOWN_IDENTITY', 'NOT_IN_CANDIDATE_LIST', 'FORBIDDEN']);
         if (unauthErrors.has(errCode)) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
@@ -1988,7 +1997,7 @@ async function loadFromServer({ force=false } = {}) {
       }
 
       // ------- baseline UI/data -------
-      const prevBaseline = baseline;         // keep to support draft-merge rule
+      const prevBaseline = baseline; // for draft merge
       baseline = json;
 
       const name =
@@ -2010,7 +2019,7 @@ async function loadFromServer({ force=false } = {}) {
 
       saveLastLoaded(json.lastLoadedAt || new Date().toISOString());
 
-      // Cull drafts ONLY where server tile changed (unchanged-tile merge rule).
+      // Cull drafts ONLY where server tile changed (unchanged-tile merge rule)
       try {
         if (prevBaseline && prevBaseline.tiles && baseline && baseline.tiles) {
           const oldMap = new Map((prevBaseline.tiles || []).map(t => [t.ymd, JSON.stringify({
@@ -2047,21 +2056,18 @@ async function loadFromServer({ force=false } = {}) {
           for (const ymd of Object.keys(draft)) {
             const before = oldMap.get(ymd);
             const after  = newMap.get(ymd);
-            // If tile moved out/in window, became booked/blocked, or ANY field differs → drop draft.
             if (!before || !after || before !== after) {
               delete draft[ymd];
             }
           }
           persistDraft();
         } else {
-          // If there was no previous baseline, keep existing draft filtering to known days only
           const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
           for (const k of Object.keys(draft)) {
             if (!validYmd.has(k)) delete draft[k];
           }
         }
       } catch {
-        // On any compare error, fall back to conservative keep-valid-ymd rule
         const validYmd = new Set((baseline.tiles || []).map(x => x.ymd));
         for (const k of Object.keys(draft)) {
           if (!validYmd.has(k)) delete draft[k];
@@ -2072,11 +2078,8 @@ async function loadFromServer({ force=false } = {}) {
       showFooterIfNeeded();
       maybeShowWelcome();
 
-      // Button colour/state now depends on cache or upcoming eligibility refresh;
-      // do NOT hide — keep grey/disabled until eligibility completes.
+      // Keep button visible; eligibility refresh will decide final state
       updateEmergencyButtonFromCache();
-
-      // NOTE: Emergency refresh is now chained by refreshAppState/cadence, not fired here.
     } finally {
       if (showedLoader) hideLoading();
     }
@@ -2085,6 +2088,7 @@ async function loadFromServer({ force=false } = {}) {
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
+
 
 
 
@@ -4527,49 +4531,60 @@ window.addEventListener('hashchange', routeFromURL);
 
 // ---------- Boot ----------
 // ───────────────────────── CHANGED (IIFE) ─────────────────────────
+
+// --- UPDATED ---
 async function init() {
+  // 1) Rehydrate any saved identity (but do NOT open login yet)
   identity = loadSavedIdentity();
 
+  // 2) Set up UI chrome
   ensureLoadingOverlay();
   ensureMenu();
-
-  // Create the Emergency button early (idempotent); it will be grey/disabled until eligibility loads.
   ensureEmergencyButton();
 
+  // 3) If arriving via password-reset link, open that flow (blocking)
   const hasK = new URLSearchParams(location.search).has('k');
   if (hasK) {
-    openResetOverlay();
-  } else if (!identity.msisdn) {
-    try { if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; } } catch {}
-    const autoOK = await tryAutoLoginViaCredentialsAPI();
-    if (!autoOK && !isBlockingOverlayOpen()) openLoginOverlay();
+    openResetOverlay(); // do not return; rest of init can still wire UI
   }
 
+  // 4) Restore any local draft
   loadDraft();
 
-  if (identity && identity.msisdn) {
-    // Boot path: block ONLY until tiles load, then unblock; emergency will run in background.
-    showLoading('Loading shifts…');
+  // 5) If we don't have an identity, try silent auto-login (Credentials API).
+  //    Do NOT open the login modal here; let the server decide via loadFromServer().
+  let autoOK = false;
+  if (!identity.msisdn) {
     try {
+      if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; }
+    } catch {}
+    try { autoOK = await tryAutoLoginViaCredentialsAPI(); } catch {}
+  }
+
+  // 6) Always attempt to load tiles; loader is gated INSIDE loadFromServer()
+  try {
+    // If auto-login succeeded, that helper already called loadFromServer(force:true).
+    // Calling again is safe (it becomes a background refresh if tiles exist), but we can skip for efficiency.
+    if (!autoOK) {
       await loadFromServer({ force: true });
-      // After first tiles load, kick emergency eligibility in the background (single-fire guard lives inside).
-      try { refreshEmergencyEligibility({ silent: true }); } catch {}
-    } catch (e) {
-      if (String(e && e.message) !== '__AUTH_STOP__') {
-        showToast('Load failed: ' + e.message, 5000);
-      }
-    } finally {
-      sizeGrid();
-      equalizeTileHeights({ reset: true });
-      hideLoading();
-
-      // Last-chance: if the button wasn't created earlier (e.g., anchor mounted late), create it now.
-      ensureEmergencyButton();
-
-      // Wire handlers (click logic is already idempotent).
-      try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
-      ensurePastShiftsButton();
     }
+
+    // After first tiles load, kick emergency eligibility in the background.
+    try { refreshEmergencyEligibility({ silent: true }); } catch {}
+  } catch (e) {
+    // Only surface non-auth failures. Auth failures will already have shown Login via loadFromServer().
+    if (String(e && e.message) !== '__AUTH_STOP__') {
+      showToast('Load failed: ' + (e.message || e), 5000);
+    }
+  } finally {
+    sizeGrid();
+    equalizeTileHeights({ reset: true });
+
+    // Ensure the Emergency button exists and is wired (idempotent)
+    ensureEmergencyButton();
+    try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
+
+    ensurePastShiftsButton();
   }
 
   routeFromURL();
