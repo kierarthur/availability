@@ -937,15 +937,13 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
 
-  // Resume behaviour (non-blocking):
-  // Immediately start the Tiles → Emergency chain (single-flight guarded).
-  // The chain itself will refresh tiles, then run one emergency refresh,
-  // then restart the 3-minute cadence from completion time.
+  // Resume behaviour (non-blocking): background tiles → emergency chain; loader is gated inside loadFromServer for cold start
   startTilesThenEmergencyChain({ force: false }).catch(() => {});
 
   // If drafts exist (post-clear), continue nudging
   if (Object.keys(draft).length) scheduleSubmitNudge();
 });
+
 
 
 
@@ -1927,15 +1925,16 @@ async function loadFromServer({ force=false } = {}) {
   // Single-flight guard (coalesce bursts)
   if (loadFromServer._inflight && !force) return loadFromServer._inflight;
 
+  // Do we already have tiles on screen? (controls loader UX only)
+  const hadBaseline =
+    !!(baseline && Array.isArray(baseline.tiles) && baseline.tiles.length > 0);
+
+  // Auth pre-check: no token → require login immediately (regardless of tiles)
   if (!authToken()) {
     try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
     showAuthError('Missing or invalid token');
-    throw new Error('__AUTH_STOP__');
-  }
-  if (!identity || !identity.msisdn) {
-    try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
     if (!isBlockingOverlayOpen()) openLoginOverlay();
-    return;
+    throw new Error('__AUTH_STOP__');
   }
 
   // Never hide the button; default to grey & disabled while we (re)establish state.
@@ -1946,7 +1945,13 @@ async function loadFromServer({ force=false } = {}) {
     }
   } catch {}
 
-  showLoading('Updating…');
+  // Show loader only for cold-start (no tiles yet). Background otherwise.
+  const shouldShowLoader = !hadBaseline;
+  let showedLoader = false;
+  if (shouldShowLoader) {
+    showLoading('Updating…');
+    showedLoader = true;
+  }
 
   const work = (async () => {
     try {
@@ -1960,10 +1965,12 @@ async function loadFromServer({ force=false } = {}) {
 
       const errCode = (json && json.error) || '';
       if (!res.ok) {
-        if (res.status === 400 || res.status === 401 || res.status === 403) {
+        // Treat 401/403 as definitive auth failures → force login
+        if (res.status === 401 || res.status === 403) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
           showAuthError('Not an authorised user');
+          if (!isBlockingOverlayOpen()) openLoginOverlay();
           throw new Error('__AUTH_STOP__');
         }
         throw new Error(errCode || `HTTP ${res.status}`);
@@ -1975,7 +1982,7 @@ async function loadFromServer({ force=false } = {}) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
           if (!isBlockingOverlayOpen()) openLoginOverlay();
-          return;
+          throw new Error('__AUTH_STOP__');
         }
         throw new Error(errCode || 'SERVER_ERROR');
       }
@@ -2006,36 +2013,36 @@ async function loadFromServer({ force=false } = {}) {
       // Cull drafts ONLY where server tile changed (unchanged-tile merge rule).
       try {
         if (prevBaseline && prevBaseline.tiles && baseline && baseline.tiles) {
-         const oldMap = new Map((prevBaseline.tiles || []).map(t => [t.ymd, JSON.stringify({
-  ymd: t.ymd,
-  booked: !!t.booked,
-  blocked: t.status === 'BLOCKED',
-  status: t.status,
-  shiftInfo: t.shiftInfo || '',
-  hospital: t.hospital || t.location || '',
-  ward: t.ward || '',
-  jobTitle: t.jobTitle || '',
-  bookingRef: t.bookingRef || '',
-  display: t.display_label || '',
-  time: t.time_range_label || '',
-  type: t.shift_type_label || '',
-  editable: t.editable !== false               // ← NEW
-})]));
+          const oldMap = new Map((prevBaseline.tiles || []).map(t => [t.ymd, JSON.stringify({
+            ymd: t.ymd,
+            booked: !!t.booked,
+            blocked: t.status === 'BLOCKED',
+            status: t.status,
+            shiftInfo: t.shiftInfo || '',
+            hospital: t.hospital || t.location || '',
+            ward: t.ward || '',
+            jobTitle: t.jobTitle || '',
+            bookingRef: t.bookingRef || '',
+            display: t.display_label || '',
+            time: t.time_range_label || '',
+            type: t.shift_type_label || '',
+            editable: t.editable !== false
+          })]));
           const newMap = new Map((baseline.tiles || []).map(t => [t.ymd, JSON.stringify({
-  ymd: t.ymd,
-  booked: !!t.booked,
-  blocked: t.status === 'BLOCKED',
-  status: t.status,
-  shiftInfo: t.shiftInfo || '',
-  hospital: t.hospital || t.location || '',
-  ward: t.ward || '',
-  jobTitle: t.jobTitle || '',
-  bookingRef: t.bookingRef || '',
-  display: t.display_label || '',
-  time: t.time_range_label || '',
-  type: t.shift_type_label || '',
-  editable: t.editable !== false               // ← NEW
-})]));
+            ymd: t.ymd,
+            booked: !!t.booked,
+            blocked: t.status === 'BLOCKED',
+            status: t.status,
+            shiftInfo: t.shiftInfo || '',
+            hospital: t.hospital || t.location || '',
+            ward: t.ward || '',
+            jobTitle: t.jobTitle || '',
+            bookingRef: t.bookingRef || '',
+            display: t.display_label || '',
+            time: t.time_range_label || '',
+            type: t.shift_type_label || '',
+            editable: t.editable !== false
+          })]));
 
           for (const ymd of Object.keys(draft)) {
             const before = oldMap.get(ymd);
@@ -2071,13 +2078,14 @@ async function loadFromServer({ force=false } = {}) {
 
       // NOTE: Emergency refresh is now chained by refreshAppState/cadence, not fired here.
     } finally {
-      hideLoading();
+      if (showedLoader) hideLoading();
     }
   })();
 
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
+
 
 
 async function submitChanges() {
@@ -2184,18 +2192,39 @@ els.submitBtn && els.submitBtn.addEventListener('click', () => {
   submitChanges().finally(() => { els.submitBtn.disabled = false; });
 });
 els.clearBtn && els.clearBtn.addEventListener('click', clearChanges);
-els.refreshBtn && els.refreshBtn.addEventListener('click', async () => {
-  if (Object.keys(draft).length) {
-    if (!confirm('You have unsaved changes. Reload and lose them?')) return;
-    clearChanges();
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) {
+    // Going to background
+    cancelSubmitNudge();
+    lastHiddenAt = Date.now();
+    persistDraft();
+    return;
   }
 
-  try {
-    await startTilesThenEmergencyChain({ force: true }); // tiles → emergency; cadence restarts on completion
-  } catch (e) {
-    if (!AUTH_DENIED) showToast('Reload failed: ' + e.message);
+  // Coming to foreground
+  const wasAwayLong = lastHiddenAt && (Date.now() - lastHiddenAt > 3 * 60 * 1000);
+  lastHiddenAt = null;
+
+  // Clear local edits after long away
+  if (wasAwayLong && Object.keys(draft).length) {
+    draft = {};
+    persistDraft();
+    showToast('Unsaved changes were cleared after inactivity.');
   }
+
+  // If Emergency overlay is open → pause everything (no cadence work on resume)
+  if (typeof emergencyOpen === 'function' ? emergencyOpen() : false) {
+    if (Object.keys(draft).length) scheduleSubmitNudge();
+    return;
+  }
+
+  // Resume behaviour (non-blocking): background tiles → emergency chain; loader is gated inside loadFromServer for cold start
+  startTilesThenEmergencyChain({ force: false }).catch(() => {});
+
+  // If drafts exist (post-clear), continue nudging
+  if (Object.keys(draft).length) scheduleSubmitNudge();
 });
+
 
 
 // ---------- Keep CSS vars fresh ----------
