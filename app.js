@@ -640,6 +640,7 @@ function openOverlay(overlayId, focusSel) {
 // Cadence restart is handled by startTilesThenEmergencyChain when available.
 // Close Emergency overlay, then either Tiles→Emergency (if tiles due within 1 min) or just Emergency.
 // Cadence restart is handled by startTilesThenEmergencyChain when available.
+
 async function closeEmergencyOverlay(recheck = true) {
   // Close immediately
   closeOverlay('emergencyOverlay', /*force*/ true);
@@ -658,16 +659,13 @@ async function closeEmergencyOverlay(recheck = true) {
 
   if (tilesDueSoon) {
     if (typeof startTilesThenEmergencyChain === 'function') {
-      // Preferred: single-flight chain + cadence restart from chain completion
+      // Preferred: single-flight chain; it will advance the cadence in its finally
       await startTilesThenEmergencyChain({ force: true });
     } else {
-      // Fallback: manual tiles then emergency, then restart cadence
+      // Fallback: manual tiles then emergency, then advance cadence
       try { await loadFromServer({ force: true }); } catch {}
       await refreshEmergencyEligibility({ silent: true }).catch(() => {});
-      try {
-        // Restart the 3-minute cadence from “now”
-        scheduleNextTilesRefresh(Date.now());
-      } catch {}
+      try { if (typeof scheduleNextTilesRefresh === 'function') scheduleNextTilesRefresh(Date.now()); } catch {}
     }
   } else {
     // Only emergency refresh
@@ -2106,7 +2104,34 @@ async function loadFromServer({ force = false } = {}) {
 
       // ------- baseline UI/data -------
       const prevBaseline = baseline; // for draft merge
-      baseline = json;
+      let nextBaseline = json;
+
+      // Short merge/guard: preserve very recent optimistic changes
+      try {
+        const ra = (typeof window !== 'undefined') ? window.__recentlyApplied : null;
+        const now = Date.now();
+        if (ra && ra.until && now < ra.until && ra.codes && nextBaseline && Array.isArray(nextBaseline.tiles)) {
+          const codes = ra.codes;
+          const byYmdNew = new Map((nextBaseline.tiles || []).map(t => [t.ymd, t]));
+          for (const [ymd, code] of Object.entries(codes)) {
+            const t = byYmdNew.get(ymd);
+            if (!t) continue;
+
+            const isBooked  = !!t.booked;
+            const isBlocked = String(t.status || '').toUpperCase() === 'BLOCKED';
+            const editable  = t.editable !== false;
+
+            // Honor server supremacy for BOOKED/BLOCKED; otherwise preserve optimistic code
+            if (!isBooked && !isBlocked && editable) {
+              t.status = code;
+            }
+          }
+        }
+        // Clear guard when expired
+        if (!ra || now >= ra.until) { try { if (window && window.__recentlyApplied) delete window.__recentlyApplied; } catch {} }
+      } catch {}
+
+      baseline = nextBaseline;
 
       // Persist fresh baseline to per-user cache for instant next-boot render
       try {
@@ -2215,7 +2240,6 @@ async function loadFromServer({ force = false } = {}) {
 
 
 
-
 async function submitChanges() {
   if (AUTH_DENIED) return;
   if (!baseline) return;
@@ -2262,15 +2286,36 @@ async function submitChanges() {
     // Optimistically update local baseline
     if (baseline && Array.isArray(baseline.tiles) && applied.length) {
       const byYmd = new Map(baseline.tiles.map(t => [t.ymd, t]));
+      const recentCodes = {};
+
       for (const r of applied) {
         const tile = byYmd.get(r.ymd);
         if (!tile) continue;
         const newCode = (r.code !== undefined && r.code !== null) ? r.code : changeMap.get(r.ymd);
         if (newCode !== undefined) {
           tile.status = newCode;
+          recentCodes[r.ymd] = newCode; // remember for short merge/guard
         }
       }
+
       saveLastLoaded(new Date().toISOString());
+
+      // Persist the updated baseline immediately so UI doesn't revert on next paint
+      try {
+        if (identity && identity.msisdn) {
+          localStorage.setItem(`BASELINE_CACHE_${identity.msisdn}`, JSON.stringify(baseline));
+        }
+      } catch {}
+
+      // Start a short "recently applied" window so an immediate fetch won't clobber optimistic values
+      try {
+        if (Object.keys(recentCodes).length) {
+          window.__recentlyApplied = {
+            until: Date.now() + 20_000, // ~20s guard
+            codes: recentCodes
+          };
+        }
+      } catch {}
     }
 
     if (rejected.length) {
@@ -2298,6 +2343,7 @@ async function submitChanges() {
     try { refreshEmergencyEligibility({ silent:true }); } catch {}
   }
 }
+
 
 // ───────────────────────── CHANGED ─────────────────────────
 function clearChanges() {
@@ -4336,6 +4382,7 @@ async function startTilesThenEmergencyChain({ force = false } = {}) {
   // Ensure top bar state before we potentially render from cache (prevents menu spill)
   try { ensureTopBarStatus(); } catch {}
 
+  // We still fetch during the short guard window; loadFromServer will merge recent optimistic values
   const work = (async () => {
     try { await loadFromServer({ force }); }
     catch (e) {
@@ -4347,7 +4394,12 @@ async function startTilesThenEmergencyChain({ force = false } = {}) {
     try { await refreshEmergencyEligibility({ silent: true }); } catch {}
   })();
 
-  startTilesThenEmergencyChain._inflight = work.finally(() => { startTilesThenEmergencyChain._inflight = null; });
+  startTilesThenEmergencyChain._inflight = work.finally(() => {
+    // Advance the 3-minute cadence regardless of success/failure
+    try { if (typeof scheduleNextTilesRefresh === 'function') scheduleNextTilesRefresh(Date.now()); } catch {}
+    startTilesThenEmergencyChain._inflight = null;
+  });
+
   return startTilesThenEmergencyChain._inflight;
 }
 
@@ -4413,14 +4465,6 @@ function setTopBarUpdating(on) {
 }
 
 // Optional helper used by your closeEmergencyOverlay() fallback:
-function scheduleNextTilesRefresh(fromTs) {
-  try { clearTimeout(scheduleNextTilesRefresh._t); } catch {}
-  const THREE_MIN = 3 * 60 * 1000;
-  const delay = Math.max(0, THREE_MIN - (Date.now() - (fromTs || Date.now())));
-  scheduleNextTilesRefresh._t = setTimeout(() => {
-    startTilesThenEmergencyChain({ force: false }).catch(() => {});
-  }, delay);
-}
 
 
 
@@ -4625,7 +4669,11 @@ function shouldBumpTilesOnEmergencyClose() {
  */
 async function tilesResumeHandler() {
   if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
+
   await startTilesThenEmergencyChain({ force: true });
+
+  // Advance cadence right after resume-triggered refresh
+  try { if (typeof scheduleNextTilesRefresh === 'function') scheduleNextTilesRefresh(Date.now()); } catch {}
 }
 
 
