@@ -208,8 +208,8 @@ function ensureLoadingOverlay() {
   style.textContent = `
     :root{
       /* Brand theming for login + reset */
-      --brand-blue-dk: #0b254a;        /* adjust to your logo blue */
-      --brand-blue-dk-95: #0d2b56;     /* slightly lighter for headers/bands */
+      --brand-blue-dk: #0b254a;
+      --brand-blue-dk-95: #0d2b56;
       --border-white: #ffffff;
       --text-on-blue: #eaf0f7;
       --muted-on-blue: #c7d3e5;
@@ -237,16 +237,16 @@ function ensureLoadingOverlay() {
     @keyframes spin { to { transform: rotate(360deg); } }
 
     /* Overlays */
-#pastOverlay, #contentOverlay, #welcomeOverlay,
-#loginOverlay, #forgotOverlay, #resetOverlay, #alertOverlay, #emergencyOverlay {
-  position: fixed; inset: 0; z-index: 9998;
-  display: none; align-items: stretch; justify-content: center;
-  background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
-}
-#pastOverlay.show, #contentOverlay.show, #welcomeOverlay.show,
-#loginOverlay.show, #forgotOverlay.show, #resetOverlay.show, #alertOverlay.show, #emergencyOverlay.show {
-  display: flex;
-}
+    #pastOverlay, #contentOverlay, #welcomeOverlay,
+    #loginOverlay, #forgotOverlay, #resetOverlay, #alertOverlay, #emergencyOverlay {
+      position: fixed; inset: 0; z-index: 9998;
+      display: none; align-items: stretch; justify-content: center;
+      background: rgba(10,12,16,0.55); backdrop-filter: blur(2px);
+    }
+    #pastOverlay.show, #contentOverlay.show, #welcomeOverlay.show,
+    #loginOverlay.show, #forgotOverlay.show, #resetOverlay.show, #alertOverlay.show, #emergencyOverlay.show {
+      display: flex;
+    }
 
     .sheet {
       background: #0f1115; color: #e7ecf3;
@@ -334,7 +334,7 @@ function ensureLoadingOverlay() {
       background: rgba(255,255,255,0.12) !important;
     }
 
-    /* Menu dropdown */
+    /* Menu dropdown — CSS keeps it collapsed by default; JS toggles 'show' */
     #menuWrap { position: relative; margin-left: auto; }
     #menuBtn {
       appearance: none; border: 1px solid #2a3446; background: #131926; color: #e7ecf3;
@@ -366,20 +366,16 @@ function ensureLoadingOverlay() {
 
     .attention-border { border-color: var(--danger) !important; }
 
-    /* Simple form inputs (default look for non-themed sheets) */
     .sheet-body label { font-weight:700; font-size:.9rem; margin-top:.2rem; }
     .sheet-body input {
       border-radius:8px; border:1px solid #222936; background:#0b0e14; color:#e7ecf3;
       padding:.6rem; width:100%;
     }
 
-    /* Input-with-button row for reveal eye */
     .input-row {
       display:flex; gap:.4rem; align-items:center;
     }
-    .input-row input {
-      flex:1 1 auto;
-    }
+    .input-row input { flex:1 1 auto; }
     .icon-btn {
       appearance:none; border:1px solid #2a3446; background:#131926; color:#e7ecf3;
       border-radius:8px; padding:.45rem .6rem; font-weight:700; cursor:pointer;
@@ -459,7 +455,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(alertOverlay);
 
-  // Login overlay (NON-dismissable + BLOCKING) — NO close button
+  // Login overlay (NON-dismissable + BLOCKING)
   const loginOverlay = document.createElement('div');
   loginOverlay.id = 'loginOverlay';
   loginOverlay.innerHTML = `
@@ -515,7 +511,7 @@ function ensureLoadingOverlay() {
   `;
   document.body.appendChild(forgotOverlay);
 
-  // Reset overlay (NON-dismissable: no close button)
+  // Reset overlay (NON-dismissable)
   const resetOverlay = document.createElement('div');
   resetOverlay.id = 'resetOverlay';
   resetOverlay.innerHTML = `
@@ -552,78 +548,75 @@ function ensureLoadingOverlay() {
 
   // Shared overlay wiring — respect dismissibility
   [
-  { overlayId:'pastOverlay',    closeId:'pastClose' },
-  { overlayId:'contentOverlay', closeId:'contentClose' },
-  // welcomeOverlay: NO closeId (non-dismissable)
-  // loginOverlay: NON-dismissable (no close button, do NOT wire)
-  { overlayId:'forgotOverlay',  closeId:'forgotClose' },
-  // resetOverlay: NO closeId (non-dismissable)
-  // alertOverlay: NON-dismissable (wired via showBlockingAlert)
-  { overlayId:'emergencyOverlay', closeId:'emergencyClose' } // NEW
-].forEach(({overlayId, closeId}) => {
-  const overlay = document.getElementById(overlayId);
-  const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
-  if (!overlay) return;
+    { overlayId:'pastOverlay',    closeId:'pastClose' },
+    { overlayId:'contentOverlay', closeId:'contentClose' },
+    // welcomeOverlay: non-dismissable
+    // loginOverlay: non-dismissable
+    { overlayId:'forgotOverlay',  closeId:'forgotClose' },
+    // resetOverlay: non-dismissable
+    // alertOverlay: non-dismissable
+    { overlayId:'emergencyOverlay', closeId:'emergencyClose' }
+  ].forEach(({overlayId, closeId}) => {
+    const overlay = document.getElementById(overlayId);
+    const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
+    if (!overlay) return;
 
-  // Backdrop click → only if dismissible
-  overlay.addEventListener('click', (e) => {
-  if (e.target !== overlay) return;
-  if (!cfg.dismissible) { e.stopPropagation(); return; }
-  if (overlayId === 'emergencyOverlay') {
-    closeEmergencyOverlay(true); // close + recheck emergency eligibility
-  } else {
-    closeOverlay(overlayId);
-  }
-});
+    // Backdrop click → only if dismissible
+    overlay.addEventListener('click', (e) => {
+      if (e.target !== overlay) return;
+      if (!cfg.dismissible) { e.stopPropagation(); return; }
+      if (overlayId === 'emergencyOverlay') {
+        closeEmergencyOverlay(true);
+      } else {
+        closeOverlay(overlayId);
+      }
+    });
 
-
-  // Close button → only wired if exists and dismissible
-  if (closeId) {
-    const btn = document.getElementById(closeId);
-   if (btn) {
-  btn.addEventListener('click', () => {
-    if (!cfg.dismissible) return;
-    if (overlayId === 'emergencyOverlay') {
-      closeEmergencyOverlay(true); // close + recheck emergency eligibility
-    } else {
-      closeOverlay(overlayId);
+    // Close button → only wired if exists and dismissible
+    if (closeId) {
+      const btn = document.getElementById(closeId);
+      if (btn) {
+        btn.addEventListener('click', () => {
+          if (!cfg.dismissible) return;
+          if (overlayId === 'emergencyOverlay') {
+            closeEmergencyOverlay(true);
+          } else {
+            closeOverlay(overlayId);
+          }
+        });
+      }
     }
   });
-}
 
-  }
-});
-
-// Global Escape → only closes dismissible overlays
-document.addEventListener('keydown', (e) => {
-  if (e.key !== 'Escape') return;
-  [
-    'pastOverlay',
-    'contentOverlay',
-    'welcomeOverlay',
-    'loginOverlay',
-    'forgotOverlay',
-    'resetOverlay',
-    'alertOverlay',
-    'emergencyOverlay' // NEW
-  ].forEach(id => {
-    const ov = document.getElementById(id);
-    const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
-    if (ov && ov.classList.contains('show') && cfg.dismissible) {
-  if (id === 'emergencyOverlay') {
-    closeEmergencyOverlay(true); // close + recheck emergency eligibility
-  } else {
-    closeOverlay(id);
-  }
-}
-
+  // Global Escape → only closes dismissible overlays
+  document.addEventListener('keydown', (e) => {
+    if (e.key !== 'Escape') return;
+    [
+      'pastOverlay',
+      'contentOverlay',
+      'welcomeOverlay',
+      'loginOverlay',
+      'forgotOverlay',
+      'resetOverlay',
+      'alertOverlay',
+      'emergencyOverlay'
+    ].forEach(id => {
+      const ov = document.getElementById(id);
+      const cfg = OVERLAY_CONFIG[id] || { dismissible:true, blocking:false };
+      if (ov && ov.classList.contains('show') && cfg.dismissible) {
+        if (id === 'emergencyOverlay') {
+          closeEmergencyOverlay(true);
+        } else {
+          closeOverlay(id);
+        }
+      }
+    });
   });
-});
 
-
-  // Wire auth forms
+  // Wire auth forms early so auth UI works regardless of when cache render happens
   wireAuthForms();
 }
+
 
 // ----- Overlay open/close with config awareness -----
 function openOverlay(overlayId, focusSel) {
@@ -1241,16 +1234,25 @@ async function openContent(kind, titleFallback) {
 
 // ---------- Menu (top-right) ----------
 function ensureMenu() {
+  // Make sure base styles/overlays are injected early so the menu has its CSS on first paint
+  try { ensureLoadingOverlay(); } catch {}
+
   const header = document.querySelector('header');
   if (!header) return;
   if (document.getElementById('menuWrap')) return;
 
   const wrap = document.createElement('div');
   wrap.id = 'menuWrap';
+
   const btn = document.createElement('button');
   btn.id = 'menuBtn';
   btn.type = 'button';
   btn.textContent = 'Menu';
+  // ARIA wiring
+  btn.setAttribute('aria-haspopup', 'true');
+  btn.setAttribute('aria-expanded', 'false');
+  btn.setAttribute('aria-controls', 'menuList');
+
   const list = document.createElement('div');
   list.id = 'menuList';
   list.innerHTML = `
@@ -1262,25 +1264,49 @@ function ensureMenu() {
     <button class="menu-item" id="miChangePw">Change password</button>
     <button class="menu-item" id="miLogout">Logout</button>
   `;
+
+  // Collapsed-by-default on first paint (do NOT rely on CSS that may not be injected yet)
+  list.style.display = 'none';
+  list.setAttribute('hidden', 'hidden');
+  list.classList.remove('show');
+
   wrap.append(btn, list);
   header.appendChild(wrap);
 
+  // Toggle handler that works even before CSS is injected
   btn.addEventListener('click', (e) => {
     e.stopPropagation();
-    if (isBlockingOverlayOpen()) return; // don't open dropdown over blocking modal
-    list.classList.toggle('show');
-  });
-  document.addEventListener('click', () => list.classList.remove('show'));
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') list.classList.remove('show');
+    if (isBlockingOverlayOpen()) return;
+    const willShow = !list.classList.contains('show');
+    list.classList.toggle('show', willShow);
+    if (willShow) {
+      list.removeAttribute('hidden');
+      list.style.display = '';
+      btn.setAttribute('aria-expanded', 'true');
+    } else {
+      list.setAttribute('hidden', 'hidden');
+      list.style.display = 'none';
+      btn.setAttribute('aria-expanded', 'false');
+    }
   });
 
-  document.getElementById('miPast').addEventListener('click', () => { list.classList.remove('show'); openPastShifts(); });
-  document.getElementById('miHosp').addEventListener('click', () => { list.classList.remove('show'); openContent('HOSPITAL','Hospital Addresses'); });
-  document.getElementById('miAccom').addEventListener('click', () => { list.classList.remove('show'); openContent('ACCOMMODATION','Accommodation Contacts'); });
+  // Global close handlers keep it collapsed and idempotent
+  const closeMenu = () => {
+    if (!list.classList.contains('show')) return;
+    list.classList.remove('show');
+    list.setAttribute('hidden', 'hidden');
+    list.style.display = 'none';
+    btn.setAttribute('aria-expanded', 'false');
+  };
+  document.addEventListener('click', closeMenu);
+  document.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeMenu(); });
+
+  document.getElementById('miPast').addEventListener('click', () => { closeMenu(); openPastShifts(); });
+  document.getElementById('miHosp').addEventListener('click', () => { closeMenu(); openContent('HOSPITAL','Hospital Addresses'); });
+  document.getElementById('miAccom').addEventListener('click', () => { closeMenu(); openContent('ACCOMMODATION','Accommodation Contacts'); });
 
   document.getElementById('miTimesheet').addEventListener('click', async () => {
-    list.classList.remove('show');
+    closeMenu();
     if (isBlockingOverlayOpen()) return;
     try {
       showLoading('Sending timesheet...');
@@ -1302,7 +1328,7 @@ function ensureMenu() {
 
   // Change password: send a reset link to the known email
   document.getElementById('miChangePw').addEventListener('click', async () => {
-    list.classList.remove('show');
+    closeMenu();
     if (isBlockingOverlayOpen()) return;
     const email = (baseline && baseline.candidate && baseline.candidate.email) ||
                   getRememberedEmail();
@@ -1313,7 +1339,6 @@ function ensureMenu() {
     try {
       showLoading('Requesting password reset link...');
       await apiForgotPassword(email); // always returns ok UX
-      // Requested exact wording:
       showToast('Password Reset request has been sent by email if email exists');
     } catch (e) {
       showToast('Could not start password change: ' + (e.message || e));
@@ -1323,38 +1348,34 @@ function ensureMenu() {
   });
 
   document.getElementById('miLogout').addEventListener('click', () => {
-  list.classList.remove('show');
-  if (isBlockingOverlayOpen()) return;
+    closeMenu();
+    if (isBlockingOverlayOpen()) return;
 
-  clearSavedIdentity();
-  draft = {}; persistDraft();
-  baseline = null;
-  els.grid && (els.grid.innerHTML = '');
+    clearSavedIdentity();
+    draft = {}; persistDraft();
+    baseline = null;
+    els.grid && (els.grid.innerHTML = '');
 
-  // --- NEW: clear emergency state + hide/disable the button + close overlay ---
-  try {
-    // Clear any cached emergency state your new code keeps
-    window._emergencyEligibleShifts = [];
-    window._emergencyState = null;
-  } catch {}
+    // Clear emergency state + hide/disable the button + close overlay
+    try {
+      window._emergencyEligibleShifts = [];
+      window._emergencyState = null;
+    } catch {}
+    try {
+      if (els.emergencyBtn) {
+        els.emergencyBtn.hidden = true;
+        els.emergencyBtn.disabled = true;
+      }
+    } catch {}
+    try { closeOverlay('emergencyOverlay'); } catch {}
 
-  // Hide/disable the EMERGENCY button and un-wire it
-  try {
-  if (els.emergencyBtn) {
-    els.emergencyBtn.hidden = true;
-    els.emergencyBtn.disabled = true;
-    // No need to remove event listeners here; wireEmergencyButton/openEmergencyOverlay handles click logic.
-  }
-} catch {}
+    openLoginOverlay();
+  });
 
-
-  // If the emergency overlay is open, close it defensively
-  try { closeOverlay('emergencyOverlay'); } catch {}
-
-  openLoginOverlay();
-});
-
+  // Final safety: enforce collapsed state once more
+  try { ensureTopBarStatus(); } catch {}
 }
+
 
 // ---------- Welcome / newUserHint with platform targeting ----------
 function maybeShowWelcome() {
@@ -4329,53 +4350,28 @@ async function startTilesThenEmergencyChain({ force = false } = {}) {
   startTilesThenEmergencyChain._inflight = work.finally(() => { startTilesThenEmergencyChain._inflight = null; });
   return startTilesThenEmergencyChain._inflight;
 }
+
 function ensureTopBarStatus() {
   try {
     const top = document.getElementById('topBar') || document.querySelector('.topbar') || document.querySelector('header');
     if (!top) return;
 
-    // Ensure the menu is collapsed by default so items don’t spill out before JS wiring completes.
-    const menuList =
-      document.getElementById('menuList') ||
-      top.querySelector('[data-role="menu-list"], .menu-items, nav ul');
-    const menuToggle =
-      document.getElementById('menuToggle') ||
-      top.querySelector('[data-role="menu-toggle"], .menu-toggle, button[aria-controls]');
+    // Prefer explicit ids created by ensureMenu
+    const menuList = document.getElementById('menuList') || top.querySelector('[data-role="menu-list"], .menu-items, nav ul');
+    const menuBtn  = document.getElementById('menuBtn')   || document.getElementById('menuToggle') || top.querySelector('[data-role="menu-toggle"], .menu-toggle, button[aria-controls]');
 
-    if (menuList && !menuList._forcedCollapsed) {
-      // Hide until toggled open by user
-      menuList.style.display = 'none';
+    // Force collapsed-by-default even if CSS hasn’t been injected yet
+    if (menuList) {
+      menuList.classList.remove('show');
       menuList.setAttribute('hidden', 'hidden');
-      menuList._forcedCollapsed = true;
+      menuList.style.display = 'none';
     }
-
-    if (menuToggle && !menuToggle._wired) {
-      menuToggle._wired = true;
-      const controlledId = menuToggle.getAttribute('aria-controls');
-      // Keep ARIA in sync
-      menuToggle.setAttribute('aria-expanded', 'false');
-
-      menuToggle.addEventListener('click', () => {
-        const expanded = menuToggle.getAttribute('aria-expanded') === 'true';
-        const next = !expanded;
-        menuToggle.setAttribute('aria-expanded', String(next));
-
-        // Prefer the controlled element if provided, else fallback to detected list
-        const controlledEl = controlledId && document.getElementById(controlledId);
-        const target = controlledEl || menuList;
-        if (target) {
-          if (next) {
-            target.style.display = '';
-            target.removeAttribute('hidden');
-          } else {
-            target.style.display = 'none';
-            target.setAttribute('hidden', 'hidden');
-          }
-        }
-      });
+    if (menuBtn) {
+      menuBtn.setAttribute('aria-expanded', 'false');
     }
   } catch {}
 }
+
 
 function setTopBarUpdating(on) {
   try {
