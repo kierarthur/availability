@@ -4038,12 +4038,16 @@ async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTime
       retry.type = 'button';
       retry.textContent = 'Try again';
       retry.className = 'menu-item';
-      retry.style.border = '1px solid #2a3446';  // ← fixed string
+      retry.style.border = '1px solid #2a3446';
       retry.addEventListener('click', handleEmergencyConfirm);
 
       footer.append(cancel, retry);
       return;
     }
+
+    // ✅ Immediately force-grey the Emergency button until a fresh eligibility response arrives
+    window._emergencyForceGreyUntilFresh = true;
+    try { setEmergencyButtonBusy(true); } catch {}
 
     title.textContent = 'Sent';
     let successMsg = 'Our office have been informed and will call you shortly.';
@@ -4070,12 +4074,13 @@ async function submitEmergencyRaise(shift, issueType, reasonText, etaOrLeaveTime
     close.addEventListener('click', () => closeEmergencyOverlay(true));
     footer.appendChild(close);
 
-    // Immediately refresh eligibility (button greyed while loading)
+    // Kick the eligibility refresh (no-op while overlay is open; close handler will also trigger it)
     refreshEmergencyEligibility({ silent: true }).catch(() => {});
   } finally {
     hideLoading();
   }
 }
+
 
 
 // Simple helper used by polling/guards
@@ -4124,6 +4129,10 @@ async function submitEmergencyRunningLate(ctx, label) {
       return;
     }
 
+    // ✅ Immediately force-grey the Emergency button until a fresh eligibility response arrives
+    window._emergencyForceGreyUntilFresh = true;
+    try { setEmergencyButtonBusy(true); } catch {}
+
     title.textContent = 'Sent';
     body.innerHTML = `<div>Your colleagues on shift and the Arthur Rai office have been informed.</div>`;
     footer.innerHTML = '';
@@ -4144,12 +4153,13 @@ async function submitEmergencyRunningLate(ctx, label) {
     close.addEventListener('click', () => closeEmergencyOverlay(true));
     footer.appendChild(close);
 
-    // Immediately refresh eligibility (button greyed while loading)
+    // Kick the eligibility refresh (this is a no-op while the overlay is open; the close handler will also trigger it)
     refreshEmergencyEligibility({ silent: true, hideDuringRefresh: true }).catch(() => {});
   } finally {
     hideLoading();
   }
 }
+
 
 
 
