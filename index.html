@@ -12,8 +12,6 @@
   <link rel="icon" type="image/png" href="APPICON-192.png" />
   <title>Availability</title>
 
-
-  
   <style>
     :root {
       --bg: #0f1115;
@@ -233,7 +231,6 @@
     .tile.tile--bg-available { background: #B1F99D; }  /* mint green (Available) */
     .tile.tile--bg-pending   { background: #000; }     /* black (No availability yet) */
 
-
     /* Text tones override any .status-* colors inside the tile */
     .tile.tile--tone-dark  .tile-status,
     .tile.tile--tone-dark  .tile-sub,
@@ -337,6 +334,28 @@
 
     /* Thin red border highlight for attention tiles */
     .attention-border { border-color: var(--danger) !important; }
+
+    /* ===============================
+       Samsung Fold cover-only tweaks
+       (activated via JS by adding
+        class "fold-cover" to <html>)
+       =============================== */
+    html.fold-cover main {
+      padding-left: .6rem;
+      padding-right: .6rem;
+    }
+    html.fold-cover .grid {
+      /* keep the same column logic; just tighten spacing */
+      gap: .4rem;
+    }
+    html.fold-cover .tile {
+      padding: .5rem;
+      border-radius: 12px;
+    }
+    html.fold-cover .tile-day,
+    html.fold-cover .tile-date { font-size: .9rem; }
+    html.fold-cover .tile-status { font-size: .95rem; }
+    html.fold-cover .tile-sub    { font-size: .85rem; }
   </style>
 
   <!-- Emergency button compatibility shim (for old cached builds) -->
@@ -345,7 +364,7 @@
       // 1) Minimal visibility helper if the new one doesn't exist
       if (!window.updateEmergencyButtonFromCache) {
         window.emergencyEligibilityCache = window.emergencyEligibilityCache || { eligible: [] };
-               window.updateEmergencyButtonFromCache = function () {
+        window.updateEmergencyButtonFromCache = function () {
           try {
             var btn = document.getElementById('emergencyBtn');
             if (!btn) return;
@@ -389,7 +408,7 @@
             document.getElementById('header') ||
             document.body;
 
-                    var btn = document.createElement('button');
+          var btn = document.createElement('button');
           btn.id = 'emergencyBtn';
           btn.type = 'button';
           btn.textContent = 'Emergency';
@@ -399,24 +418,23 @@
           btn.className = 'btn btn-danger';
           btn.style.background = '#d32f2f';
           btn.style.color = '#fff';
-          btn.style.border = '1px solid #b71c1c';
+          btn.style.border = '1px solid '#b71c1c';
           btn.style.filter = 'grayscale(1)';
           btn.style.opacity = '.85';
 
           anchor.appendChild(btn);
 
           // If the old app doesn't have openEmergencyOverlay, show a helpful prompt.
-     btn.addEventListener('click', function (e) {
-  e.preventDefault();
-  e.stopPropagation();
-  e.stopImmediatePropagation();
-  if (window.openEmergencyOverlay) {
-    window.openEmergencyOverlay();
-  } else {
-    alert('There is an update to this app. Uninstall and close this down completely and reload. Please refresh or reopen the app.');
-  }
-});
-
+          btn.addEventListener('click', function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+            if (window.openEmergencyOverlay) {
+              window.openEmergencyOverlay();
+            } else {
+              alert('There is an update to this app. Uninstall and close this down completely and reload. Please refresh or reopen the app.');
+            }
+          });
 
           window.updateEmergencyButtonFromCache();
         };
@@ -442,6 +460,49 @@
           }).catch(function(){});
         }
       } catch {}
+    })();
+  </script>
+
+  <!-- Samsung Fold cover-screen detector:
+       Adds "fold-cover" class to <html> ONLY on the narrow, tall outer screen of Samsung Fold.
+       iPhones and all other devices remain unaffected. -->
+  <script>
+    (function () {
+      function isSamsungFoldCover() {
+        try {
+          var ua = navigator.userAgent || '';
+          var isSamsung = /Samsung/i.test(ua) || /SM-F9|SM-F93|SM-F94|SM-F91|SM-F92/.test(ua); // conservative
+          if (!isSamsung) return false;
+
+          var w = Math.min(window.innerWidth || 0, screen.width || 0);
+          var h = Math.max(window.innerHeight || 0, screen.height || 0);
+
+          // Cover traits: very narrow, very tall, portrait
+          var narrow = w > 0 && w <= 400;          // cover is typically ~374–384 CSS px
+          var tall   = (w > 0) && (h / w >= 2.2);  // tall aspect (≈ 21:9+)
+          var portrait = h >= w;
+
+          return narrow && tall && portrait;
+        } catch (_) {
+          return false;
+        }
+      }
+
+      function applyFoldClass() {
+        var on = isSamsungFoldCover();
+        document.documentElement.classList.toggle('fold-cover', !!on);
+      }
+
+      // Apply on load + react to geometry changes
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', applyFoldClass, { once: true });
+      } else {
+        applyFoldClass();
+      }
+      window.addEventListener('resize', applyFoldClass, { passive: true });
+      window.addEventListener('orientationchange', function () {
+        setTimeout(applyFoldClass, 60);
+      });
     })();
   </script>
 </head>
