@@ -130,6 +130,7 @@ async function apiPOST(bodyObj) {
   return { res, json, text };
 }
 
+
 // ---- Auth API wrappers ----
 async function apiAuthLogin(email, password) {
   return apiPOST({ action: 'AUTH_LOGIN', email, password });
@@ -1439,6 +1440,7 @@ function openLoginOverlay() {
 }
 
 
+
 function openForgotOverlay() {
   if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
   const fe = document.getElementById('forgotEmail');
@@ -1636,6 +1638,7 @@ function wireAuthForms() {
   });
 }
 
+
 // ---------- Credential Management API (Android/Chrome) ----------
 async function storeCredentialIfSupported(email, password) {
   try {
@@ -1674,6 +1677,7 @@ async function tryAutoLoginViaCredentialsAPI() {
   } catch {}
   return false;
 }
+
 
 // ---------- Rendering ----------
 // ───────────────────────── CHANGED ─────────────────────────
@@ -1973,6 +1977,25 @@ async function loadFromServer({ force = false } = {}) {
     }
   } catch {}
 
+  // NEW: Hydrate baseline from local storage (per-user) so tiles render immediately on cold/hard start
+  try {
+    if (!baseline || !Array.isArray(baseline.tiles) || baseline.tiles.length === 0) {
+      const cacheKey = (identity && identity.msisdn) ? `BASELINE_CACHE_${identity.msisdn}` : null;
+      if (cacheKey) {
+        const raw = localStorage.getItem(cacheKey);
+        if (raw) {
+          const cached = JSON.parse(raw);
+          if (cached && Array.isArray(cached.tiles) && cached.tiles.length > 0) {
+            baseline = cached;
+            try { renderTiles(); } catch {}
+            try { showFooterIfNeeded(); } catch {}
+            try { updateEmergencyButtonFromCache(); } catch {}
+          }
+        }
+      }
+    }
+  } catch {}
+
   // Do we already have tiles on screen? (controls loader UX only)
   const hadBaseline = !!(baseline && Array.isArray(baseline.tiles) && baseline.tiles.length > 0);
 
@@ -2059,6 +2082,13 @@ async function loadFromServer({ force = false } = {}) {
       // ------- baseline UI/data -------
       const prevBaseline = baseline; // for draft merge
       baseline = json;
+
+      // NEW: Persist fresh baseline to per-user cache for instant next-boot render
+      try {
+        if (identity && identity.msisdn) {
+          localStorage.setItem(`BASELINE_CACHE_${identity.msisdn}`, JSON.stringify(baseline));
+        }
+      } catch {}
 
       const name =
         (json.candidateName && String(json.candidateName).trim()) ||
@@ -2156,6 +2186,7 @@ async function loadFromServer({ force = false } = {}) {
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
+
 
 
 
@@ -4292,6 +4323,7 @@ async function startTilesThenEmergencyChain({ force = false } = {}) {
   return startTilesThenEmergencyChain._inflight;
 }
 
+
 // Optional helper used by your closeEmergencyOverlay() fallback:
 function scheduleNextTilesRefresh(fromTs) {
   try { clearTimeout(scheduleNextTilesRefresh._t); } catch {}
@@ -4301,6 +4333,7 @@ function scheduleNextTilesRefresh(fromTs) {
     startTilesThenEmergencyChain({ force: false }).catch(() => {});
   }, delay);
 }
+
 
 
 // 30s poller: only evaluates Tiles due-ness; NEVER calls emergency directly
