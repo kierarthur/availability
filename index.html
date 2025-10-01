@@ -335,15 +335,42 @@
     /* Thin red border highlight for attention tiles */
     .attention-border { border-color: var(--danger) !important; }
 
-    /* === Fold cover test: make BOOKED tiles yellow + show a tiny badge === */
-    html[data-fold-cover="1"] .tile.tile--bg-booked { background: #ffd400 !important; }
-    html[data-fold-cover="1"] body::after {
-      content: "FOLD COVER MODE";
-      position: fixed; top: 6px; right: 6px; z-index: 9999;
-      font: 700 11px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
-      padding: 4px 6px; border-radius: 6px;
-      background: #ffd400; color: #111; border: 1px solid #aa8f00;
-      pointer-events: none; opacity: .9;
+    /* ===============================
+       Fold cover adjustments ONLY
+       (activated by data-fold-cover="1")
+       =============================== */
+    html[data-fold-cover="1"] main {
+      padding-left: .5rem;
+      padding-right: .5rem;
+    }
+    html[data-fold-cover="1"] .grid {
+      /* Ensure columns can shrink and stay on-screen */
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: .45rem;
+    }
+    html[data-fold-cover="1"] .tile {
+      /* Let grid items shrink to fit the column */
+      min-width: 0;
+      padding: .5rem;
+      border-radius: 12px;
+    }
+    /* Modest type scale-down to prevent long words from forcing width */
+    html[data-fold-cover="1"] .tile-day,
+    html[data-fold-cover="1"] .tile-date { font-size: .9rem; }
+    html[data-fold-cover="1"] .tile-status { font-size: .95rem; }
+    html[data-fold-cover="1"] .tile-sub    { font-size: .85rem; }
+    /* Help the browser break stubborn strings gracefully */
+    html[data-fold-cover="1"] .tile-day,
+    html[data-fold-cover="1"] .tile-date,
+    html[data-fold-cover="1"] .tile-status,
+    html[data-fold-cover="1"] .tile-sub {
+      hyphens: auto;
+      word-break: break-word;
+      overflow-wrap: anywhere;
+    }
+    /* (Optional safety net) If an exceptionally narrow cover variant appears */
+    @media (max-width: 380px) {
+      html[data-fold-cover="1"] .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
   </style>
 
