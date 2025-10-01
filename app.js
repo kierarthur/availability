@@ -3398,11 +3398,11 @@ function renderEmergencyStep() {
     }
 
     // ───────────────────────── DNA ─────────────────────────
+        // ───────────────────────── DNA (Step A: select person) ─────────────────────────
     else if (state.issueType === 'DNA') {
       title.textContent = 'Who hasn’t arrived?';
 
       const s = state.selectedShift || {};
-
       const peers =
         (Array.isArray(s.cohort) && s.cohort) ||
         (Array.isArray(s.cohort_peers) && s.cohort_peers) ||
@@ -3458,56 +3458,74 @@ function renderEmergencyStep() {
       }
 
       body.appendChild(list);
-
-      // Instruction block (populated when absentee is selected)
-      const callInfo = document.createElement('div');
-      callInfo.className = 'em-note';
-      body.appendChild(callInfo);
-
-      // Tried-calling checkbox
-      const chkWrap = document.createElement('label');
-      chkWrap.className = 'em-row';
-      chkWrap.style.marginTop = '.6rem';
-      chkWrap.innerHTML = `<input type="checkbox" id="dnaTriedCalling"> <div class="em-text">I tried calling them and could not reach them</div>`;
-      body.appendChild(chkWrap);
-
       setFooter({ continueDisabled: true });
 
       const cont = document.getElementById('emergencyContinue');
-      const chk = chkWrap.querySelector('#dnaTriedCalling');
-
-      function syncContinueGate() {
-        const chosen = body.querySelector('input[name="dnaAbsentee"]:checked');
-        if (chosen && chosen._abs) {
-          emergencyState.dnaAbsenteeName = chosen._abs.name || null;
-          emergencyState.dnaAbsenteeMsisdn = chosen._abs.msisdn || null;
-
-          const dispNum = formatMsisdn07Display(chosen._abs.msisdn);
-          if (dispNum) {
-            callInfo.textContent = `Please call ${chosen._abs.name} on ${dispNum}. If you can’t get a response after trying a couple of times, tick below and continue.`;
-          } else {
-            callInfo.textContent = `Please try calling ${chosen._abs.name} via your usual contact method. If you can’t get a response after trying a couple of times, tick below and continue.`;
-          }
-        }
-
-        const ok = !!chosen && !!chk.checked;
-        cont && (cont.disabled = !ok);
-        emergencyState.dnaTriedCalling = !!chk.checked;
-        emergencyState.confirmError = '';
-      }
-
       body.addEventListener('change', (e) => {
-        if (e.target && (e.target.name === 'dnaAbsentee')) {
-          syncContinueGate();
-        }
-        if (e.target && e.target.id === 'dnaTriedCalling') {
-          syncContinueGate();
+        if (e.target && e.target.name === 'dnaAbsentee') {
+          cont && (cont.disabled = false);
         }
       });
 
-      cont && cont.addEventListener('click', handleEmergencyCollectDetails);
+      // Move to the new clean page showing only the selected person's number
+      cont && cont.addEventListener('click', () => {
+        const chosen = body.querySelector('input[name="dnaAbsentee"]:checked');
+        if (!chosen || !chosen._abs) return;
+        emergencyState.dnaAbsenteeName = chosen._abs.name || null;
+        emergencyState.dnaAbsenteeMsisdn = chosen._abs.msisdn || null;
+        emergencyState.dnaTriedCalling = false;
+        emergencyState.step = 'DNA_CALL';
+        renderEmergencyStep();
+      });
     }
 
+
+  }
+  else if (state.step === 'DNA_CALL') {
+    const name = emergencyState.dnaAbsenteeName || '';
+    const msisdn = emergencyState.dnaAbsenteeMsisdn || '';
+    if (!name) {
+      // Safety: if someone navigates here without selecting, bounce back to selection
+      emergencyState.step = 'DETAILS';
+      renderEmergencyStep();
+      return;
+    }
+
+    title.textContent = 'Please call';
+
+    const box = document.createElement('div');
+    box.style.border = '1px solid #2a3446';
+    box.style.background = '#131926';
+    box.style.borderRadius = '10px';
+    box.style.padding = '.6rem';
+
+    const dispNum = formatMsisdn07Display(msisdn);
+    const msg = dispNum
+      ? `Please call ${name} on ${dispNum}.`
+      : `Please try calling ${name} via your usual contact method.`;
+
+    const p = document.createElement('div');
+    p.textContent = msg;
+    box.appendChild(p);
+    body.appendChild(box);
+
+    const chkWrap = document.createElement('label');
+    chkWrap.className = 'em-row';
+    chkWrap.style.marginTop = '.6rem';
+    chkWrap.innerHTML = `<input type="checkbox" id="dnaTriedCalling"> <div class="em-text">I tried calling them and could not reach them</div>`;
+    body.appendChild(chkWrap);
+
+    setFooter({ continueDisabled: true });
+
+    const cont = document.getElementById('emergencyContinue');
+    const chk = chkWrap.querySelector('#dnaTriedCalling');
+
+    chk.addEventListener('change', () => {
+      emergencyState.dnaTriedCalling = !!chk.checked;
+      cont && (cont.disabled = !emergencyState.dnaTriedCalling);
+    });
+
+    cont && cont.addEventListener('click', handleEmergencyCollectDetails);
   }
 
   else if (state.step === 'CONFIRM') {
@@ -3779,22 +3797,27 @@ async function handleEmergencyCollectDetails() {
     return;
   }
 
-  if (emergencyState.issueType === 'DNA') {
+    if (emergencyState.issueType === 'DNA') {
     const nameOK = !!(emergencyState.dnaAbsenteeName && emergencyState.dnaAbsenteeName.trim());
-    const calledOK = !!emergencyState.dnaTriedCalling;
-    if (!nameOK || !calledOK) {
-      emergencyState.confirmError = !nameOK
-        ? 'Please select who has not arrived.'
-        : 'Please confirm you tried calling them before continuing.';
-      emergencyState.step = 'CONFIRM';
+    if (!nameOK) {
+      // No person chosen yet → go back to selection
+      emergencyState.step = 'DETAILS';
       renderEmergencyStep();
       return;
     }
+    if (!emergencyState.dnaTriedCalling) {
+      // Person chosen but not ticked the tried-calling box → stay on the clean call page
+      emergencyState.step = 'DNA_CALL';
+      renderEmergencyStep();
+      return;
+    }
+    // Ready to confirm
     emergencyState.confirmError = '';
     emergencyState.step = 'CONFIRM';
     renderEmergencyStep();
     return;
   }
+
 
   // CANNOT_ATTEND / LEAVE_EARLY
   if (!emergencyState.reasonText || emergencyState.reasonText.length < 3) {
