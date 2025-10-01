@@ -333,7 +333,19 @@
     }
 
     /* Thin red border highlight for attention tiles */
-    .attention-border { border-color: var(--danger) !important; }
+.attention-border { border-color: var(--danger) !important; }
+
+/* === Fold cover test: make BOOKED tiles yellow + show a tiny badge === */
+html[data-fold-cover="1"] .tile.tile--bg-booked { background: #ffd400 !important; }
+html[data-fold-cover="1"] body::after {
+  content: "FOLD COVER MODE";
+  position: fixed; top: 6px; right: 6px; z-index: 9999;
+  font: 700 11px/1 system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+  padding: 4px 6px; border-radius: 6px;
+  background: #ffd400; color: #111; border: 1px solid #aa8f00;
+  pointer-events: none; opacity: .9;
+}
+
 
     /* ===============================
        Samsung Fold cover-only tweaks
@@ -463,48 +475,43 @@
     })();
   </script>
 
-  <!-- Samsung Fold cover-screen detector:
-       Adds "fold-cover" class to <html> ONLY on the narrow, tall outer screen of Samsung Fold.
-       iPhones and all other devices remain unaffected. -->
-  <script>
-    (function () {
-      function isSamsungFoldCover() {
-        try {
-          var ua = navigator.userAgent || '';
-          var isSamsung = /Samsung/i.test(ua) || /SM-F9|SM-F93|SM-F94|SM-F91|SM-F92/.test(ua); // conservative
-          if (!isSamsung) return false;
+ <!-- Fold cover detector: sets data-fold-cover="1" ONLY on Samsung cover screen.
+     Add #force-fold or ?forceFold=1 to URL to force it for testing on any device. -->
+<script>
+  (function () {
+    function isForced() {
+      try {
+        return /[?#].*(forceFold=1|force-fold)/i.test(location.search + location.hash);
+      } catch (_) { return false; }
+    }
+    function isSamsungFoldCover() {
+      try {
+        var ua = navigator.userAgent || '';
+        var isSamsung = /Samsung/i.test(ua) || /SM-F9\d|SM-F9/i.test(ua); // conservative
+        var w = Math.min(window.innerWidth || 0, (screen && screen.width)  || 0);
+        var h = Math.max(window.innerHeight || 0, (screen && screen.height) || 0);
+        var portrait = h >= w;
+        var narrow   = w > 0 && w <= 420;      // cover is ~374–384 CSS px
+        var tall     = (w > 0) && (h / w >= 2.1);
+        return isSamsung && portrait && narrow && tall;
+      } catch (_) { return false; }
+    }
+    function apply() {
+      var on = isForced() || isSamsungFoldCover();
+      var root = document.documentElement;
+      if (on) root.setAttribute('data-fold-cover', '1');
+      else    root.removeAttribute('data-fold-cover');
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', apply, { once: true });
+    } else {
+      apply();
+    }
+    window.addEventListener('resize', apply, { passive: true });
+    window.addEventListener('orientationchange', function(){ setTimeout(apply, 60); });
+  })();
+</script>
 
-          var w = Math.min(window.innerWidth || 0, screen.width || 0);
-          var h = Math.max(window.innerHeight || 0, screen.height || 0);
-
-          // Cover traits: very narrow, very tall, portrait
-          var narrow = w > 0 && w <= 400;          // cover is typically ~374–384 CSS px
-          var tall   = (w > 0) && (h / w >= 2.2);  // tall aspect (≈ 21:9+)
-          var portrait = h >= w;
-
-          return narrow && tall && portrait;
-        } catch (_) {
-          return false;
-        }
-      }
-
-      function applyFoldClass() {
-        var on = isSamsungFoldCover();
-        document.documentElement.classList.toggle('fold-cover', !!on);
-      }
-
-      // Apply on load + react to geometry changes
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', applyFoldClass, { once: true });
-      } else {
-        applyFoldClass();
-      }
-      window.addEventListener('resize', applyFoldClass, { passive: true });
-      window.addEventListener('orientationchange', function () {
-        setTimeout(applyFoldClass, 60);
-      });
-    })();
-  </script>
 </head>
 
 <body>
