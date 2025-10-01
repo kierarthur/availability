@@ -910,6 +910,7 @@ document.addEventListener('DOMContentLoaded', () => {
 // ───────────────────────── CHANGED ─────────────────────────
 // Single, minimal place to refresh on visibility change.
 // ── Resume logic (unchanged) + periodic visible refresh ──
+
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     // Going to background
@@ -920,10 +921,11 @@ document.addEventListener('visibilitychange', () => {
   }
 
   // Coming to foreground
-  const wasAwayLong = lastHiddenAt && (Date.now() - lastHiddenAt > 3 * 60 * 1000);
+  const awayMs = lastHiddenAt ? (Date.now() - lastHiddenAt) : 0;
+  const wasAwayLong = lastHiddenAt && (awayMs >= 10 * 60 * 1000); // >= 10 minutes
   lastHiddenAt = null;
 
-  // Clear local edits after long away
+  // Clear local edits after long away (existing behaviour)
   if (wasAwayLong && Object.keys(draft).length) {
     draft = {};
     persistDraft();
@@ -936,14 +938,18 @@ document.addEventListener('visibilitychange', () => {
     return;
   }
 
+  // NEW: If we were away for >= 10 minutes, force-grey the Emergency button until a fresh server result arrives.
+  if (wasAwayLong) {
+    window._emergencyForceGreyUntilFresh = true;
+    try { setEmergencyButtonBusy(true); } catch {}
+  }
+
   // Resume behaviour (non-blocking): background tiles → emergency chain; loader is gated inside loadFromServer for cold start
   startTilesThenEmergencyChain({ force: false }).catch(() => {});
 
   // If drafts exist (post-clear), continue nudging
   if (Object.keys(draft).length) scheduleSubmitNudge();
 });
-
-
 
 
 
@@ -2011,7 +2017,8 @@ async function loadFromServer({ force = false } = {}) {
             baseline = cached;
             try { renderTiles(); } catch {}
             try { showFooterIfNeeded(); } catch {}
-            try { updateEmergencyButtonFromCache(); } catch {}
+            // IMPORTANT: if we're "force-grey-until-fresh", do NOT repaint from cache here.
+            try { if (!window._emergencyForceGreyUntilFresh) updateEmergencyButtonFromCache(); } catch {}
           }
         }
       }
@@ -2218,8 +2225,11 @@ async function loadFromServer({ force = false } = {}) {
       showFooterIfNeeded();
       maybeShowWelcome();
 
-      // Keep button visible; eligibility refresh will decide final state
-      updateEmergencyButtonFromCache();
+      // Keep button visible; eligibility refresh will decide final state.
+      // IMPORTANT: don't repaint from cache if we're in a "force-grey-until-fresh" phase.
+      if (!window._emergencyForceGreyUntilFresh) {
+        updateEmergencyButtonFromCache();
+      }
 
       // We are definitely signed in at this point → ensure no login sheet is lingering
       try { closeOverlay && closeOverlay('loginOverlay', /* force */ true); } catch {}
@@ -2237,6 +2247,7 @@ async function loadFromServer({ force = false } = {}) {
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
+
 
 
 
@@ -2923,7 +2934,7 @@ async function refreshEmergencyEligibility({ silent = false /*, hideDuringRefres
   window.emergencyCooldownUntil = now + 8000; // ~8s
 
   // Decide whether to grey the button during this fetch:
-  // - If we're in a "force-grey-until-fresh" phase (e.g., after submit or app resume), grey it.
+  // - If we're in a "force-grey-until-fresh" phase (e.g., after submit or long-away resume), grey it.
   // - If we have NOT previously been eligible (i.e., not red), grey it.
   // - Otherwise (currently red/eligible), DO NOT grey during routine checks to avoid flicker.
   const forceGrey = !!window._emergencyForceGreyUntilFresh;
@@ -2957,7 +2968,7 @@ async function refreshEmergencyEligibility({ silent = false /*, hideDuringRefres
     try { syncEmergencyButtonVisibility(eligible); } catch {}
   }
 
-  // We have a fresh server answer — clear any force-grey phase.
+  // Fresh server answer → clear any force-grey phase.
   window._emergencyForceGreyUntilFresh = false;
 
   // Only un-busy if we set it busy here (avoids extra repaint from cache when we never greyed)
@@ -2967,6 +2978,7 @@ async function refreshEmergencyEligibility({ silent = false /*, hideDuringRefres
 
   window.emergencyInFlight = false;
 }
+
 
 // ───────────────────────── CHANGED ─────────────────────────
 // ───────────────────────── CHANGED ─────────────────────────
@@ -4199,6 +4211,16 @@ function updateEmergencyButtonFromCache() {
   if (!btn) return;
 
   btn.hidden = false; // never hide
+
+  // If we're in a "force-grey-until-fresh" phase (e.g., long-away resume or post-submit),
+  // do NOT repaint from cache. Keep the button grey & disabled until a fresh server result arrives.
+  if (window._emergencyForceGreyUntilFresh) {
+    btn.disabled = true;
+    btn.style.filter = 'grayscale(1)';
+    btn.style.opacity = '.85';
+    return;
+  }
+
   const busy = btn.dataset.busy === '1';
   const eligible = (emergencyEligibilityCache && Array.isArray(emergencyEligibilityCache.eligible))
     ? emergencyEligibilityCache.eligible
@@ -4226,6 +4248,7 @@ function updateEmergencyButtonFromCache() {
     btn.style.opacity = '.85';
   }
 }
+
 
 // ───────────────────────── NEW helper ─────────────────────────
 // ───────────────────────── CHANGED ─────────────────────────
