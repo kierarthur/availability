@@ -1969,6 +1969,9 @@ async function loadFromServer({ force = false } = {}) {
   // Single-flight guard (coalesce bursts)
   if (loadFromServer._inflight && !force) return loadFromServer._inflight;
 
+  // Make sure the top bar is in a safe initial state before any immediate render.
+  try { ensureTopBarStatus(); } catch {}
+
   // Ensure in-memory identity is hydrated from storage BEFORE any network work
   try {
     if (!identity || !identity.msisdn) {
@@ -1977,7 +1980,7 @@ async function loadFromServer({ force = false } = {}) {
     }
   } catch {}
 
-  // NEW: Hydrate baseline from local storage (per-user) so tiles render immediately on cold/hard start
+  // Hydrate baseline from local storage (per-user) so tiles render immediately on cold/hard start
   try {
     if (!baseline || !Array.isArray(baseline.tiles) || baseline.tiles.length === 0) {
       const cacheKey = (identity && identity.msisdn) ? `BASELINE_CACHE_${identity.msisdn}` : null;
@@ -2023,13 +2026,14 @@ async function loadFromServer({ force = false } = {}) {
     showedLoader = true;
   }
 
+  // Always show a subtle top-bar updating indicator during the fetch (non-blocking)
+  try { setTopBarUpdating(true); } catch {}
+
   const work = (async () => {
     try {
       // ── fetch BASELINE ONLY ──
       const doFetch = async (withMsisdn = false) => {
         const hasId = !!(identity && identity.msisdn);
-        // Most implementations of apiGET attach identity internally;
-        // but on retry we pass it explicitly to be belt-and-braces.
         return withMsisdn && hasId ? await apiGET({ msisdn: identity.msisdn }) : await apiGET({});
       };
 
@@ -2083,7 +2087,7 @@ async function loadFromServer({ force = false } = {}) {
       const prevBaseline = baseline; // for draft merge
       baseline = json;
 
-      // NEW: Persist fresh baseline to per-user cache for instant next-boot render
+      // Persist fresh baseline to per-user cache for instant next-boot render
       try {
         if (identity && identity.msisdn) {
           localStorage.setItem(`BASELINE_CACHE_${identity.msisdn}`, JSON.stringify(baseline));
@@ -2180,13 +2184,13 @@ async function loadFromServer({ force = false } = {}) {
       } catch {}
     } finally {
       if (showedLoader) hideLoading();
+      try { setTopBarUpdating(false); } catch {}
     }
   })();
 
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
-
 
 
 
@@ -4308,11 +4312,14 @@ let nextTilesDueAt = 0; // epoch ms for next tiles refresh
 async function startTilesThenEmergencyChain({ force = false } = {}) {
   if (startTilesThenEmergencyChain._inflight) return startTilesThenEmergencyChain._inflight;
 
+  // Ensure top bar state before we potentially render from cache (prevents menu spill)
+  try { ensureTopBarStatus(); } catch {}
+
   const work = (async () => {
     try { await loadFromServer({ force }); }
     catch (e) {
       if (String(e && e.message) !== '__AUTH_STOP__') {
-        // Non-auth errors are already toasted inside loadFromServer when relevant.
+        // Non-auth errors are already handled inside loadFromServer when relevant.
       }
       return;
     }
@@ -4322,7 +4329,92 @@ async function startTilesThenEmergencyChain({ force = false } = {}) {
   startTilesThenEmergencyChain._inflight = work.finally(() => { startTilesThenEmergencyChain._inflight = null; });
   return startTilesThenEmergencyChain._inflight;
 }
+function ensureTopBarStatus() {
+  try {
+    const top = document.getElementById('topBar') || document.querySelector('.topbar') || document.querySelector('header');
+    if (!top) return;
 
+    // Ensure the menu is collapsed by default so items don’t spill out before JS wiring completes.
+    const menuList =
+      document.getElementById('menuList') ||
+      top.querySelector('[data-role="menu-list"], .menu-items, nav ul');
+    const menuToggle =
+      document.getElementById('menuToggle') ||
+      top.querySelector('[data-role="menu-toggle"], .menu-toggle, button[aria-controls]');
+
+    if (menuList && !menuList._forcedCollapsed) {
+      // Hide until toggled open by user
+      menuList.style.display = 'none';
+      menuList.setAttribute('hidden', 'hidden');
+      menuList._forcedCollapsed = true;
+    }
+
+    if (menuToggle && !menuToggle._wired) {
+      menuToggle._wired = true;
+      const controlledId = menuToggle.getAttribute('aria-controls');
+      // Keep ARIA in sync
+      menuToggle.setAttribute('aria-expanded', 'false');
+
+      menuToggle.addEventListener('click', () => {
+        const expanded = menuToggle.getAttribute('aria-expanded') === 'true';
+        const next = !expanded;
+        menuToggle.setAttribute('aria-expanded', String(next));
+
+        // Prefer the controlled element if provided, else fallback to detected list
+        const controlledEl = controlledId && document.getElementById(controlledId);
+        const target = controlledEl || menuList;
+        if (target) {
+          if (next) {
+            target.style.display = '';
+            target.removeAttribute('hidden');
+          } else {
+            target.style.display = 'none';
+            target.setAttribute('hidden', 'hidden');
+          }
+        }
+      });
+    }
+  } catch {}
+}
+
+function setTopBarUpdating(on) {
+  try {
+    const top = document.getElementById('topBar') || document.querySelector('.topbar') || document.querySelector('header');
+    if (!top) return;
+
+    // Find a sensible anchor: the Refresh button if present; else the emergency button; else append to the bar.
+    const refreshBtn =
+      document.getElementById('refreshBtn') ||
+      top.querySelector('[data-role="refresh"], .refresh-btn, button.refresh');
+    const anchor = refreshBtn?.parentNode || top;
+
+    let badge = document.getElementById('topbarUpdating');
+    if (on) {
+      if (!badge) {
+        badge = document.createElement('span');
+        badge.id = 'topbarUpdating';
+        badge.textContent = 'Updating…';
+        // Subtle, non-blocking inline styling to avoid layout shifts
+        badge.style.display = 'inline-flex';
+        badge.style.alignItems = 'center';
+        badge.style.fontSize = '0.85rem';
+        badge.style.opacity = '0.7';
+        badge.style.marginRight = '0.75rem';
+        badge.style.whiteSpace = 'nowrap';
+
+        if (refreshBtn && anchor) {
+          anchor.insertBefore(badge, refreshBtn);
+        } else {
+          top.appendChild(badge);
+        }
+      } else {
+        badge.style.display = 'inline-flex';
+      }
+    } else if (badge) {
+      badge.style.display = 'none';
+    }
+  } catch {}
+}
 
 // Optional helper used by your closeEmergencyOverlay() fallback:
 function scheduleNextTilesRefresh(fromTs) {
