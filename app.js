@@ -2487,19 +2487,19 @@ function ensureEmergencyButton() {
     // Wire first (wireEmergencyButton clones the node)
     try { wireEmergencyButton(); } catch {}
 
-    // Rebind to the live (possibly cloned) node, then style + state from cache
+    // Rebind to the live (possibly cloned) node, then style + baseline state
     const live = document.getElementById('emergencyBtn') || btn;
     applyStyles(live);
     els.emergencyBtn = live;
 
-    // Default state: visible but grey & disabled until eligibility loads.
+    // Default state on app start/resume: visible but grey & disabled until a fresh server check completes.
     live.hidden = false;
     live.disabled = true;
     live.style.filter = 'grayscale(1)';
     live.style.opacity = '.85';
 
-    try { updateEmergencyButtonFromCache(); } catch {}
-    setTimeout(() => { try { updateEmergencyButtonFromCache(); } catch {} }, 0);
+    // IMPORTANT: Do NOT repaint from cache here.
+    // We want the button to remain grey until the next server result arrives.
   }
 
   const existing = document.getElementById('emergencyBtn');
@@ -2545,6 +2545,8 @@ function ensureEmergencyButton() {
     if (createBtn(tryFindAnchor()) || attempts >= maxAttempts) clearInterval(timer);
   }, 250);
 }
+
+
 
 /** Show/hide the EMERGENCY button based on eligible shifts. */
 function syncEmergencyButtonVisibility(eligible) {
@@ -2920,8 +2922,17 @@ async function refreshEmergencyEligibility({ silent = false /*, hideDuringRefres
   window.emergencyInFlight = true;
   window.emergencyCooldownUntil = now + 8000; // ~8s
 
-  // Busy → visible, greyed, disabled
-  setEmergencyButtonBusy(true);
+  // Decide whether to grey the button during this fetch:
+  // - If we're in a "force-grey-until-fresh" phase (e.g., after submit or app resume), grey it.
+  // - If we have NOT previously been eligible (i.e., not red), grey it.
+  // - Otherwise (currently red/eligible), DO NOT grey during routine checks to avoid flicker.
+  const forceGrey = !!window._emergencyForceGreyUntilFresh;
+  const hadEligible = Array.isArray(window._emergencyEligibleShifts) && window._emergencyEligibleShifts.length > 0;
+  const weSetBusy = (forceGrey || !hadEligible);
+
+  if (weSetBusy) {
+    try { setEmergencyButtonBusy(true); } catch {}
+  }
 
   let ok = false, eligible = [], error = null;
 
@@ -2946,7 +2957,13 @@ async function refreshEmergencyEligibility({ silent = false /*, hideDuringRefres
     try { syncEmergencyButtonVisibility(eligible); } catch {}
   }
 
-  setEmergencyButtonBusy(false);  // un-busy; cache decides final colour/enabled
+  // We have a fresh server answer — clear any force-grey phase.
+  window._emergencyForceGreyUntilFresh = false;
+
+  // Only un-busy if we set it busy here (avoids extra repaint from cache when we never greyed)
+  if (weSetBusy) {
+    try { setEmergencyButtonBusy(false); } catch {}
+  }
 
   window.emergencyInFlight = false;
 }
@@ -4693,12 +4710,17 @@ function shouldBumpTilesOnEmergencyClose() {
 async function tilesResumeHandler() {
   if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
 
+  // On app return (tab visibilitychange), we must start from a known-safe state:
+  //  - Force-grey the button until the server confirms eligibility again.
+  //  - Mark a "force grey until fresh" phase so refreshEmergencyEligibility honours it.
+  window._emergencyForceGreyUntilFresh = true;
+  try { setEmergencyButtonBusy(true); } catch {}
+
   await startTilesThenEmergencyChain({ force: true });
 
   // Advance cadence right after resume-triggered refresh
   try { if (typeof scheduleNextTilesRefresh === 'function') scheduleNextTilesRefresh(Date.now()); } catch {}
 }
-
 
 
 
