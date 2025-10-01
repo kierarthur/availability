@@ -158,6 +158,7 @@ function loadSavedIdentity() {
   } catch {}
   return {};
 }
+
 // --- UPDATED ---
 function clearSavedIdentity() {
   // Clear localStorage copy…
@@ -1405,8 +1406,20 @@ function openLoginOverlay() {
   // Don’t open on top of blocking flows (reset/alert/login already open)
   if (isBlockingOverlayOpen && isBlockingOverlayOpen()) return;
 
-  // If we already have a persisted identity, avoid popping Login over a signed-in UI.
-  // Also clear any lingering #/login so router won’t bring it back.
+  // If a persisted identity exists (even if in-memory hasn’t hydrated yet), avoid popping Login
+  try {
+    const saved = (!identity || !identity.msisdn) ? loadSavedIdentity() : null;
+    if (saved && saved.msisdn) {
+      identity = identity && identity.msisdn ? identity : saved;
+      try {
+        if (/^#\/login/.test(location.hash)) {
+          history.replaceState(null, '', location.pathname + location.search);
+        }
+      } catch {}
+      return;
+    }
+  } catch {}
+
   if (identity && identity.msisdn) {
     try {
       if (/^#\/login/.test(location.hash)) {
@@ -1424,6 +1437,7 @@ function openLoginOverlay() {
   if (lerr) lerr.textContent = '';
   openOverlay('loginOverlay', email ? '#loginPassword' : '#loginEmail');
 }
+
 
 function openForgotOverlay() {
   if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
@@ -1488,20 +1502,20 @@ function wireAuthForms() {
       // Clear password field for safety
       lp.value = '';
 
-      // Force-close the blocking Login overlay so it cannot “sit” over a signed-in UI
+      // Force-close the blocking Login overlay so it cannot sit over a signed-in UI
       closeOverlay('loginOverlay', /* force */ true);
 
-      // IMPORTANT: clear any #/login hash so router can’t reopen it on next route/change
+      // Clear any #/login hash so router can’t reopen it on next route/change
       try {
-        if (/^#\/login/.test(location.hash)) {
-          history.replaceState(null, '', location.pathname + location.search);
+        if (/^#\/(login|forgot|reset)/.test(location.hash || '')) {
+          history.replaceState(null, '', location.pathname + (location.search || ''));
         }
       } catch {}
 
       // Hard refresh baseline as an authenticated user (coalesced inside loadFromServer)
       await loadFromServer({ force: true });
 
-      // (Optional but harmless) refresh emergency eligibility silently
+      // (Optional) refresh emergency eligibility silently
       try { refreshEmergencyEligibility({ silent: true }); } catch {}
     } finally {
       hideLoading(); ls.disabled = false;
@@ -1512,28 +1526,6 @@ function wireAuthForms() {
   lfg?.addEventListener('click', () => {
     closeOverlay('loginOverlay', /* force */ true);
     openForgotOverlay();
-  });
-
-  // Forgot
-  const ff   = document.getElementById('forgotForm');
-  const fe   = document.getElementById('forgotEmail');
-  const fs   = document.getElementById('forgotSubmit');
-  const fmsg = document.getElementById('forgotMsg');
-
-  ff?.addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const email = (fe.value || '').trim().toLowerCase();
-    if (!email) return;
-    try {
-      fs.disabled = true; showLoading('Sending link...');
-      await apiForgotPassword(email); // neutral UX
-      rememberEmailLocal(email);
-      // Requested wording
-      fmsg.textContent = 'Password Reset request has been sent by email if email exists';
-      setTimeout(() => { closeOverlay('forgotOverlay'); openLoginOverlay(); }, 1200);
-    } finally {
-      hideLoading(); fs.disabled = false;
-    }
   });
 
   // Reset — confirm + validation + reveal toggles
@@ -1656,6 +1648,10 @@ async function storeCredentialIfSupported(email, password) {
 async function tryAutoLoginViaCredentialsAPI() {
   try {
     if (!('credentials' in navigator)) return false;
+
+    // If identity already hydrated, nothing to do.
+    if (identity && identity.msisdn) return true;
+
     const cred = await navigator.credentials.get({ password: true, mediation: 'optional' });
     if (cred && cred.id && cred.password) {
       const { res, json } = await apiAuthLogin(cred.id, cred.password);
@@ -1663,14 +1659,12 @@ async function tryAutoLoginViaCredentialsAPI() {
         identity = { msisdn: json.msisdn }; saveIdentity(identity);
         rememberEmailLocal(cred.id);
 
-        // In case a stale #/login was in the URL, remove it to prevent re-opening.
+        // Remove any stale auth hash and close overlay if it was open
         try {
           if (/^#\/(login|forgot|reset)/.test(location.hash || '')) {
             history.replaceState(null, '', location.pathname + (location.search || ''));
           }
         } catch {}
-
-        // If a login overlay was open for any reason, force close it.
         try { closeOverlay('loginOverlay', /*force*/ true); } catch {}
 
         await loadFromServer({ force: true });
@@ -1680,6 +1674,7 @@ async function tryAutoLoginViaCredentialsAPI() {
   } catch {}
   return false;
 }
+
 // ---------- Rendering ----------
 // ───────────────────────── CHANGED ─────────────────────────
 function renderTiles() {
@@ -1965,9 +1960,18 @@ function authToken() {
 // ───────────────────────── CHANGED ─────────────────────────
 
 // --- UPDATED ---
+
 async function loadFromServer({ force = false } = {}) {
   // Single-flight guard (coalesce bursts)
   if (loadFromServer._inflight && !force) return loadFromServer._inflight;
+
+  // Ensure in-memory identity is hydrated from storage BEFORE any network work
+  try {
+    if (!identity || !identity.msisdn) {
+      const saved = loadSavedIdentity();
+      if (saved && saved.msisdn) identity = saved;
+    }
+  } catch {}
 
   // Do we already have tiles on screen? (controls loader UX only)
   const hadBaseline = !!(baseline && Array.isArray(baseline.tiles) && baseline.tiles.length > 0);
@@ -1999,7 +2003,26 @@ async function loadFromServer({ force = false } = {}) {
   const work = (async () => {
     try {
       // ── fetch BASELINE ONLY ──
-      const { res, json } = await apiGET({});
+      const doFetch = async (withMsisdn = false) => {
+        const hasId = !!(identity && identity.msisdn);
+        // Most implementations of apiGET attach identity internally;
+        // but on retry we pass it explicitly to be belt-and-braces.
+        return withMsisdn && hasId ? await apiGET({ msisdn: identity.msisdn }) : await apiGET({});
+      };
+
+      let { res, json } = await doFetch(false);
+
+      // One-time recovery for the race: if server says identity is unknown AND we do have a saved identity, rehydrate and retry once.
+      if (
+        (res.status === 400 && (!json || json.error === 'INVALID_OR_UNKNOWN_IDENTITY')) ||
+        (json && json.ok === false && json.error === 'INVALID_OR_UNKNOWN_IDENTITY')
+      ) {
+        const saved = loadSavedIdentity();
+        if (saved && saved.msisdn) {
+          identity = saved; // rehydrate
+          ({ res, json } = await doFetch(true)); // retry once with explicit msisdn
+        }
+      }
 
       // Transient busy → toast, no login
       if (res.status === 503 || (json && json.error === 'TEMPORARILY_BUSY_TRY_AGAIN')) {
@@ -2018,11 +2041,12 @@ async function loadFromServer({ force = false } = {}) {
           if (!isBlockingOverlayOpen()) openLoginOverlay();
           throw new Error('__AUTH_STOP__');
         }
+        // Any other non-OK (e.g., 400 after retry for reasons other than identity) → throw but do NOT open login here
         throw new Error(errCode || `HTTP ${res.status}`);
       }
 
       if (json && json.ok === false) {
-        const unauthErrors = new Set(['INVALID_OR_UNKNOWN_IDENTITY', 'NOT_IN_CANDIDATE_LIST', 'FORBIDDEN']);
+        const unauthErrors = new Set(['FORBIDDEN']); // keep narrow
         if (unauthErrors.has(errCode)) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
@@ -2117,7 +2141,8 @@ async function loadFromServer({ force = false } = {}) {
       // Keep button visible; eligibility refresh will decide final state
       updateEmergencyButtonFromCache();
 
-      // If we’re signed in, scrub any auth-related hash to prevent a future reload from reopening login.
+      // We are definitely signed in at this point → ensure no login sheet is lingering
+      try { closeOverlay && closeOverlay('loginOverlay', /* force */ true); } catch {}
       try {
         if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
           history.replaceState(null, '', location.pathname + (location.search || ''));
