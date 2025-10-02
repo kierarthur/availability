@@ -46,28 +46,45 @@ const els = {
 // ===== Auth guard (fatal overlay) =====
 let AUTH_DENIED = false;
 function showAuthError(message = 'Not an authorised user') {
-  if (AUTH_DENIED) return;
-  AUTH_DENIED = true;
+  // 1) Guard the flag safely, then set it on the global
+  if (typeof window.AUTH_DENIED !== 'undefined' && window.AUTH_DENIED) return;
+  window.AUTHDENIED = false; // legacy safety if ever referenced elsewhere
+  window.AUTH_DENIED = true;
 
+  // Hide/disable interactive UI
   try { els.footer && els.footer.classList.add('hidden'); } catch {}
   try { els.grid && (els.grid.innerHTML = ''); } catch {}
   try { els.helpMsg && els.helpMsg.classList.add('hidden'); } catch {}
   try { els.submitBtn && (els.submitBtn.disabled = true); } catch {}
   try { els.clearBtn && (els.clearBtn.disabled = true); } catch {}
   try { els.refreshBtn && (els.refreshBtn.disabled = true); } catch {}
-  try { els.emergencyBtn && (els.emergencyBtn.disabled = true); } catch {} // NEW
+  try { els.emergencyBtn && (els.emergencyBtn.disabled = true); } catch {}
 
   hideLoading();
 
+  // Remove any previous auth overlay before adding a new one
+  try {
+    const prev = document.getElementById('authErrorOverlay');
+    if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+  } catch {}
+
+  // 2) Non-blocking overlay: pointer-events:none and keep zIndex modest
   const div = document.createElement('div');
   div.id = 'authErrorOverlay';
-  div.setAttribute('role', 'alertdialog');
-  div.setAttribute('aria-modal', 'true');
+  div.setAttribute('role', 'alert');
+  div.setAttribute('aria-live', 'assertive');
   Object.assign(div.style, {
-    position:'fixed', inset:'0', zIndex:'10000',
-    display:'flex', alignItems:'center', justifyContent:'center',
-    background:'rgba(10,12,16,0.85)', backdropFilter:'blur(2px)'
+    position: 'fixed',
+    inset: '0',
+    zIndex: '9000',                 // keep below typical modal layers
+    pointerEvents: 'none',          // never block clicks to Login overlay
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    background: 'rgba(10,12,16,0.85)',
+    backdropFilter: 'blur(2px)'
   });
+
   div.innerHTML = `
     <div style="
       border:1px solid #2a3446;
@@ -84,8 +101,10 @@ function showAuthError(message = 'Not an authorised user') {
       ${message}
     </div>
   `;
+
   document.body.appendChild(div);
 }
+
 
 
 // ---------- State ----------
@@ -1433,9 +1452,10 @@ function openLoginOverlay() {
   if (isBlockingOverlayOpen && isBlockingOverlayOpen()) return;
 
   // If a persisted identity exists (even if in-memory hasn’t hydrated yet), avoid popping Login
+  // UNLESS we have just shown an auth error (AUTH_DENIED true) – in that case, force login.
   try {
     const saved = (!identity || !identity.msisdn) ? loadSavedIdentity() : null;
-    if (saved && saved.msisdn) {
+    if (saved && saved.msisdn && !AUTH_DENIED) {
       identity = identity && identity.msisdn ? identity : saved;
       try {
         if (/^#\/login/.test(location.hash)) {
@@ -1446,7 +1466,7 @@ function openLoginOverlay() {
     }
   } catch {}
 
-  if (identity && identity.msisdn) {
+  if (identity && identity.msisdn && !AUTH_DENIED) {
     try {
       if (/^#\/login/.test(location.hash)) {
         history.replaceState(null, '', location.pathname + location.search);
@@ -2087,22 +2107,24 @@ async function loadFromServer({ force = false } = {}) {
 
       // Definitive auth failures → clear identity + open Login (even if tiles exist)
       if (!res.ok) {
-        if (res.status === 401 || res.status === 403) {
+        const isUnauth400 = (res.status === 400) && (errCode === 'INVALID_OR_UNKNOWN_IDENTITY' || errCode === 'NOT_IN_CANDIDATE_LIST');
+        if (res.status === 401 || res.status === 403 || isUnauth400) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
           showAuthError('Not an authorised user');
           if (!isBlockingOverlayOpen()) openLoginOverlay();
           throw new Error('__AUTH_STOP__');
         }
-        // Any other non-OK (e.g., 400 after retry for reasons other than identity) → throw but do NOT open login here
+        // Any other non-OK (e.g., 400 for non-auth reasons) → throw but do NOT open login here
         throw new Error(errCode || `HTTP ${res.status}`);
       }
 
       if (json && json.ok === false) {
-        const unauthErrors = new Set(['FORBIDDEN']); // keep narrow
+        const unauthErrors = new Set(['FORBIDDEN', 'INVALID_OR_UNKNOWN_IDENTITY', 'NOT_IN_CANDIDATE_LIST']);
         if (unauthErrors.has(errCode)) {
           try { els.emergencyBtn && (els.emergencyBtn.disabled = true, els.emergencyBtn.hidden = false); } catch {}
           clearSavedIdentity();
+          showAuthError('Not an authorised user');
           if (!isBlockingOverlayOpen()) openLoginOverlay();
           throw new Error('__AUTH_STOP__');
         }
@@ -2232,12 +2254,20 @@ async function loadFromServer({ force = false } = {}) {
       }
 
       // We are definitely signed in at this point → ensure no login sheet is lingering
-      try { closeOverlay && closeOverlay('loginOverlay', /* force */ true); } catch {}
-      try {
-        if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
-          history.replaceState(null, '', location.pathname + (location.search || ''));
-        }
-      } catch {}
+      // We are definitely signed in at this point → ensure no auth/login overlays are lingering
+try { closeOverlay && closeOverlay('loginOverlay', /* force */ true); } catch {}
+try {
+  if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
+    history.replaceState(null, '', location.pathname + (location.search || ''));
+  }
+} catch {}
+
+// Clear any previous "auth denied" dimmer and reset the flag
+try {
+  const dim = document.getElementById('authErrorOverlay');
+  if (dim && dim.parentNode) dim.parentNode.removeChild(dim);
+} catch {}
+try { window.AUTH_DENIED = false; } catch {}
     } finally {
       if (showedLoader) hideLoading();
       try { setTopBarUpdating(false); } catch {}
