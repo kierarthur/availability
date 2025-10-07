@@ -1564,7 +1564,7 @@ function wireAuthForms() {
       identity = { msisdn: json.msisdn }; saveIdentity(identity);
       rememberEmailLocal(email);
       await storeCredentialIfSupported(email, pw);
-try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
+      try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
       // Clear password field for safety
       if (lp) lp.value = '';
 
@@ -1614,13 +1614,24 @@ try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
       showLoading('Sending reset link...');
       await apiForgotPassword(email); // privacy-safe: don’t branch on existence
       rememberEmailLocal(email);
+
+      // Show confirmation and KEEP the Forgot overlay open
       if (fmsg) fmsg.textContent = 'If this email exists, we’ve sent a reset link.';
 
-      // Optional: auto-close after a short pause
+      // Suppress any auth-error UI for the next 10s so the confirmation remains visible
+      try { window.AUTH_DENIED = true; AUTH_DENIED = true; } catch {}
+      try {
+        // Remove any lingering auth overlay if it flashed up already
+        const prev = document.getElementById('authErrorOverlay');
+        if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
+      } catch {}
+
+      // After 10 seconds, restore auth handling, close Forgot, and return to Login
       setTimeout(() => {
+        try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
         closeOverlay('forgotOverlay');
-        showToast('Check your inbox for the reset link.');
-      }, 900);
+        openLoginOverlay();
+      }, 10_000);
     } catch {
       if (fmsg) fmsg.textContent = 'Could not send reset link. Please try again.';
     } finally {
