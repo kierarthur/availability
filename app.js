@@ -46,10 +46,13 @@ const els = {
 // ===== Auth guard (fatal overlay) =====
 let AUTH_DENIED = false;
 function showAuthError(message = 'Not an authorised user') {
-  // 1) Guard the flag safely, then set it on the global
-  if (typeof window.AUTH_DENIED !== 'undefined' && window.AUTH_DENIED) return;
-  window.AUTHDENIED = false; // legacy safety if ever referenced elsewhere
+  // If we've already shown it, bail early.
+  if (window.AUTH_DENIED === true || AUTH_DENIED === true) return;
+
+  // Sync both the global and the module-scoped flags.
+  window.AUTHDENIED = false; // legacy safety if referenced elsewhere
   window.AUTH_DENIED = true;
+  AUTH_DENIED = true;
 
   // Hide/disable interactive UI
   try { els.footer && els.footer.classList.add('hidden'); } catch {}
@@ -68,7 +71,7 @@ function showAuthError(message = 'Not an authorised user') {
     if (prev && prev.parentNode) prev.parentNode.removeChild(prev);
   } catch {}
 
-  // 2) Non-blocking overlay: pointer-events:none and keep zIndex modest
+  // Non-blocking overlay: allow clicks to the Login overlay (pointer-events: none)
   const div = document.createElement('div');
   div.id = 'authErrorOverlay';
   div.setAttribute('role', 'alert');
@@ -76,7 +79,7 @@ function showAuthError(message = 'Not an authorised user') {
   Object.assign(div.style, {
     position: 'fixed',
     inset: '0',
-    zIndex: '9000',                 // keep below typical modal layers
+    zIndex: '9000',                 // below modal layers (e.g., 9998/9999)
     pointerEvents: 'none',          // never block clicks to Login overlay
     display: 'flex',
     alignItems: 'center',
@@ -521,7 +524,7 @@ function ensureLoadingOverlay() {
                  inputmode="email" autocapitalize="none" spellcheck="false"
                  autocomplete="username" required />
           <div style="display:flex;gap:.6rem;margin-top:.8rem;">
-            <button id="forgotSubmit" class="menu-item" style="border:1px solid #2a3446;">Send reset link</button>
+           <button id="forgotSubmit" type="submit" class="menu-item" style="border:1px solid #2a3446;">Send reset link</button>
           </div>
           <div id="forgotMsg" class="muted" role="status" style="margin-top:.4rem;"></div>
         </form>
@@ -919,13 +922,24 @@ window.addEventListener('appinstalled', () => {
 });
 
 // Initial CTA sync (in case BIP never fires, e.g., iOS)
+// Initial CTA sync (in case BIP never fires, e.g., iOS)
 document.addEventListener('DOMContentLoaded', () => {
+  // If this page was opened via a password-reset link (?k=...), go straight to the reset overlay
+  const k = new URLSearchParams(location.search).get('k');
+  if (k) {
+    ensureLoadingOverlay();   // ensures the reset overlay DOM exists
+    openResetOverlay();       // non-dismissable; validates k and drives the reset flow
+    return;                   // prevent running non-essential startup UI below during reset
+  }
+
+  // Normal startup path (no reset token present)
   setTimeout(() => {
     if (els.installBtn) {
       syncInstallCTAVisibility();
     }
   }, 400);
 });
+
 // ───────────────────────── CHANGED ─────────────────────────
 // Single, minimal place to refresh on visibility change.
 // ── Resume logic (unchanged) + periodic visible refresh ──
@@ -1528,16 +1542,21 @@ function wireAuthForms() {
 
   lf?.addEventListener('submit', async (e) => {
     e.preventDefault();
-    const email = (le.value || '').trim().toLowerCase();
-    const pw    = lp.value || '';
+    const email = (le?.value || '').trim().toLowerCase();
+    const pw    = lp?.value || '';
     if (!email || !pw) return;
 
     try {
-      ls.disabled = true; showLoading('Signing in...');
+      if (ls) ls.disabled = true;
+      showLoading('Signing in...');
       const { res, json } = await apiAuthLogin(email, pw);
       if (!res.ok || !json || json.ok === false) {
         const msg = (json && json.error) || `HTTP ${res.status}`;
-        lerr.textContent = (msg === 'INVALID_CREDENTIALS') ? 'Email or password is incorrect.' : (msg || 'Sign-in failed.');
+        if (lerr) {
+          lerr.textContent = (msg === 'INVALID_CREDENTIALS')
+            ? 'Email or password is incorrect.'
+            : (msg || 'Sign-in failed.');
+        }
         return;
       }
 
@@ -1545,9 +1564,9 @@ function wireAuthForms() {
       identity = { msisdn: json.msisdn }; saveIdentity(identity);
       rememberEmailLocal(email);
       await storeCredentialIfSupported(email, pw);
-
+try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
       // Clear password field for safety
-      lp.value = '';
+      if (lp) lp.value = '';
 
       // Force-close the blocking Login overlay so it cannot sit over a signed-in UI
       closeOverlay('loginOverlay', /* force */ true);
@@ -1565,7 +1584,8 @@ function wireAuthForms() {
       // (Optional) refresh emergency eligibility silently
       try { refreshEmergencyEligibility({ silent: true }); } catch {}
     } finally {
-      hideLoading(); ls.disabled = false;
+      hideLoading();
+      if (ls) ls.disabled = false;
     }
   });
 
@@ -1573,6 +1593,40 @@ function wireAuthForms() {
   lfg?.addEventListener('click', () => {
     closeOverlay('loginOverlay', /* force */ true);
     openForgotOverlay();
+  });
+
+  // Forgot password form submission (prevents page navigation and calls API)
+  const ff   = document.getElementById('forgotForm');
+  const fe   = document.getElementById('forgotEmail');
+  const fs   = document.getElementById('forgotSubmit');
+  const fmsg = document.getElementById('forgotMsg');
+
+  ff?.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const email = (fe?.value || '').trim().toLowerCase();
+    if (!email) {
+      if (fmsg) fmsg.textContent = 'Please enter your email address.';
+      return;
+    }
+
+    try {
+      if (fs) fs.disabled = true;
+      showLoading('Sending reset link...');
+      await apiForgotPassword(email); // privacy-safe: don’t branch on existence
+      rememberEmailLocal(email);
+      if (fmsg) fmsg.textContent = 'If this email exists, we’ve sent a reset link.';
+
+      // Optional: auto-close after a short pause
+      setTimeout(() => {
+        closeOverlay('forgotOverlay');
+        showToast('Check your inbox for the reset link.');
+      }, 900);
+    } catch {
+      if (fmsg) fmsg.textContent = 'Could not send reset link. Please try again.';
+    } finally {
+      hideLoading();
+      if (fs) fs.disabled = false;
+    }
   });
 
   // Reset — confirm + validation + reveal toggles
@@ -1678,10 +1732,11 @@ function wireAuthForms() {
       rc.value = '';
       rs.disabled = true;
     } finally {
-      hideLoading(); rs.disabled = false;
+      hideLoading(); rs && (rs.disabled = false);
     }
   });
 }
+
 
 
 // ---------- Credential Management API (Android/Chrome) ----------
@@ -2267,6 +2322,7 @@ try {
   const dim = document.getElementById('authErrorOverlay');
   if (dim && dim.parentNode) dim.parentNode.removeChild(dim);
 } catch {}
+try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
 try { window.AUTH_DENIED = false; } catch {}
     } finally {
       if (showedLoader) hideLoading();
