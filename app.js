@@ -1913,17 +1913,15 @@ function renderTiles() {
     TS.isTimesheetFeatureEnabled(baseline || window.identity || '')
   );
 
-  // NEW: visually confirm name-based TESTMODE match by turning the name red
+  // Visual test indicator: name turns red only when testmode+feature+allowlist are true
   try {
     const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
     const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
     if (els.candidateName) {
       if (testMode && tsFeatureOn && allowed) {
-        // iOS-style system red; tweak as desired or swap to a CSS class.
         els.candidateName.style.color = '#ff3b30';
         els.candidateName.title = 'Test mode: name matched';
       } else {
-        // reset if previously coloured
         els.candidateName.style.color = '';
         if (els.candidateName.title === 'Test mode: name matched') els.candidateName.title = '';
       }
@@ -2067,7 +2065,7 @@ function renderTiles() {
     const sub = document.createElement('div');
     sub.className = 'tile-sub';
 
-    // Seed content as before
+    // Seed booked content
     if (t.booked) {
       status.textContent = 'BOOKED';
       const line1 = (() => {
@@ -2130,27 +2128,24 @@ function renderTiles() {
       card.style.borderColor = '#ffffff';
     }
 
-    // NEW: booked-tile click routing for Timesheets (wizard or submitted modal)
+    // Booked tile → timesheet click path (wizard or submitted modal)
     if (t.booked && tsFeatureOn) {
       card.style.cursor = 'pointer';
       card.title = 'Tap for timesheet';
       card.addEventListener('click', (ev) => {
-        // Let the Timesheets module decide: submitted modal vs wizard vs no-op
         try {
           const handled = TS.onTileClickTimesheetBranch && TS.onTileClickTimesheetBranch(t, window.identity, baseline);
           if (handled) {
             ev.stopPropagation();
             ev.preventDefault();
           }
-        } catch (e) {
-          // fail-safe: ignore and fall back to no-op
-        }
+        } catch (e) {}
       });
 
-      // (A) draw TS ✓ badge on booked tiles if authorised
+      // (A) TS ✓ badge on booked tiles if authorised
       try { TS.decorateTileWithTSBadge && TS.decorateTileWithTSBadge(card, t); } catch {}
 
-      // (B) attention state for eligible, not-yet-authorised tiles
+      // (B) Attention state for eligible, not-yet-authorised tiles
       try {
         const showCTA =
           TS.shouldShowTimesheetCTA &&
@@ -2160,10 +2155,26 @@ function renderTiles() {
           TS.decorateTileWithTSAttention && TS.decorateTileWithTSAttention(card, t);
           TS.startTileContentAlternator && TS.startTileContentAlternator(card, {
             originalHtml: sub.innerHTML,
-            altText: 'Please touch to sign your timesheet',
+            altText: 'Please tap to submit Timesheet',
             periodMs: 4000
           });
         } else {
+          // Diagnostics for test users if the tile *looks* eligible but CTA is not shown
+          try {
+            const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
+            const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
+            const enabled = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(baseline || window.identity || ''));
+            const isBooked = !!t.booked;
+            const eligible = t.timesheet_eligible === true;
+            const notAuthorised = t.timesheet_authorised !== true;
+            if (testMode && allowed && enabled && isBooked && eligible && notAuthorised) {
+              // Surface *why* CTA is not showing during QA
+              _debugOrToast && _debugOrToast('CTA not shown despite eligibility', {
+                enabled, allowed, isBooked, eligible, notAuthorised
+              });
+            }
+          } catch {}
+
           TS.stopTileContentAlternator && TS.stopTileContentAlternator(card);
           // Ensure attention visuals are cleared if previously applied
           card.classList.remove('tile--bg-ts-cta');
@@ -5049,10 +5060,15 @@ async function refreshAppState({ force = false } = {}) {
 // Timesheets: new helpers for attention state (TS !), test-mode allowlist,
 // and 4s content alternation. Pure frontend; no network.
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// Timesheets: helpers for attention state (TS !), test-mode allowlist,
+// and 4s content alternation. Pure frontend; no network.
+// ─────────────────────────────────────────────────────────────────────────────
 (function () {
   const TS = (window.Timesheets = window.Timesheets || {});
 
   // ---- tiny utils (private) ----
+  // NOTE: MSISDN helpers kept for future use; current allowlist is NAME-based.
   function _normalizeMsisdn(n) {
     if (!n) return '';
     let s = String(n).replace(/[^\d+]/g, '');
@@ -5075,78 +5091,106 @@ async function refreshAppState({ force = false } = {}) {
   }
 
   // ───────────────────────────────────────────────────────────────────────────
-  // NEW: isTestModeAllowed(identity)
+  // isTestModeAllowed(identity)
   // - If test mode OFF → true
-  // - If test mode ON  → true only for allowlisted msisdn
+  // - If test mode ON  → true only for allowlisted NAME (guarded fallbacks)
   // ───────────────────────────────────────────────────────────────────────────
- TS.isTestModeAllowed = function isTestModeAllowed(identity) {
-  const cfg = _getConfig();
-  const testMode = !!cfg.TIMESHEET_TESTMODE;
-  if (!testMode) return true;
+  TS.isTestModeAllowed = function isTestModeAllowed(identity) {
+    const cfg = _getConfig();
+    const testMode = !!cfg.TIMESHEET_TESTMODE;
+    if (!testMode) return true;
 
-  const name = _candidateNameFrom(identity, window.baseline);
-  return _isAllowlistedName(name);
-};
+    // Prefer shared helper if present; otherwise derive a best-effort name
+    const derivedName =
+      (typeof _candidateNameFrom === 'function')
+        ? _candidateNameFrom(identity, window.baseline)
+        : (
+            (identity && (identity.name || identity.fullName || identity.displayName)) ||
+            (window.baseline && (window.baseline.candidateName ||
+                                 (window.baseline.candidate && (window.baseline.candidate.firstName
+                                                                ? `${window.baseline.candidate.surname || ''} ${window.baseline.candidate.firstName || ''}`.trim()
+                                                                : '')))) ||
+            ''
+          );
+
+    // Only allow if allowlist helper exists and approves; default to blocked in test mode
+    if (typeof _isAllowlistedName === 'function') {
+      return _isAllowlistedName(derivedName);
+    }
+    return false;
+  };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // NEW: shouldShowTimesheetCTA(tile, identity)
+  // shouldShowTimesheetCTA(tile, identity)
   // Predicate for the attention state (TS ! + orange + alternator).
-  // Conditions:
+  // Conditions (all must pass):
   //   - feature enabled for user
-  //   - test mode allowed (see above)
+  //   - test mode allowed (when test mode is ON)
   //   - tile.booked === true
   //   - tile.timesheet_eligible === true
   //   - tile.timesheet_authorised !== true
   // ───────────────────────────────────────────────────────────────────────────
   TS.shouldShowTimesheetCTA = function shouldShowTimesheetCTA(tile, identity) {
-  if (!tile) return false;
+    if (!tile) return false;
 
-  // Pass identity (or it will pick up baseline/identity from globals)
-  const enabled =
-    typeof TS.isTimesheetFeatureEnabled === 'function'
-      ? !!TS.isTimesheetFeatureEnabled(identity || window.baseline || '')
-      : false;
+    const enabled =
+      typeof TS.isTimesheetFeatureEnabled === 'function'
+        ? !!TS.isTimesheetFeatureEnabled(identity || window.baseline || '')
+        : false;
 
-  if (!enabled) return false;
-  if (!TS.isTestModeAllowed(identity)) return false;
+    if (!enabled) return false;
 
-  const isBooked = !!tile.booked;
-  const eligible = tile.timesheet_eligible === true;
-  const notAuthorised = tile.timesheet_authorised !== true;
+    if (typeof TS.isTestModeAllowed === 'function' && !TS.isTestModeAllowed(identity)) {
+      return false;
+    }
 
-  return isBooked && eligible && notAuthorised;
-};
+    const isBooked = !!tile.booked;
+    const eligible = tile.timesheet_eligible === true;
+    const notAuthorised = tile.timesheet_authorised !== true;
+
+    return isBooked && eligible && notAuthorised;
+  };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // NEW: applyCTATheme(cardEl)
+  // applyCTATheme(cardEl)
   // Adds an orange attention background class. CSS should define .tile--bg-ts-cta
-  // (kept separate so you can centralize theme toggling if desired).
   // ───────────────────────────────────────────────────────────────────────────
   TS.applyCTATheme = function applyCTATheme(cardEl) {
     if (!cardEl) return;
     cardEl.classList.add('tile--bg-ts-cta');
+    // Ensure the tile can anchor the badge
+    try {
+      const pos = getComputedStyle(cardEl).position;
+      if (pos === 'static') cardEl.style.position = 'relative';
+    } catch {}
   };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // NEW: decorateTileWithTSAttention(cardEl, tile)
-  // - Adds "TS !" badge (top-right, like TS ✓)
+  // decorateTileWithTSAttention(cardEl, tile)
   // - Applies orange bg via .tile--bg-ts-cta
-  // - Does NOT start the alternator (that’s separate so callers can control)
+  // - Adds a single "TS !" badge (top-right)
+  // - Does NOT start the alternator
   // ───────────────────────────────────────────────────────────────────────────
   TS.decorateTileWithTSAttention = function decorateTileWithTSAttention(cardEl /*, tile */) {
     if (!cardEl) return;
 
-    // Apply orange theme
-    TS.applyCTATheme(cardEl);
+    // Apply theme (helper if present)
+    if (typeof TS.applyCTATheme === 'function') {
+      TS.applyCTATheme(cardEl);
+    } else {
+      cardEl.classList.add('tile--bg-ts-cta');
+      try {
+        const pos = getComputedStyle(cardEl).position;
+        if (pos === 'static') cardEl.style.position = 'relative';
+      } catch {}
+    }
 
-    // Ensure a single attention badge
-    const existing = cardEl.querySelector('.ts-badge-attn');
-    if (!existing) {
+    // Ensure exactly one attention badge
+    if (!cardEl.querySelector('.ts-badge-attn')) {
       const badge = document.createElement('div');
       badge.className = 'ts-badge ts-badge-attn';
       badge.textContent = 'TS !';
-      // If you don’t already position via CSS, this ensures visible placement.
-      // You can remove these styles if your CSS handles it.
+      // Minimal placement; CSS can override
       badge.style.position = 'absolute';
       badge.style.top = '6px';
       badge.style.right = '6px';
@@ -5162,18 +5206,20 @@ async function refreshAppState({ force = false } = {}) {
   };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // NEW: startTileContentAlternator(cardEl, { originalHtml, altText, periodMs })
+  // startTileContentAlternator(cardEl, { originalHtml, altText, periodMs })
   // Flips the tile's .tile-sub innerHTML every 'periodMs' between originalHtml
   // and altText. Idempotent; restarts cleanly if already running.
+  // Default altText per spec: "Please tap to submit Timesheet"
+  // Emits test-mode toast if subnode is detached (DOM churn).
   // ───────────────────────────────────────────────────────────────────────────
   TS.startTileContentAlternator = function startTileContentAlternator(
     cardEl,
-    { originalHtml, altText = 'Please touch to sign your timesheet', periodMs = 4000 } = {}
+    { originalHtml, altText = 'Please tap to submit Timesheet', periodMs = 4000 } = {}
   ) {
     if (!cardEl) return;
 
     // Clear any existing alternator first
-    TS.stopTileContentAlternator(cardEl);
+    TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
 
     const sub = cardEl.querySelector('.tile-sub');
     if (!sub) return;
@@ -5184,12 +5230,22 @@ async function refreshAppState({ force = false } = {}) {
     let showingAlt = false;
     const id = window.setInterval(() => {
       try {
-        if (!sub.isConnected) { TS.stopTileContentAlternator(cardEl); return; }
+        if (!sub.isConnected) {
+          // Surface a hint in test mode so QA can see why the alternator stopped
+          try {
+            const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
+            const allowed = !!(typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
+            if (testMode && allowed && typeof _debugOrToast === 'function') {
+              _debugOrToast('Alternator stopped: .tile-sub removed or replaced', {});
+            }
+          } catch {}
+          TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
+          return;
+        }
         showingAlt = !showingAlt;
         sub.innerHTML = showingAlt ? altText : orig;
-      } catch (_) {
-        // On any unexpected DOM failure, stop gracefully.
-        TS.stopTileContentAlternator(cardEl);
+      } catch {
+        TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
       }
     }, Math.max(1000, Number(periodMs) || 4000));
 
@@ -5197,32 +5253,36 @@ async function refreshAppState({ force = false } = {}) {
   };
 
   // ───────────────────────────────────────────────────────────────────────────
-  // NEW: stopTileContentAlternator(cardEl)
-  // Clears the interval and restores the original sub innerHTML if we saved it.
+  // stopTileContentAlternator(cardEl)
+  // Clears the interval, restores original sub innerHTML, removes CTA visuals.
   // ───────────────────────────────────────────────────────────────────────────
   TS.stopTileContentAlternator = function stopTileContentAlternator(cardEl) {
     if (!cardEl) return;
 
-    const id = Number(cardEl.dataset.tsAltTimerId || 0);
-    if (id) {
-      try { window.clearInterval(id); } catch (_) {}
-      delete cardEl.dataset.tsAltTimerId;
+    // 1) Clear any running interval
+    const idRaw = cardEl.dataset.tsAltTimerId;
+    if (idRaw) {
+      const id = Number(idRaw);
+      if (!Number.isNaN(id)) {
+        try { window.clearInterval(id); } catch {}
+      }
     }
+    delete cardEl.dataset.tsAltTimerId;
 
-    const sub = cardEl.querySelector('.tile-sub');
-    const orig = cardEl.dataset.tsAltOriginalHtml;
-    if (sub && orig != null) {
-      sub.innerHTML = orig;
-    }
+    // 2) Restore original content (if we captured it)
+    try {
+      const sub = cardEl.querySelector('.tile-sub');
+      const orig = cardEl.dataset.tsAltOriginalHtml;
+      if (sub && orig != null) sub.innerHTML = orig;
+    } catch {}
     delete cardEl.dataset.tsAltOriginalHtml;
 
-    // Remove attention visuals if present (caller may also do this)
+    // 3) Remove attention visuals
     const attn = cardEl.querySelector('.ts-badge-attn');
     if (attn) attn.remove();
     cardEl.classList.remove('tile--bg-ts-cta');
   };
 })();
-
 
 
 
@@ -5683,314 +5743,463 @@ function onTileClickTimesheetBranch(tile, identity, baseline) {
       clear: () => ctx.clearRect(0, 0, canvas.width, canvas.height),
     };
   }
+
+
+  // Complete overlay mount; ensures black text inside the card for legibility
 function _mountOverlay(titleText) {
-  const scrim = _el("div", {
-    class: "ts-overlay",
+  const scrim = _el('div', {
+    class: 'ts-overlay',
     style: {
-      position: "fixed",
-      inset: "0",
-      background: "rgba(0,0,0,0.5)",
-      zIndex: "9999",
-      display: "flex",
-      alignItems: "center",
-      justifyContent: "center",
-    },
-  });
-
-  const card = _el(
-    "div",
-    {
-      style: {
-        width: "min(600px, 94vw)",
-        maxHeight: "90vh",
-        overflow: "auto",
-        background: "#fff",
-        borderRadius: "12px",
-        boxShadow: "0 10px 30px rgba(0,0,0,.2)",
-        padding: "16px",
-      },
-    },
-    _el("div", { style: { fontSize: "18px", fontWeight: "700", marginBottom: "8px" } }, titleText),
-    _el("div", { class: "ts-contents" })
-  );
-
-  // Close-on-scrim click; if success path marked this overlay, refresh afterwards
-  scrim.addEventListener("click", (e) => {
-    if (e.target === scrim) {
-      const shouldRefresh = scrim.dataset.tsRefreshOnClose === "1";
-      document.body.removeChild(scrim);
-      if (shouldRefresh) {
-        try { if (typeof startTilesThenEmergencyChain === "function") startTilesThenEmergencyChain(); } catch (_) {}
-      }
+      position: 'fixed',
+      inset: '0',
+      background: 'rgba(0,0,0,0.5)',
+      zIndex: '9999',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center'
     }
   });
 
-  card.addEventListener("click", (e) => e.stopPropagation());
+  const card = _el('div', {
+    class: 'ts-card',
+    style: {
+      width: 'min(720px, 92vw)',
+      maxHeight: '88vh',
+      overflow: 'auto',
+      background: '#fff',
+      borderRadius: '12px',
+      boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+      padding: '16px',
+      color: '#000' // ← force black text
+    }
+  });
 
+  const header = _el('div', {
+    class: 'ts-card-header',
+    style: { fontWeight: '700', fontSize: '18px', marginBottom: '12px' }
+  }, String(titleText || 'Timesheet'));
+
+  const contents = _el('div', { class: 'ts-card-contents' });
+
+  card.append(header, contents);
   scrim.appendChild(card);
   document.body.appendChild(scrim);
 
-  return { root: scrim, card, contents: card.querySelector(".ts-contents") };
+  return {
+    root: scrim,
+    card,
+    contents
+  };
 }
+async function startTimesheetWizard(tile, identity, baseline) {
+  const ov = _mountOverlay('Timesheet');
 
-  async function startTimesheetWizard(tile, identity, baseline) {
-    const ov = _mountOverlay("Timesheet");
+  // Shared state
+  const state = {
+    tile,
+    ymd: tile.ymd || tile.date_start_local, // YYYY-MM-DD
+    hospital: tile.hospital,
+    ward: tile.ward,
+    job_title: tile.job_title || tile.role || tile.jobTitle,
+    shift_label: tile.shift_label || tile.shift || tile.shiftLabel || (tile.shiftInfo || ''),
+    scheduled_start_hhmm: tile.shiftStartHHMM || '',
+    scheduled_end_hhmm: tile.shiftEndHHMM || '',
+    worked_start_hhmm: '',
+    worked_end_hhmm: '',
+    break_start_hhmm: '',
+    break_end_hhmm: '',
+    nurseSig: null,
+    authSig: null,
+    auth_name: '',
+    auth_job_title: '',
+    presign: null
+  };
 
-    // Shared state
-    const state = {
-      tile,
-      ymd: tile.ymd || tile.date_start_local, // YYYY-MM-DD
-      hospital: tile.hospital,
-      ward: tile.ward,
-      job_title: tile.job_title || tile.role || tile.jobTitle,
-      shift_label: tile.shift_label || tile.shift || tile.shiftLabel || "",
-      scheduled_start_hhmm: tile.shiftStartHHMM || "",
-      scheduled_end_hhmm: tile.shiftEndHHMM || "",
-      worked_start_hhmm: "",
-      worked_end_hhmm: "",
-      break_start_hhmm: "",
-      break_end_hhmm: "",
-      nurseSig: null,
-      authSig: null,
-      auth_name: "",
-      auth_job_title: "",
-      presign: null,
+  // Helpers (local)
+  const hhmm = n => String(n).padStart(2, '0');
+  function minutesToHhMmStr(total) {
+    const H = Math.floor(total / 60);
+    const M = total % 60;
+    return `${hhmm(H)}:${hhmm(M)}`;
+  }
+  function minutesToHoursAndMins(total) {
+    const H = Math.floor(total / 60);
+    const M = total % 60;
+    return { H, M };
+  }
+  function parseTimesFromLabel(label) {
+    const s = String(label || '').replace(/\s+/g, ' ').trim();
+    const m = s.match(/(\d{1,2}):(\d{2})\s*[–-]\s*(\d{1,2}):(\d{2})/);
+    if (!m) return null;
+    const sH = parseInt(m[1], 10), sM = parseInt(m[2], 10);
+    const eH = parseInt(m[3], 10), eM = parseInt(m[4], 10);
+    return { start: `${hhmm(sH)}:${hhmm(sM)}`, end: `${hhmm(eH)}:${hhmm(eM)}` };
+  }
+  function snap5(val) {
+    // Accepts "HH:MM", returns snapped "HH:MM" (nearest 5)
+    const [H, M] = String(val || '00:00').split(':').map(v => parseInt(v || '0', 10));
+    const snapped = Math.round(M / 5) * 5;
+    const mm = Math.min(55, Math.max(0, snapped)); // clamp
+    return `${hhmm(isNaN(H) ? 0 : H)}:${hhmm(mm)}`;
+  }
+  function ensureSeedTimes() {
+    // Worked times: copy from scheduled if empty; else parse from shift_label/shiftInfo
+    if (!state.worked_start_hhmm || !state.worked_end_hhmm) {
+      if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
+        state.worked_start_hhmm = snap5(state.scheduled_start_hhmm);
+        state.worked_end_hhmm = snap5(state.scheduled_end_hhmm);
+      } else {
+        const parsed = parseTimesFromLabel(state.shift_label);
+        if (parsed) {
+          state.worked_start_hhmm = snap5(parsed.start);
+          state.worked_end_hhmm = snap5(parsed.end);
+        }
+      }
+    }
+  }
+
+  // Step 1 — Hours & Break
+  const step1 = () => {
+    ensureSeedTimes();
+
+    const c = ov.contents;
+    c.innerHTML = '';
+
+    // Grid layout with alignment + editable Ward
+    const form = _el('div', { style: { display: 'grid', gap: '12px', gridTemplateColumns: 'max-content 1fr' } });
+
+    const wardInput = _el('input', {
+      type: 'text',
+      value: state.ward || '',
+      placeholder: 'Ward',
+      oninput: e => { state.ward = e.target.value; }
+    });
+
+    const mkTimeInput = (label, key) => {
+      const input = _el('input', {
+        type: 'time',
+        step: '300', // 5-minute increments
+        value: state[key] || '',
+        oninput: e => { state[key] = e.target.value; refreshWarnings(); },
+        onblur:  e => { state[key] = snap5(e.target.value); e.target.value = state[key]; refreshWarnings(); }
+      });
+      return [_el('label', { style: { alignSelf: 'center' } }, label), input];
     };
 
-    // Step 1 — Hours & Break
-    const step1 = () => {
-      const c = ov.contents;
-      c.innerHTML = "";
+    const [ls1, inpWs] = mkTimeInput('Worked Start (HH:MM)', 'worked_start_hhmm');
+    const [ls2, inpWe] = mkTimeInput('Worked End (HH:MM)',   'worked_end_hhmm');
+    const [ls3, inpBs] = mkTimeInput('Break Start (HH:MM)',  'break_start_hhmm');
+    const [ls4, inpBe] = mkTimeInput('Break End (HH:MM)',    'break_end_hhmm');
 
-      const form = _el("div", { style: { display: "grid", gap: "12px" } });
-      form.append(
-        _el("div", {}, `Hospital: ${state.hospital}`),
-        _el("div", {}, `Ward: ${state.ward}`),
-        _el("div", {}, `Job title: ${state.job_title}`),
-        _el("label", {}, "Worked Start (HH:MM) ", _el("input", { type: "time", value: state.worked_start_hhmm, oninput: (e) => (state.worked_start_hhmm = e.target.value) })),
-        _el("label", {}, "Worked End (HH:MM) ", _el("input", { type: "time", value: state.worked_end_hhmm, oninput: (e) => (state.worked_end_hhmm = e.target.value) })),
-        _el("label", {}, "Break Start (HH:MM) ", _el("input", { type: "time", value: state.break_start_hhmm, oninput: (e) => (state.break_start_hhmm = e.target.value) })),
-        _el("label", {}, "Break End (HH:MM) ", _el("input", { type: "time", value: state.break_end_hhmm, oninput: (e) => (state.break_end_hhmm = e.target.value) }))
-      );
+    form.append(
+      _el('div', { style: { fontWeight: '600' } }, 'Hospital:'), _el('div', {}, String(state.hospital || '')),
+      _el('div', { style: { fontWeight: '600' } }, 'Ward:'),     wardInput,
+      _el('div', { style: { fontWeight: '600' } }, 'Job title:'),_el('div', {}, String(state.job_title || '')),
+      ls1, inpWs,
+      ls2, inpWe,
+      ls3, inpBs,
+      ls4, inpBe
+    );
 
-      const warn = _el("div", { style: { color: "#a15c00", display: "none" } }, "Warning: Break is not exactly 60 minutes.");
-      const btns = _el(
-        "div",
-        { style: { display: "flex", gap: "8px", marginTop: "12px", justifyContent: "flex-end" } },
-        _el("button", { type: "button", onclick: () => document.body.removeChild(ov.root) }, "Cancel"),
-        _el("button", {
-          type: "button",
-          onclick: () => {
-            // validate
-            if (!state.worked_start_hhmm || !state.worked_end_hhmm || !state.break_start_hhmm || !state.break_end_hhmm) {
-              alert("Please complete all times.");
+    // Warnings with acknowledgement gates
+    const warnBox = _el('div', { style: { display: 'grid', gap: '8px', marginTop: '4px' } });
+
+    const brWarn = _el('div', { style: { display: 'none', color: '#a15c00' } });
+    const brAck  = _el('label', { style: { display: 'none', userSelect: 'none' } },
+      _el('input', { type: 'checkbox', style: { marginRight: '6px' } }),
+      'I acknowledge the break length is correct.'
+    );
+
+    const eqWarn = _el('div', { style: { display: 'none', color: '#a15c00' } });
+    const eqAck  = _el('label', { style: { display: 'none', userSelect: 'none' } },
+      _el('input', { type: 'checkbox', style: { marginRight: '6px' } }),
+      'I acknowledge the total worked time is correct.'
+    );
+
+    warnBox.append(brWarn, brAck, eqWarn, eqAck);
+
+    const btns = _el(
+      'div',
+      { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end' } },
+      _el('button', { type: 'button', onclick: () => document.body.removeChild(ov.root) }, 'Cancel'),
+      (() => {
+        const nextBtn = _el('button', { type: 'button' }, 'Next');
+        nextBtn.onclick = () => {
+          // Block until all required acks
+          const needsBreakAck = brWarn.style.display !== 'none';
+          const needsEqAck    = eqWarn.style.display !== 'none';
+          const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
+          const eqChecked = needsEqAck ? eqAck.querySelector('input').checked : true;
+
+          if (!state.worked_start_hhmm || !state.worked_end_hhmm || !state.break_start_hhmm || !state.break_end_hhmm) {
+            alert('Please complete all times.');
+            return;
+          }
+          if (!(brChecked && eqChecked)) return;
+          step2();
+        };
+        // Keep a ref for refreshWarnings
+        nextBtn.dataset.role = 'nextBtn';
+        return nextBtn;
+      })()
+    );
+
+    c.append(form, warnBox, btns);
+
+    function refreshWarnings() {
+      // Compute break minutes and equality-to-11.5h check
+      if (!state.worked_start_hhmm || !state.worked_end_hhmm || !state.break_start_hhmm || !state.break_end_hhmm) return;
+
+      const ws = _isoFromYmdHHMM(state.ymd, snap5(state.worked_start_hhmm));
+      const we = _isoFromYmdHHMM(state.ymd, snap5(state.worked_end_hhmm));
+      const bs = _isoFromYmdHHMM(state.ymd, snap5(state.break_start_hhmm));
+      const be = _isoFromYmdHHMM(state.ymd, snap5(state.break_end_hhmm));
+
+      const totalMins = _minutesBetween(ws, we);
+      const breakMins = _minutesBetween(bs, be);
+      const netMins = Math.max(0, totalMins - breakMins);
+      const { H: netH, M: netMin } = minutesToHoursAndMins(netMins);
+
+      // Break != 60 → warn + require ack
+      if (breakMins !== 60) {
+        brWarn.style.display = '';
+        brAck.style.display = 'flex';
+        brWarn.textContent = `Break is normally 60 minutes; you have ${breakMins} minutes. Please tick to acknowledge you are correct and then continue.`;
+      } else {
+        brWarn.style.display = 'none';
+        brAck.style.display = 'none';
+        brAck.querySelector('input').checked = false;
+      }
+
+      // Net must equal 690 (11.5h) → warn + require ack
+      if (netMins !== 690) {
+        eqWarn.style.display = '';
+        eqAck.style.display = 'flex';
+        eqWarn.textContent = `Shifts are normally 11.5 hours long; you have ${netH} hours ${netMin} mins. Please tick to acknowledge you are correct and then continue.`;
+      } else {
+        eqWarn.style.display = 'none';
+        eqAck.style.display = 'none';
+        eqAck.querySelector('input').checked = false;
+      }
+
+      // Disable/enable Next based on required acknowledgements
+      const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
+      if (nextBtn) {
+        const needsBreakAck = brWarn.style.display !== 'none';
+        const needsEqAck    = eqWarn.style.display !== 'none';
+        const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
+        const eqChecked = needsEqAck ? eqAck.querySelector('input').checked : true;
+        nextBtn.disabled = !(brChecked && eqChecked);
+      }
+    }
+
+    // initial warnings evaluation
+    refreshWarnings();
+
+    // allow clicking labels to re-evaluate (ack checkboxes change)
+    brAck.querySelector('input').addEventListener('change', () => {
+      const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
+      if (nextBtn) {
+        const eqChecked = eqAck.style.display === 'none' || eqAck.querySelector('input').checked;
+        nextBtn.disabled = !(brAck.querySelector('input').checked && eqChecked);
+      }
+    });
+    eqAck.querySelector('input').addEventListener('change', () => {
+      const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
+      if (nextBtn) {
+        const brChecked = brAck.style.display === 'none' || brAck.querySelector('input').checked;
+        nextBtn.disabled = !(eqAck.querySelector('input').checked && brChecked);
+      }
+    });
+  };
+
+  // Step 2 — Nurse signature (no logic changes)
+  const step2 = () => {
+    ov.contents.innerHTML = '';
+    const pad = _buildSignaturePad();
+    const timeNow = _todayHHMM();
+
+    ov.contents.append(
+      _el('div', { style: { marginBottom: '6px' } }, 'Nurse signature'),
+      pad.el,
+      _el('div', { style: { marginTop: '6px', color: '#666' } }, `Date/time now: ${timeNow}`),
+      _el(
+        'div',
+        { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'flex-end' } },
+        _el('button', { type: 'button', onclick: step1 }, 'Back'),
+        _el('button', {
+          type: 'button',
+          onclick: async () => {
+            if (pad.isEmpty()) {
+              alert('Please sign before continuing.');
               return;
             }
-            const ws = _isoFromYmdHHMM(state.ymd, state.worked_start_hhmm);
-            const we = _isoFromYmdHHMM(state.ymd, state.worked_end_hhmm);
-            const bs = _isoFromYmdHHMM(state.ymd, state.break_start_hhmm);
-            const be = _isoFromYmdHHMM(state.ymd, state.break_end_hhmm);
-            const bm = _minutesBetween(bs, be);
-            warn.style.display = bm === 60 ? "none" : "block";
-            step2();
-          },
-        }, "Next")
-      );
-
-      c.append(form, warn, btns);
-    };
-
-    // Step 2 — Nurse signature
-    const step2 = () => {
-      ov.contents.innerHTML = "";
-      const pad = _buildSignaturePad();
-      const timeNow = _todayHHMM();
-
-      ov.contents.append(
-        _el("div", { style: { marginBottom: "6px" } }, "Nurse signature"),
-        pad.el,
-        _el("div", { style: { marginTop: "6px", color: "#666" } }, `Date/time now: ${timeNow}`),
-        _el(
-          "div",
-          { style: { display: "flex", gap: "8px", marginTop: "12px", justifyContent: "flex-end" } },
-          _el("button", { type: "button", onclick: step1 }, "Back"),
-          _el("button", {
-            type: "button",
-            onclick: async () => {
-              if (pad.isEmpty()) {
-                alert("Please sign before continuing.");
-                return;
-              }
-              state.nurseSig = await pad.toPNGBlob();
-              step3();
-            },
-          }, "Next")
-        )
-      );
-    };
-
-    // Step 3 — Ward Authorisation (details + signature + submit)
-    const step3 = () => {
-      ov.contents.innerHTML = "";
-
-      const wsISO = _isoFromYmdHHMM(state.ymd, state.worked_start_hhmm);
-      const weISO = _isoFromYmdHHMM(state.ymd, state.worked_end_hhmm);
-      const bsISO = _isoFromYmdHHMM(state.ymd, state.break_start_hhmm);
-      const beISO = _isoFromYmdHHMM(state.ymd, state.break_end_hhmm);
-      const bm = _minutesBetween(bsISO, beISO);
-
-      const nameIn = _el("input", { type: "text", placeholder: "Authoriser full name", oninput: (e) => (state.auth_name = e.target.value) });
-      const titleIn = _el("input", { type: "text", placeholder: "Authoriser job title", oninput: (e) => (state.auth_job_title = e.target.value) });
-
-      const pad = _buildSignaturePad();
-
-      ov.contents.append(
-        _el("div", { style: { marginBottom: "8px", fontWeight: "600" } }, "Ward Authorisation — Signing Timesheet"),
-        _el("div", {}, `Nurse: ${deriveOccupantKey(baseline) || "—"}`),
-        _el("div", {}, `Date: ${state.ymd}`),
-        _el("div", {}, `Hospital: ${state.hospital}`),
-        _el("div", {}, `Ward: ${state.ward}`),
-        _el("div", {}, `Job title: ${state.job_title}`),
-        _el("div", {}, `Start: ${state.worked_start_hhmm}`),
-        _el("div", {}, `End: ${state.worked_end_hhmm}`),
-        _el("div", {}, `Break Start: ${state.break_start_hhmm}`),
-        _el("div", {}, `Break End: ${state.break_end_hhmm}`),
-        _el("div", {}, `Break length: ${bm} mins`),
-        _el("hr"),
-        _el("div", { style: { marginTop: "6px", marginBottom: "6px" } }, "Please enter your full name and job title"),
-        nameIn,
-        titleIn,
-        _el("div", { style: { marginTop: "12px" } }, "Please sign to confirm hours worked are accurate and that you are authorised to sign this timesheet"),
-        pad.el,
-        _el(
-          "div",
-          { style: { display: "flex", gap: "8px", marginTop: "12px", justifyContent: "space-between" } },
-          _el("div", {}, _el("button", { type: "button", onclick: step2 }, "Back")),
-          _el("div", {},
-            _el("button", { type: "button", onclick: () => document.body.removeChild(ov.root) }, "Cancel"),
-            _el("button", {
-              type: "button",
-              style: { marginLeft: "8px" },
-              onclick: async () => {
-                if (!state.auth_name || !state.auth_job_title) {
-                  alert("Please enter authoriser name and job title.");
-                  return;
-                }
-                if (pad.isEmpty()) {
-                  alert("Authoriser signature is required.");
-                  return;
-                }
-
-                // 1) Presign
-                const pres = await presignTimesheet({
-                  occupant_key: deriveOccupantKey(baseline),
-                  date_start_local: state.ymd,
-                  hospital: state.hospital,
-                  ward: state.ward,
-                  job_title: state.job_title,
-                  shift_label: state.shift_label,
-                  scheduled_start_hhmm: state.scheduled_start_hhmm,
-                  scheduled_end_hhmm: state.scheduled_end_hhmm,
-                });
-
-                if (!pres.ok) {
-                  _debugOrToast("Presign failed", pres);
-                  return;
-                }
-                state.presign = pres.json;
-
-                // 2) Upload signatures
-                const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
-                if (!nurseUp.ok) {
-                  _debugOrToast("Nurse signature upload failed", nurseUp);
-                  return;
-                }
-                const authBlob = await pad.toPNGBlob();
-                const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
-                if (!authUp.ok) {
-                  _debugOrToast("Authoriser signature upload failed", authUp);
-                  return;
-                }
-
-                // 3) Submit
-                const payload = {
-                  booking_id: state.presign.booking_id,
-                  scheduled_start_iso: state.scheduled_start_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_start_hhmm) : null,
-                  scheduled_end_iso: state.scheduled_end_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_end_hhmm) : null,
-                  worked_start_iso: wsISO,
-                  worked_end_iso: weISO,
-                  break_start_iso: bsISO,
-                  break_end_iso: beISO,
-                  auth_name: state.auth_name,
-                  auth_job_title: state.auth_job_title,
-                  nurse_key: state.presign.upload.nurse.key,
-                  authoriser_key: state.presign.upload.authoriser.key,
-                  idempotency_key: crypto.randomUUID(),
-                  client_user_agent: navigator.userAgent,
-                  client_timestamp: new Date().toISOString(),
-                  occupant_key: deriveOccupantKey(baseline),
-                  hospital: state.hospital,
-                  ward: state.ward,
-                  job_title: state.job_title,
-                  shift_label: state.shift_label,
-                };
-
-                // Ensure a small status line in the overlay (under the button)
-const statusEl = ensureTsStatusBox(ov.card);
-
-// Disable button while submitting / retrying
-btn.disabled = true;
-btn.textContent = "Submitting…";
-
-// Reuse the same idempotency key for all retries
-if (!payload.idempotency_key) payload.idempotency_key = crypto.randomUUID();
-
-const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
-  maxAttempts: 5,
-  updateStatus: (attempt, max, phase) => {
-    // phase: "submit" | "retry" | "waiting"
-    if (phase === "submit") {
-      setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
-      btn.textContent = `Submitting… (${attempt}/${max})`;
-    } else if (phase === "retry") {
-      setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
-      btn.textContent = `Retrying… (${attempt}/${max})`;
-    } else if (phase === "waiting") {
-      setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
-    }
-  },
-  overlayRoot: ov.root
-});
-
-// Re-enable the button (unless overlay has gone away)
-if (document.body.contains(ov.root)) {
-  btn.disabled = false;
-  btn.textContent = "Authorise Timesheet";
-}
-
-if (!ok) {
-  if (!cancelled) {
-    setTsStatus(statusEl,
-      "Please complete a paper timesheet as there are network problems. " +
-      "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
+            state.nurseSig = await pad.toPNGBlob();
+            step3();
+          }
+        }, 'Next')
+      )
     );
-    _debugOrToast("Submit failed", sub);
-  }
-  return;
+  };
+
+  // Step 3 — Ward Authorisation (details + signature + submit)
+  const step3 = () => {
+    ov.contents.innerHTML = '';
+
+    const wsISO = _isoFromYmdHHMM(state.ymd, state.worked_start_hhmm);
+    const weISO = _isoFromYmdHHMM(state.ymd, state.worked_end_hhmm);
+    const bsISO = _isoFromYmdHHMM(state.ymd, state.break_start_hhmm);
+    const beISO = _isoFromYmdHHMM(state.ymd, state.break_end_hhmm);
+    const bm = _minutesBetween(bsISO, beISO);
+    const net = Math.max(0, _minutesBetween(wsISO, weISO) - bm);
+    const { H: netH, M: netMin } = minutesToHoursAndMins(net);
+
+    const nameIn  = _el('input', { type: 'text', placeholder: 'Authoriser full name', oninput: e => (state.auth_name = e.target.value) });
+    const titleIn = _el('input', { type: 'text', placeholder: 'Authoriser job title', oninput: e => (state.auth_job_title = e.target.value) });
+
+    const pad = _buildSignaturePad();
+
+    // Compact one-line pairs + bold total hours
+    const linesWrap = _el('div', { style: { display: 'grid', gap: '6px', marginBottom: '8px' } },
+      _el('div', {}, `Ward Authorisation — Signing Timesheet`),
+      _el('div', {}, `Nurse: ${deriveOccupantKey(baseline) || '—'}`),
+      _el('div', {}, `Date: ${state.ymd}`),
+      _el('div', {}, `Hospital: ${state.hospital}`),
+      _el('div', {}, `Ward: ${state.ward}`),
+      _el('div', {}, `Job title: ${state.job_title}`),
+      _el('div', {}, `Start: ${state.worked_start_hhmm}   End: ${state.worked_end_hhmm}`),
+      _el('div', {}, `Break: ${state.break_start_hhmm} → ${state.break_end_hhmm} (${bm} mins)`),
+      _el('div', { style: { fontWeight: '700', fontSize: '1.05rem' } }, `Total hours: ${netH} hours ${netMin} mins`)
+    );
+
+    const btnRow = _el(
+      'div',
+      { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'space-between' } },
+      _el('div', {}, _el('button', { type: 'button', onclick: step2 }, 'Back')),
+      (() => {
+        const cancelBtn = _el('button', { type: 'button' }, 'Cancel');
+        cancelBtn.onclick = () => document.body.removeChild(ov.root);
+
+        const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
+        submitBtn.onclick = async () => {
+          if (!state.auth_name || !state.auth_job_title) {
+            alert('Please enter authoriser name and job title.');
+            return;
+          }
+          if (pad.isEmpty()) {
+            alert('Authoriser signature is required.');
+            return;
+          }
+
+          // 1) Presign
+          const pres = await presignTimesheet({
+            occupant_key: deriveOccupantKey(baseline),
+            date_start_local: state.ymd,
+            hospital: state.hospital,
+            ward: state.ward,
+            job_title: state.job_title,
+            shift_label: state.shift_label,
+            scheduled_start_hhmm: state.scheduled_start_hhmm,
+            scheduled_end_hhmm: state.scheduled_end_hhmm
+          });
+
+          if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres); return; }
+          state.presign = pres.json;
+
+          // 2) Upload signatures
+          const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
+          if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp); return; }
+          const authBlob = await pad.toPNGBlob();
+          const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
+          if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp); return; }
+
+          // 3) Submit
+          const payload = {
+            booking_id: state.presign.booking_id,
+            scheduled_start_iso: state.scheduled_start_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_start_hhmm) : null,
+            scheduled_end_iso: state.scheduled_end_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_end_hhmm) : null,
+            worked_start_iso: wsISO,
+            worked_end_iso: weISO,
+            break_start_iso: bsISO,
+            break_end_iso: beISO,
+            auth_name: state.auth_name,
+            auth_job_title: state.auth_job_title,
+            nurse_key: state.presign.upload.nurse.key,
+            authoriser_key: state.presign.upload.authoriser.key,
+            idempotency_key: crypto.randomUUID(),
+            client_user_agent: navigator.userAgent,
+            client_timestamp: new Date().toISOString(),
+            occupant_key: deriveOccupantKey(baseline),
+            hospital: state.hospital,
+            ward: state.ward,
+            job_title: state.job_title,
+            shift_label: state.shift_label
+          };
+
+          const statusEl = ensureTsStatusBox(ov.card);
+
+          // Disable while submitting / retrying
+          submitBtn.disabled = true;
+
+          const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
+            maxAttempts: 5,
+            updateStatus: (attempt, max, phase) => {
+              if (phase === 'submit') {
+                setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
+                submitBtn.textContent = `Submitting… (${attempt}/${max})`;
+              } else if (phase === 'retry') {
+                setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
+                submitBtn.textContent = `Retrying… (${attempt}/${max})`;
+              } else if (phase === 'waiting') {
+                setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
+              }
+            },
+            overlayRoot: ov.root
+          });
+
+          // Re-enable if still visible
+          if (document.body.contains(ov.root)) {
+            submitBtn.disabled = false;
+            submitBtn.textContent = 'Authorise Timesheet';
+          }
+
+          if (!ok) {
+            if (!cancelled) {
+              setTsStatus(statusEl,
+                "Please complete a paper timesheet as there are network problems. " +
+                "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
+              );
+              _debugOrToast && _debugOrToast('Submit failed', sub);
+            }
+            return;
+          }
+
+          // Success: show big tick then close + refresh (handled in _successTick)
+          _successTick(ov.root);
+        };
+
+        const right = _el('div', {});
+        right.append(cancelBtn, submitBtn);
+        return right;
+      })()
+    );
+
+    ov.contents.append(
+      linesWrap,
+      _el('hr'),
+      _el('div', { style: { marginTop: '6px', marginBottom: '6px' } }, 'Please enter your full name and job title'),
+      nameIn,
+      titleIn,
+      _el('div', { style: { marginTop: '12px' } }, 'Please sign to confirm hours worked are accurate and that you are authorised to sign this timesheet'),
+      pad.el,
+      btnRow
+    );
+  };
+
+  // Kick off
+  step1();
 }
 
-// Success: show big tick then close + refresh (handled in _successTick)
-_successTick(ov.root);
-
-              },
-            }, "Authorise Timesheet")
-          )
-        )
-      );
-    };
-
-    step1();
-  }
 
   function _successTick(overlayRoot) {
   // Mark this overlay so closing it will trigger a server refresh
