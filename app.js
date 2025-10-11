@@ -1207,7 +1207,7 @@ function openPastShifts() {
       }
 
       const TS = window.Timesheets;
-      const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(window.identity?.msisdn));
+     const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(baseline || window.identity || ''));
 
       const frag = document.createDocumentFragment();
       items.forEach(it => {
@@ -1286,19 +1286,60 @@ async function fetchPastShifts() {
   // NEW: augment past shifts with timesheet authorisation (TS ✓) via the broker
   try {
     const TS = window.Timesheets;
-    const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(window.identity?.msisdn));
+    const subject = window.baseline || window.identity || '';
+    const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(subject));
     if (tsFeatureOn && TS && TS.augmentHistoryWithTimesheetStatus) {
       await TS.augmentHistoryWithTimesheetStatus(items, baseline);
       // items now have .timesheet_authorised and .booking_id where determinable
     }
   } catch (e) {
     // Non-fatal: history still renders without TS ✓
-    if (window.CONFIG?.TIMESHEET_TESTMODE && window.Timesheets?.isTimesheetTestUser?.(window.identity?.msisdn)) {
-      console.warn('Timesheet status augmentation failed:', e);
+    if (window.CONFIG?.TIMESHEET_TESTMODE) {
+      const name = _candidateNameFrom(window.identity, window.baseline);
+      if (window.Timesheets?.isTimesheetTestUser?.(name)) {
+        console.warn('Timesheet status augmentation failed:', e);
+      }
     }
   }
 
   return items;
+}
+
+function _normName(s) {
+  return String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+}
+function _candidateNameFrom(identity, baseline, hint) {
+  // Prefer explicit hint if provided
+  if (typeof hint === 'string' && hint) return hint;
+
+  // Prefer baseline-provided name
+  if (baseline && typeof baseline === 'object') {
+    if (baseline.candidateName) return baseline.candidateName;
+    if (baseline.candidate && (baseline.candidate.firstName || baseline.candidate.surname)) {
+      return [baseline.candidate.firstName || '', baseline.candidate.surname || ''].join(' ').trim();
+    }
+  }
+
+  // Fall back to identity fields if available
+  if (identity && typeof identity === 'object') {
+    if (identity.candidateName) return identity.candidateName;
+    if (identity.firstName || identity.surname) {
+      return [identity.firstName || '', identity.surname || ''].join(' ').trim();
+    }
+  }
+
+  // Last resort: try globals if present
+  if (window?.baseline) {
+    if (window.baseline.candidateName) return window.baseline.candidateName;
+    if (window.baseline.candidate && (window.baseline.candidate.firstName || window.baseline.candidate.surname)) {
+      return [window.baseline.candidate.firstName || '', window.baseline.candidate.surname || ''].join(' ').trim();
+    }
+  }
+  return '';
+}
+function _isAllowlistedName(name) {
+  const n = _normName(name);
+  return n === 'kier arthur' || n === 'arthur kier';
 }
 
 
@@ -1864,8 +1905,30 @@ function renderTiles() {
   }
 
   // Feature flag (safe guards if Timesheets not present)
+  // CHANGED: pass baseline/identity (name-based gating inside Timesheets)
   const TS = window.Timesheets;
-  const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(window.identity?.msisdn));
+  const tsFeatureOn = !!(
+    TS &&
+    TS.isTimesheetFeatureEnabled &&
+    TS.isTimesheetFeatureEnabled(baseline || window.identity || '')
+  );
+
+  // NEW: visually confirm name-based TESTMODE match by turning the name red
+  try {
+    const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
+    const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
+    if (els.candidateName) {
+      if (testMode && tsFeatureOn && allowed) {
+        // iOS-style system red; tweak as desired or swap to a CSS class.
+        els.candidateName.style.color = '#ff3b30';
+        els.candidateName.title = 'Test mode: name matched';
+      } else {
+        // reset if previously coloured
+        els.candidateName.style.color = '';
+        if (els.candidateName.title === 'Test mode: name matched') els.candidateName.title = '';
+      }
+    }
+  } catch {}
 
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
@@ -5016,13 +5079,14 @@ async function refreshAppState({ force = false } = {}) {
   // - If test mode OFF → true
   // - If test mode ON  → true only for allowlisted msisdn
   // ───────────────────────────────────────────────────────────────────────────
-  TS.isTestModeAllowed = function isTestModeAllowed(identity) {
-    const cfg = _getConfig();
-    const testMode = !!cfg.TIMESHEET_TESTMODE;
-    if (!testMode) return true;
-    const msisdn = identity && identity.msisdn;
-    return _isAllowlistedMsisdn(msisdn);
-  };
+ TS.isTestModeAllowed = function isTestModeAllowed(identity) {
+  const cfg = _getConfig();
+  const testMode = !!cfg.TIMESHEET_TESTMODE;
+  if (!testMode) return true;
+
+  const name = _candidateNameFrom(identity, window.baseline);
+  return _isAllowlistedName(name);
+};
 
   // ───────────────────────────────────────────────────────────────────────────
   // NEW: shouldShowTimesheetCTA(tile, identity)
@@ -5035,22 +5099,23 @@ async function refreshAppState({ force = false } = {}) {
   //   - tile.timesheet_authorised !== true
   // ───────────────────────────────────────────────────────────────────────────
   TS.shouldShowTimesheetCTA = function shouldShowTimesheetCTA(tile, identity) {
-    if (!tile) return false;
+  if (!tile) return false;
 
-    const enabled =
-      typeof TS.isTimesheetFeatureEnabled === 'function'
-        ? !!TS.isTimesheetFeatureEnabled(identity?.msisdn || '')
-        : false;
+  // Pass identity (or it will pick up baseline/identity from globals)
+  const enabled =
+    typeof TS.isTimesheetFeatureEnabled === 'function'
+      ? !!TS.isTimesheetFeatureEnabled(identity || window.baseline || '')
+      : false;
 
-    if (!enabled) return false;
-    if (!TS.isTestModeAllowed(identity)) return false;
+  if (!enabled) return false;
+  if (!TS.isTestModeAllowed(identity)) return false;
 
-    const isBooked = !!tile.booked;
-    const eligible = tile.timesheet_eligible === true;
-    const notAuthorised = tile.timesheet_authorised !== true;
+  const isBooked = !!tile.booked;
+  const eligible = tile.timesheet_eligible === true;
+  const notAuthorised = tile.timesheet_authorised !== true;
 
-    return isBooked && eligible && notAuthorised;
-  };
+  return isBooked && eligible && notAuthorised;
+};
 
   // ───────────────────────────────────────────────────────────────────────────
   // NEW: applyCTATheme(cardEl)
@@ -5225,22 +5290,25 @@ window.Timesheets = (function () {
     if (digits.startsWith("0")) return "44" + digits.slice(1);
     return digits;
   }
+function isTimesheetTestUser(subject) {
+  // subject may be a name string, an identity object, or a baseline object
+  const name = _candidateNameFrom(
+    typeof subject === 'object' ? subject : window.identity,
+    typeof subject === 'object' ? subject : window.baseline,
+    typeof subject === 'string' ? subject : ''
+  );
+  return _isAllowlistedName(name);
+}
 
-  function isTimesheetTestUser(msisdn) {
-    const n = normalizeMsisdn(msisdn);
-    return n === "447545970472";
+function isTimesheetFeatureEnabled(subject) {
+  if (!CFG.TIMESHEET_FEATURE_ENABLED) return false;
+  if (CFG.TIMESHEET_TESTMODE) {
+    // TESTMODE true ⇒ only the NAME-allowlisted user sees features
+    return isTimesheetTestUser(subject);
   }
-
-  function isTimesheetFeatureEnabled(msisdn) {
-    if (!CFG.TIMESHEET_FEATURE_ENABLED) return false;
-    if (CFG.TIMESHEET_TESTMODE) {
-      // TESTMODE true ⇒ only the test user sees features
-      return isTimesheetTestUser(msisdn);
-    }
-    // TESTMODE false ⇒ everyone sees features
-    return true;
-  }
-
+  // TESTMODE false ⇒ everyone sees features
+  return true;
+}
   /* ──────────────────────────────────────────────────────────────────────────
    * 2) Occupant key + booking id helpers (for History/status lookups)
    * ────────────────────────────────────────────────────────────────────────── */
@@ -5494,11 +5562,11 @@ window.Timesheets = (function () {
    * 6) Click router (tile → Wizard or Submitted Modal)
    * ────────────────────────────────────────────────────────────────────────── */
 
- function onTileClickTimesheetBranch(tile, identity, baseline) {
-  const msisdn = identity?.msisdn || "";
-  if (!isTimesheetFeatureEnabled(msisdn)) return false;
+function onTileClickTimesheetBranch(tile, identity, baseline) {
+  // NAME-BASED gate
+  if (!isTimesheetFeatureEnabled(baseline || identity || '')) return false;
 
-  // Test-mode allowlist: only the whitelisted user may use the flow in test mode
+  // Test-mode allowlist: only the NAME-whitelisted user may use the flow in test mode
   try {
     if (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function') {
       if (!window.Timesheets.isTestModeAllowed(identity)) return false;
@@ -5518,7 +5586,6 @@ window.Timesheets = (function () {
   // Not eligible; do nothing special (preserves existing behaviour)
   return false;
 }
-
 
   /* ──────────────────────────────────────────────────────────────────────────
    * 7) Wizard (minimal self-contained overlay)
@@ -5959,18 +6026,21 @@ _successTick(ov.root);
   }, 5000);
 }
 
+function _debugOrToast(label, resp) {
+  // Name-based test gate: subject can be baseline or identity
+  const subject = window.baseline || window.identity || '';
+  const test = !!CFG.TIMESHEET_TESTMODE && isTimesheetTestUser(subject);
 
-  function _debugOrToast(label, resp) {
-    const test = CFG.TIMESHEET_TESTMODE && isTimesheetTestUser(window.identity?.msisdn);
-    if (test) {
-      const msg = `${label}\nstatus=${resp?.status}\nerror=${resp?.error || ""}\njson=${JSON.stringify(resp?.json || {}, null, 2)}`;
-      alert(msg);
-    } else if (window.showToast) {
-      window.showToast("Something went wrong. Please try again.");
-    } else {
-      alert("Something went wrong. Please try again.");
-    }
+  if (test) {
+    const msg = `${label}\nstatus=${resp?.status}\nerror=${resp?.error || ""}\njson=${JSON.stringify(resp?.json || {}, null, 2)}`;
+    alert(msg);
+  } else if (window.showToast) {
+    window.showToast("Something went wrong. Please try again.");
+  } else {
+    alert("Something went wrong. Please try again.");
   }
+}
+
 
   /* ──────────────────────────────────────────────────────────────────────────
    * 8) Submitted Timesheet Modal (summary + revoke & resubmit)
