@@ -12,6 +12,7 @@ const LAST_LOADED_KEY = 'rota_avail_last_loaded_v1';
 const SAVED_IDENTITY_KEY = 'rota_avail_identity_v1';
 const LAST_EMAIL_KEY = 'rota_last_login_email_v1';
 const REFRESH_SNOOZE_UNTIL_KEY = 'rota_refresh_snooze_until_v1'; // ← hoisted
+window.CONFIG = { TIMESHEET_FEATURE_ENABLED: true, TIMESHEET_TESTMODE: true };
 
 const STATUS_ORDER = [
   PENDING_LABEL_DEFAULT,
@@ -1188,6 +1189,7 @@ function ensureHelpMessageVisible() {
 function ensurePastShiftsButton() {
   ensureMenu();
 }
+
 function openPastShifts() {
   if (isBlockingOverlayOpen()) return; // guard against blocking modals
   ensureLoadingOverlay();
@@ -1203,10 +1205,15 @@ function openPastShifts() {
         list.innerHTML = `<div class="muted">No shifts in the last 14 days.</div>`;
         return;
       }
+
+      const TS = window.Timesheets;
+      const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(window.identity?.msisdn));
+
       const frag = document.createDocumentFragment();
       items.forEach(it => {
         const card = document.createElement('div');
         card.className = 'past-item';
+
         const timeLine = (it.notes && it.notes.trim())
           ? it.notes.trim()
           : ((it.shiftType === 'NIGHT') ? 'NIGHT 19:30–08:00' : 'LONG DAY 07:30–20:00');
@@ -1223,12 +1230,48 @@ function openPastShifts() {
           ${roleLine ? `<div>${roleLine.slice(1)}</div>` : ``}
           <div>${refLine.startsWith('\n') ? refLine.slice(1) : refLine}</div>
         `;
+
+        // NEW: TS ✓ badge and click to open submitted-timesheet modal
+        if (tsFeatureOn && it.timesheet_authorised === true) {
+          // lightweight badge
+          const badge = document.createElement('span');
+          badge.textContent = 'TS ✓';
+          Object.assign(badge.style, {
+            marginLeft: '8px',
+            padding: '2px 6px',
+            borderRadius: '10px',
+            background: '#0a7f43',
+            color: '#fff',
+            fontSize: '11px',
+            fontWeight: '600',
+          });
+          const dateEl = card.querySelector('.past-date');
+          if (dateEl) dateEl.appendChild(badge);
+
+          // open the submitted-timesheet modal on click
+          card.style.cursor = 'pointer';
+          card.addEventListener('click', () => {
+            const TS = window.Timesheets;
+            if (!TS || !TS.openSubmittedTimesheetModal) return;
+            // Build a minimal "tile-like" object; booking_id should be present after augment
+            const tileForModal = {
+              booking_id: it.booking_id,
+              hospital: it.hospital,
+              ward: it.ward,
+              job_title: it.jobTitle || it.role,
+              timesheet_authorised: true
+            };
+            TS.openSubmittedTimesheetModal(tileForModal, window.identity, baseline);
+          });
+        }
+
         frag.appendChild(card);
       });
       list.appendChild(frag);
     })
     .catch(err => {
-      list.innerHTML = `<div class="muted">Could not load past shifts: ${err.message || err}</div>`;
+      const msg = (err && err.message) ? err.message : err;
+      document.getElementById('pastList').innerHTML = `<div class="muted">Could not load past shifts: ${msg}</div>`;
     });
 }
 async function fetchPastShifts() {
@@ -1237,8 +1280,28 @@ async function fetchPastShifts() {
     const msg = (json && json.error) || `HTTP ${res.status}`;
     throw new Error(msg);
   }
-  return json.items || [];
+
+  const items = json.items || [];
+
+  // NEW: augment past shifts with timesheet authorisation (TS ✓) via the broker
+  try {
+    const TS = window.Timesheets;
+    const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(window.identity?.msisdn));
+    if (tsFeatureOn && TS && TS.augmentHistoryWithTimesheetStatus) {
+      await TS.augmentHistoryWithTimesheetStatus(items, baseline);
+      // items now have .timesheet_authorised and .booking_id where determinable
+    }
+  } catch (e) {
+    // Non-fatal: history still renders without TS ✓
+    if (window.CONFIG?.TIMESHEET_TESTMODE && window.Timesheets?.isTimesheetTestUser?.(window.identity?.msisdn)) {
+      console.warn('Timesheet status augmentation failed:', e);
+    }
+  }
+
+  return items;
 }
+
+
 
 // ---------- Content overlay ----------
 async function openContent(kind, titleFallback) {
@@ -1800,6 +1863,10 @@ function renderTiles() {
     return;
   }
 
+  // Feature flag (safe guards if Timesheets not present)
+  const TS = window.Timesheets;
+  const tsFeatureOn = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(window.identity?.msisdn));
+
   ensureHelpMessageVisible();
   ensurePastShiftsButton();
 
@@ -1822,10 +1889,9 @@ function renderTiles() {
     let bgClass = 'tile--bg-pending';
     let tone = 'tile--tone-light'; // default for black
 
-     if (isBooked) {
-    bgClass = 'tile--bg-booked';     // vivid blue
-    tone   = 'tile--tone-light';     // white text for contrast
-
+    if (isBooked) {
+      bgClass = 'tile--bg-booked';     // vivid blue
+      tone   = 'tile--tone-light';     // white text for contrast
     } else if (isBlocked || label === 'BLOCKED') {
       bgClass = 'tile--bg-blocked';    // light red
       tone   = 'tile--tone-dark';      // dark text
@@ -1833,13 +1899,12 @@ function renderTiles() {
       bgClass = 'tile--bg-notavail';   // bright red
       tone   = 'tile--tone-light';     // white text
     } else if (
-    label === 'LONG DAY' || label === 'NIGHT' || label === 'LONG DAY/NIGHT' ||
-    label === 'AVAILABLE' || label === 'AVAILABLE FOR'
-  ) {
-    bgClass = 'tile--bg-available';  // availability (LD/N/LDN or generic)
-    tone   = 'tile--tone-dark';      // dark text
-  } else {
-
+      label === 'LONG DAY' || label === 'NIGHT' || label === 'LONG DAY/NIGHT' ||
+      label === 'AVAILABLE' || label === 'AVAILABLE FOR'
+    ) {
+      bgClass = 'tile--bg-available';  // availability
+      tone   = 'tile--tone-dark';      // dark text
+    } else {
       bgClass = 'tile--bg-pending';    // black
       tone   = 'tile--tone-light';     // white text
     }
@@ -2002,6 +2067,50 @@ function renderTiles() {
       card.style.borderColor = '#ffffff';
     }
 
+    // NEW: booked-tile click routing for Timesheets (wizard or submitted modal)
+    if (t.booked && tsFeatureOn) {
+      card.style.cursor = 'pointer';
+      card.title = 'Tap for timesheet';
+      card.addEventListener('click', (ev) => {
+        // Let the Timesheets module decide: submitted modal vs wizard vs no-op
+        try {
+          const handled = TS.onTileClickTimesheetBranch && TS.onTileClickTimesheetBranch(t, window.identity, baseline);
+          if (handled) {
+            ev.stopPropagation();
+            ev.preventDefault();
+          }
+        } catch (e) {
+          // fail-safe: ignore and fall back to no-op
+        }
+      });
+
+      // (A) draw TS ✓ badge on booked tiles if authorised
+      try { TS.decorateTileWithTSBadge && TS.decorateTileWithTSBadge(card, t); } catch {}
+
+      // (B) attention state for eligible, not-yet-authorised tiles
+      try {
+        const showCTA =
+          TS.shouldShowTimesheetCTA &&
+          TS.shouldShowTimesheetCTA(t, window.identity);
+
+        if (showCTA) {
+          TS.decorateTileWithTSAttention && TS.decorateTileWithTSAttention(card, t);
+          TS.startTileContentAlternator && TS.startTileContentAlternator(card, {
+            originalHtml: sub.innerHTML,
+            altText: 'Please touch to sign your timesheet',
+            periodMs: 4000
+          });
+        } else {
+          TS.stopTileContentAlternator && TS.stopTileContentAlternator(card);
+          // Ensure attention visuals are cleared if previously applied
+          card.classList.remove('tile--bg-ts-cta');
+          const attn = card.querySelector('.ts-badge-attn');
+          if (attn) attn.remove();
+        }
+      } catch {}
+    }
+
+    // Keep existing edit-cycle click for editable NON-booked tiles
     const editable = (!t.booked && t.status !== 'BLOCKED' && t.editable !== false);
     if (editable) {
       card.style.cursor = 'pointer';
@@ -2035,9 +2144,14 @@ function renderTiles() {
 
         showFooterIfNeeded();
       });
+    } else if (!t.booked) {
+      card.title = t.status === 'BLOCKED' ? 'BLOCKED by 6-day rule' : 'Not editable';
+      card.style.opacity = t.status === 'BLOCKED' ? .9 : 1;
     } else {
-      card.title = t.booked ? 'BOOKED (locked)' : (t.status === 'BLOCKED' ? 'BLOCKED by 6-day rule' : 'Not editable');
-      card.style.opacity = t.booked || t.status === 'BLOCKED' ? .9 : 1;
+      // booked + feature off: keep current “locked” tooltip
+      if (!tsFeatureOn) {
+        card.title = 'BOOKED (locked)';
+      }
     }
   }
 
@@ -4868,6 +4982,181 @@ async function refreshAppState({ force = false } = {}) {
 }
 
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Timesheets: new helpers for attention state (TS !), test-mode allowlist,
+// and 4s content alternation. Pure frontend; no network.
+// ─────────────────────────────────────────────────────────────────────────────
+(function () {
+  const TS = (window.Timesheets = window.Timesheets || {});
+
+  // ---- tiny utils (private) ----
+  function _normalizeMsisdn(n) {
+    if (!n) return '';
+    let s = String(n).replace(/[^\d+]/g, '');
+    if (s.startsWith('+')) s = s.slice(1);
+    // Common UK shapes → canonical 447XXXXXXXXX
+    if (s.startsWith('07') && s.length === 11) return '44' + s.slice(1);
+    if (s.startsWith('7') && s.length === 10) return '44' + s;
+    if (s.startsWith('447') && s.length === 12) return s;
+    if (s.startsWith('44') && s.length === 12) return s;
+    return s; // best effort
+  }
+  function _isAllowlistedMsisdn(n) {
+    const canon = _normalizeMsisdn(n);
+    // Whitelist: 07545970472 / 7545970472 (any formatting)
+    const tail = '7545970472';
+    return canon.endsWith(tail) || canon === '44' + tail;
+  }
+  function _getConfig() {
+    return window.CONFIG || {};
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NEW: isTestModeAllowed(identity)
+  // - If test mode OFF → true
+  // - If test mode ON  → true only for allowlisted msisdn
+  // ───────────────────────────────────────────────────────────────────────────
+  TS.isTestModeAllowed = function isTestModeAllowed(identity) {
+    const cfg = _getConfig();
+    const testMode = !!cfg.TIMESHEET_TESTMODE;
+    if (!testMode) return true;
+    const msisdn = identity && identity.msisdn;
+    return _isAllowlistedMsisdn(msisdn);
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NEW: shouldShowTimesheetCTA(tile, identity)
+  // Predicate for the attention state (TS ! + orange + alternator).
+  // Conditions:
+  //   - feature enabled for user
+  //   - test mode allowed (see above)
+  //   - tile.booked === true
+  //   - tile.timesheet_eligible === true
+  //   - tile.timesheet_authorised !== true
+  // ───────────────────────────────────────────────────────────────────────────
+  TS.shouldShowTimesheetCTA = function shouldShowTimesheetCTA(tile, identity) {
+    if (!tile) return false;
+
+    const enabled =
+      typeof TS.isTimesheetFeatureEnabled === 'function'
+        ? !!TS.isTimesheetFeatureEnabled(identity?.msisdn || '')
+        : false;
+
+    if (!enabled) return false;
+    if (!TS.isTestModeAllowed(identity)) return false;
+
+    const isBooked = !!tile.booked;
+    const eligible = tile.timesheet_eligible === true;
+    const notAuthorised = tile.timesheet_authorised !== true;
+
+    return isBooked && eligible && notAuthorised;
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NEW: applyCTATheme(cardEl)
+  // Adds an orange attention background class. CSS should define .tile--bg-ts-cta
+  // (kept separate so you can centralize theme toggling if desired).
+  // ───────────────────────────────────────────────────────────────────────────
+  TS.applyCTATheme = function applyCTATheme(cardEl) {
+    if (!cardEl) return;
+    cardEl.classList.add('tile--bg-ts-cta');
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NEW: decorateTileWithTSAttention(cardEl, tile)
+  // - Adds "TS !" badge (top-right, like TS ✓)
+  // - Applies orange bg via .tile--bg-ts-cta
+  // - Does NOT start the alternator (that’s separate so callers can control)
+  // ───────────────────────────────────────────────────────────────────────────
+  TS.decorateTileWithTSAttention = function decorateTileWithTSAttention(cardEl /*, tile */) {
+    if (!cardEl) return;
+
+    // Apply orange theme
+    TS.applyCTATheme(cardEl);
+
+    // Ensure a single attention badge
+    const existing = cardEl.querySelector('.ts-badge-attn');
+    if (!existing) {
+      const badge = document.createElement('div');
+      badge.className = 'ts-badge ts-badge-attn';
+      badge.textContent = 'TS !';
+      // If you don’t already position via CSS, this ensures visible placement.
+      // You can remove these styles if your CSS handles it.
+      badge.style.position = 'absolute';
+      badge.style.top = '6px';
+      badge.style.right = '6px';
+      badge.style.padding = '2px 6px';
+      badge.style.borderRadius = '10px';
+      badge.style.fontSize = '12px';
+      badge.style.fontWeight = '700';
+      badge.style.background = 'rgba(255, 165, 0, 0.95)';
+      badge.style.color = '#000';
+      badge.style.pointerEvents = 'none';
+      cardEl.appendChild(badge);
+    }
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NEW: startTileContentAlternator(cardEl, { originalHtml, altText, periodMs })
+  // Flips the tile's .tile-sub innerHTML every 'periodMs' between originalHtml
+  // and altText. Idempotent; restarts cleanly if already running.
+  // ───────────────────────────────────────────────────────────────────────────
+  TS.startTileContentAlternator = function startTileContentAlternator(
+    cardEl,
+    { originalHtml, altText = 'Please touch to sign your timesheet', periodMs = 4000 } = {}
+  ) {
+    if (!cardEl) return;
+
+    // Clear any existing alternator first
+    TS.stopTileContentAlternator(cardEl);
+
+    const sub = cardEl.querySelector('.tile-sub');
+    if (!sub) return;
+
+    const orig = originalHtml != null ? String(originalHtml) : sub.innerHTML;
+    cardEl.dataset.tsAltOriginalHtml = orig;
+
+    let showingAlt = false;
+    const id = window.setInterval(() => {
+      try {
+        if (!sub.isConnected) { TS.stopTileContentAlternator(cardEl); return; }
+        showingAlt = !showingAlt;
+        sub.innerHTML = showingAlt ? altText : orig;
+      } catch (_) {
+        // On any unexpected DOM failure, stop gracefully.
+        TS.stopTileContentAlternator(cardEl);
+      }
+    }, Math.max(1000, Number(periodMs) || 4000));
+
+    cardEl.dataset.tsAltTimerId = String(id);
+  };
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // NEW: stopTileContentAlternator(cardEl)
+  // Clears the interval and restores the original sub innerHTML if we saved it.
+  // ───────────────────────────────────────────────────────────────────────────
+  TS.stopTileContentAlternator = function stopTileContentAlternator(cardEl) {
+    if (!cardEl) return;
+
+    const id = Number(cardEl.dataset.tsAltTimerId || 0);
+    if (id) {
+      try { window.clearInterval(id); } catch (_) {}
+      delete cardEl.dataset.tsAltTimerId;
+    }
+
+    const sub = cardEl.querySelector('.tile-sub');
+    const orig = cardEl.dataset.tsAltOriginalHtml;
+    if (sub && orig != null) {
+      sub.innerHTML = orig;
+    }
+    delete cardEl.dataset.tsAltOriginalHtml;
+
+    // Remove attention visuals if present (caller may also do this)
+    const attn = cardEl.querySelector('.ts-badge-attn');
+    if (attn) attn.remove();
+    cardEl.classList.remove('tile--bg-ts-cta');
+  };
+})();
 
 
 
@@ -4897,6 +5186,1018 @@ function setEmergencyButtonBusy(isBusy) {
   }
 }
 
+/* ============================================================================
+ *  Timesheets Frontend Module (new code only)
+ *  - Drop this file into your frontend repo (e.g., /public/js/timesheets.js)
+ *  - Wire calls from your existing render / click handlers (see summaries)
+ * ============================================================================ */
+
+window.Timesheets = (function () {
+  "use strict";
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 0) Config (safe defaults; override via window.CONFIG)
+   * ────────────────────────────────────────────────────────────────────────── */
+  const CFG = {
+    BROKER_BASE_URL:
+      (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
+      "https://arthur-rai-broker.kier-88a.workers.dev",
+    TIMESHEET_FEATURE_ENABLED:
+      (window.CONFIG && window.CONFIG.TIMESHEET_FEATURE_ENABLED) !== undefined
+        ? !!window.CONFIG.TIMESHEET_FEATURE_ENABLED
+        : true,
+    TIMESHEET_TESTMODE:
+      (window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE) !== undefined
+        ? !!window.CONFIG.TIMESHEET_TESTMODE
+        : false,
+    LONDON_TZ: "Europe/London",
+    UPLOAD_MAX_BYTES: 300000, // keep aligned with broker default
+  };
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 1) Identity helpers (TESTMODE gating)
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  function normalizeMsisdn(msisdn) {
+    if (!msisdn) return "";
+    const digits = String(msisdn).replace(/\D+/g, "");
+    if (digits.startsWith("44")) return digits;
+    if (digits.startsWith("0")) return "44" + digits.slice(1);
+    return digits;
+  }
+
+  function isTimesheetTestUser(msisdn) {
+    const n = normalizeMsisdn(msisdn);
+    return n === "447545970472";
+  }
+
+  function isTimesheetFeatureEnabled(msisdn) {
+    if (!CFG.TIMESHEET_FEATURE_ENABLED) return false;
+    if (CFG.TIMESHEET_TESTMODE) {
+      // TESTMODE true ⇒ only the test user sees features
+      return isTimesheetTestUser(msisdn);
+    }
+    // TESTMODE false ⇒ everyone sees features
+    return true;
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 2) Occupant key + booking id helpers (for History/status lookups)
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  function deriveOccupantKey(baseline) {
+    // Preferred: surname + firstname
+    const s =
+      baseline?.candidate?.surname ||
+      baseline?.candidate?.lastName ||
+      baseline?.candidate?.last_name ||
+      "";
+    const f =
+      baseline?.candidate?.firstName ||
+      baseline?.candidate?.firstname ||
+      baseline?.candidate?.given_name ||
+      "";
+    const joined = `${String(s).trim()} ${String(f).trim()}`.trim();
+    if (joined) return joined;
+    // fallback
+    if (baseline?.candidateName) return String(baseline.candidateName).trim();
+    return "";
+  }
+
+
+
+  function _normForBooking(s) {
+    return String(s || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .replace(/[^\w\s\-@&\/,.:]/g, "");
+  }
+
+  async function _sha256Hex(str) {
+    const data = new TextEncoder().encode(str);
+    const buf = await crypto.subtle.digest("SHA-256", data);
+    const arr = Array.from(new Uint8Array(buf));
+    return arr.map((b) => b.toString(16).padStart(2, "0")).join("");
+  }
+
+  /**
+   * Make a booking_id deterministically (matches broker’s algorithm).
+   * Use when your history item lacks booking_id but you still need to query status.
+   */
+  async function makeBookingId({
+    occupant_key,
+    date_start_local, // YYYY-MM-DD
+    hospital,
+    ward,
+    job_title,
+    shift_label = "",
+  }) {
+    const base = `${_normForBooking(occupant_key)}|${date_start_local}|${_normForBooking(
+      hospital
+    )}|${_normForBooking(ward)}|${_normForBooking(job_title)}|${_normForBooking(shift_label)}`;
+    const hash = await _sha256Hex(base);
+    return `bk_${hash.slice(0, 16)}`;
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 3) Broker client (fetch helpers)
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  async function _requestBroker(path, { method = "GET", body = null, headers = {} } = {}) {
+    const url = path.startsWith("http") ? path : `${CFG.BROKER_BASE_URL}${path}`;
+    const opts = {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...headers,
+      },
+      credentials: "omit",
+    };
+    if (body) opts.body = JSON.stringify(body);
+
+    let res, text;
+    try {
+      res = await fetch(url, opts);
+      text = await res.text();
+    } catch (e) {
+      return { ok: false, status: 0, error: e.message || "Network error" };
+    }
+    let json = null;
+    try {
+      json = text ? JSON.parse(text) : null;
+    } catch {
+      // non-JSON; keep raw
+    }
+    if (!res.ok) {
+      return {
+        ok: false,
+        status: res.status,
+        json,
+        error: (json && (json.error || json.message)) || text || `HTTP ${res.status}`,
+      };
+    }
+    return { ok: true, status: res.status, json };
+  }
+
+  async function presignTimesheet(payload) {
+    return _requestBroker("/timesheets/presign", { method: "POST", body: payload });
+  }
+
+  async function uploadSignaturePutUrl(putUrl, pngBlob) {
+    const res = await fetch(putUrl, {
+      method: "PUT",
+      headers: { "Content-Type": "image/png" },
+      body: pngBlob,
+    }).catch((e) => ({ ok: false, status: 0, _err: e }));
+    if (!res || !res.ok) {
+      let text = "";
+      try {
+        text = await res.text();
+      } catch {}
+      return {
+        ok: false,
+        status: res?.status || 0,
+        error: text || "Upload failed",
+      };
+    }
+    return { ok: true, status: res.status };
+  }
+
+  async function submitTimesheet(payload) {
+    return _requestBroker("/timesheets/submit", { method: "POST", body: payload });
+  }
+
+  async function getTimesheet(booking_id) {
+    return _requestBroker(`/timesheets/${encodeURIComponent(booking_id)}`, { method: "GET" });
+  }
+
+  async function revokeTimesheet(booking_id, reason) {
+    return _requestBroker("/timesheets/revoke", {
+      method: "POST",
+      body: { booking_id, reason: reason || "" },
+    });
+  }
+
+  async function revokeAndPresign(body) {
+    return _requestBroker("/timesheets/revoke-and-presign", {
+      method: "POST",
+      body,
+    });
+  }
+
+  async function authorisedStatus(booking_ids) {
+    return _requestBroker("/timesheets/authorised-status", {
+      method: "POST",
+      body: { booking_ids: booking_ids || [] },
+    });
+  }
+
+  async function presignSignatureGet(booking_id, which = "nurse", expires_seconds = 180) {
+    return _requestBroker("/signatures/presign-get", {
+      method: "POST",
+      body: { booking_id, which, expires_seconds },
+    });
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 4) History augmentation (fetch authorised flags from the broker)
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  /**
+   * Given an array of history rows, ensure each has a booking_id, then call the broker
+   * to learn which items are authorised. Returns a map { booking_id: boolean } and
+   * also mutates rows to set row.timesheet_authorised = true/false.
+   *
+   * Expected minimal row fields per item:
+   *   - booking_id (optional)
+   *   - occupant_key (optional if you provide baseline separately)
+   *   - ymd (YYYY-MM-DD, the shift date)
+   *   - hospital, ward, job_title, shift_label? (required only if we must compute booking_id)
+   */
+  async function augmentHistoryWithTimesheetStatus(rows, baseline) {
+    if (!Array.isArray(rows) || !rows.length) return {};
+
+    // Build/collect booking_ids
+    const ids = [];
+    for (const r of rows) {
+      if (!r.booking_id) {
+        const occupant_key = r.occupant_key || deriveOccupantKey(baseline);
+        r.booking_id = await makeBookingId({
+          occupant_key,
+          date_start_local: r.ymd || r.date_start_local,
+          hospital: r.hospital,
+          ward: r.ward,
+          job_title: r.job_title || r.role || r.jobTitle,
+          shift_label: r.shift_label || r.shift || r.shiftLabel || "",
+        });
+      }
+      ids.push(r.booking_id);
+    }
+
+    // Query broker
+    const resp = await authorisedStatus(ids);
+    const map = {};
+    if (resp.ok && resp.json && resp.json.statuses) {
+      Object.assign(map, resp.json.statuses);
+      // mutate rows for immediate UI
+      for (const r of rows) {
+        r.timesheet_authorised = !!map[r.booking_id];
+      }
+    } else {
+      // broker unavailable; mark as false but keep function resilient
+      for (const r of rows) r.timesheet_authorised = !!r.timesheet_authorised;
+    }
+    return map;
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 5) TS ✓ badge for tiles
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  function decorateTileWithTSBadge(cardEl, tile) {
+    try {
+      if (!cardEl || !tile) return;
+      const badgeClass = "ts-badge";
+      // remove any existing badge first
+      cardEl.querySelectorAll("." + badgeClass).forEach((n) => n.remove());
+      if (tile.timesheet_authorised !== true) return;
+
+      const badge = document.createElement("div");
+      badge.className = badgeClass;
+      badge.textContent = "TS ✓";
+      // minimal styles for the badge if your CSS isn’t ready:
+      Object.assign(badge.style, {
+        position: "absolute",
+        top: "6px",
+        right: "6px",
+        fontSize: "11px",
+        lineHeight: "1",
+        padding: "4px 6px",
+        borderRadius: "10px",
+        background: "#0a7f43",
+        color: "#fff",
+        fontWeight: "600",
+        letterSpacing: "0.2px",
+        pointerEvents: "none",
+      });
+      // ensure tile is position:relative
+      const pos = getComputedStyle(cardEl).position;
+      if (pos === "static") cardEl.style.position = "relative";
+      cardEl.appendChild(badge);
+    } catch {
+      /* no-op */
+    }
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 6) Click router (tile → Wizard or Submitted Modal)
+   * ────────────────────────────────────────────────────────────────────────── */
+
+ function onTileClickTimesheetBranch(tile, identity, baseline) {
+  const msisdn = identity?.msisdn || "";
+  if (!isTimesheetFeatureEnabled(msisdn)) return false;
+
+  // Test-mode allowlist: only the whitelisted user may use the flow in test mode
+  try {
+    if (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function') {
+      if (!window.Timesheets.isTestModeAllowed(identity)) return false;
+    }
+  } catch (_) {}
+
+  if (tile?.timesheet_authorised === true) {
+    openSubmittedTimesheetModal(tile, identity, baseline);
+    return true;
+  }
+
+  if (tile?.timesheet_eligible === true) {
+    startTimesheetWizard(tile, identity, baseline);
+    return true;
+  }
+
+  // Not eligible; do nothing special (preserves existing behaviour)
+  return false;
+}
+
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 7) Wizard (minimal self-contained overlay)
+   *     - Step 1: Hours & Break
+   *     - Step 2: Nurse signature
+   *     - Step 3: Authoriser details + signature → Submit
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  // Utility: make DOM
+  function _el(tag, attrs = {}, ...children) {
+    const n = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs || {})) {
+      if (k === "style" && v && typeof v === "object") Object.assign(n.style, v);
+      else if (k.startsWith("on") && typeof v === "function") n[k] = v;
+      else if (v !== null && v !== undefined) n.setAttribute(k, v);
+    }
+    for (const c of children) n.append(c?.nodeType ? c : document.createTextNode(String(c)));
+    return n;
+  }
+
+  function _isoFromYmdHHMM(ymd, hhmm) {
+    // Interpret as local time (Europe/London UX), then convert to ISO
+    const [H, M] = String(hhmm || "00:00").split(":").map((x) => parseInt(x, 10));
+    const [y, m, d] = String(ymd).split("-").map((x) => parseInt(x, 10));
+    const dt = new Date(y, m - 1, d, H, M, 0, 0);
+    return dt.toISOString();
+  }
+
+  function _minutesBetween(isoA, isoB) {
+    const a = new Date(isoA).getTime();
+    const b = new Date(isoB).getTime();
+    return Math.round((b - a) / 60000);
+  }
+
+  function _todayHHMM() {
+    const d = new Date();
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}${mm}`;
+  }
+
+  function _buildSignaturePad(width = 300, height = 120) {
+    const canvas = _el("canvas", { width, height, style: { width: "100%", height: "120px", border: "1px solid #ccc", borderRadius: "8px", background: "#fff" } });
+    const ctx = canvas.getContext("2d");
+    ctx.lineWidth = 2;
+    ctx.lineCap = "round";
+    ctx.strokeStyle = "#111";
+    let drawing = false;
+    let last = null;
+
+    function pos(e) {
+      const rect = canvas.getBoundingClientRect();
+      const x = (e.touches ? e.touches[0].clientX : e.clientX) - rect.left;
+      const y = (e.touches ? e.touches[0].clientY : e.clientY) - rect.top;
+      return { x: (x * canvas.width) / rect.width, y: (y * canvas.height) / rect.height };
+    }
+
+    function start(e) {
+      drawing = true;
+      last = pos(e);
+      e.preventDefault();
+    }
+    function move(e) {
+      if (!drawing) return;
+      const p = pos(e);
+      ctx.beginPath();
+      ctx.moveTo(last.x, last.y);
+      ctx.lineTo(p.x, p.y);
+      ctx.stroke();
+      last = p;
+      e.preventDefault();
+    }
+    function end(e) {
+      drawing = false;
+      e.preventDefault();
+    }
+
+    canvas.addEventListener("mousedown", start);
+    canvas.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", end);
+    canvas.addEventListener("touchstart", start, { passive: false });
+    canvas.addEventListener("touchmove", move, { passive: false });
+    canvas.addEventListener("touchend", end);
+
+    return {
+      el: canvas,
+      isEmpty: () => {
+        // crude: sample a few pixels
+        const data = ctx.getImageData(0, 0, canvas.width, canvas.height).data;
+        for (let i = 3; i < data.length; i += 4) if (data[i] !== 0) return false;
+        return true;
+      },
+      toPNGBlob: () =>
+        new Promise((resolve) => canvas.toBlob((b) => resolve(b), "image/png")),
+      clear: () => ctx.clearRect(0, 0, canvas.width, canvas.height),
+    };
+  }
+function _mountOverlay(titleText) {
+  const scrim = _el("div", {
+    class: "ts-overlay",
+    style: {
+      position: "fixed",
+      inset: "0",
+      background: "rgba(0,0,0,0.5)",
+      zIndex: "9999",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+    },
+  });
+
+  const card = _el(
+    "div",
+    {
+      style: {
+        width: "min(600px, 94vw)",
+        maxHeight: "90vh",
+        overflow: "auto",
+        background: "#fff",
+        borderRadius: "12px",
+        boxShadow: "0 10px 30px rgba(0,0,0,.2)",
+        padding: "16px",
+      },
+    },
+    _el("div", { style: { fontSize: "18px", fontWeight: "700", marginBottom: "8px" } }, titleText),
+    _el("div", { class: "ts-contents" })
+  );
+
+  // Close-on-scrim click; if success path marked this overlay, refresh afterwards
+  scrim.addEventListener("click", (e) => {
+    if (e.target === scrim) {
+      const shouldRefresh = scrim.dataset.tsRefreshOnClose === "1";
+      document.body.removeChild(scrim);
+      if (shouldRefresh) {
+        try { if (typeof startTilesThenEmergencyChain === "function") startTilesThenEmergencyChain(); } catch (_) {}
+      }
+    }
+  });
+
+  card.addEventListener("click", (e) => e.stopPropagation());
+
+  scrim.appendChild(card);
+  document.body.appendChild(scrim);
+
+  return { root: scrim, card, contents: card.querySelector(".ts-contents") };
+}
+
+  async function startTimesheetWizard(tile, identity, baseline) {
+    const ov = _mountOverlay("Timesheet");
+
+    // Shared state
+    const state = {
+      tile,
+      ymd: tile.ymd || tile.date_start_local, // YYYY-MM-DD
+      hospital: tile.hospital,
+      ward: tile.ward,
+      job_title: tile.job_title || tile.role || tile.jobTitle,
+      shift_label: tile.shift_label || tile.shift || tile.shiftLabel || "",
+      scheduled_start_hhmm: tile.shiftStartHHMM || "",
+      scheduled_end_hhmm: tile.shiftEndHHMM || "",
+      worked_start_hhmm: "",
+      worked_end_hhmm: "",
+      break_start_hhmm: "",
+      break_end_hhmm: "",
+      nurseSig: null,
+      authSig: null,
+      auth_name: "",
+      auth_job_title: "",
+      presign: null,
+    };
+
+    // Step 1 — Hours & Break
+    const step1 = () => {
+      const c = ov.contents;
+      c.innerHTML = "";
+
+      const form = _el("div", { style: { display: "grid", gap: "12px" } });
+      form.append(
+        _el("div", {}, `Hospital: ${state.hospital}`),
+        _el("div", {}, `Ward: ${state.ward}`),
+        _el("div", {}, `Job title: ${state.job_title}`),
+        _el("label", {}, "Worked Start (HH:MM) ", _el("input", { type: "time", value: state.worked_start_hhmm, oninput: (e) => (state.worked_start_hhmm = e.target.value) })),
+        _el("label", {}, "Worked End (HH:MM) ", _el("input", { type: "time", value: state.worked_end_hhmm, oninput: (e) => (state.worked_end_hhmm = e.target.value) })),
+        _el("label", {}, "Break Start (HH:MM) ", _el("input", { type: "time", value: state.break_start_hhmm, oninput: (e) => (state.break_start_hhmm = e.target.value) })),
+        _el("label", {}, "Break End (HH:MM) ", _el("input", { type: "time", value: state.break_end_hhmm, oninput: (e) => (state.break_end_hhmm = e.target.value) }))
+      );
+
+      const warn = _el("div", { style: { color: "#a15c00", display: "none" } }, "Warning: Break is not exactly 60 minutes.");
+      const btns = _el(
+        "div",
+        { style: { display: "flex", gap: "8px", marginTop: "12px", justifyContent: "flex-end" } },
+        _el("button", { type: "button", onclick: () => document.body.removeChild(ov.root) }, "Cancel"),
+        _el("button", {
+          type: "button",
+          onclick: () => {
+            // validate
+            if (!state.worked_start_hhmm || !state.worked_end_hhmm || !state.break_start_hhmm || !state.break_end_hhmm) {
+              alert("Please complete all times.");
+              return;
+            }
+            const ws = _isoFromYmdHHMM(state.ymd, state.worked_start_hhmm);
+            const we = _isoFromYmdHHMM(state.ymd, state.worked_end_hhmm);
+            const bs = _isoFromYmdHHMM(state.ymd, state.break_start_hhmm);
+            const be = _isoFromYmdHHMM(state.ymd, state.break_end_hhmm);
+            const bm = _minutesBetween(bs, be);
+            warn.style.display = bm === 60 ? "none" : "block";
+            step2();
+          },
+        }, "Next")
+      );
+
+      c.append(form, warn, btns);
+    };
+
+    // Step 2 — Nurse signature
+    const step2 = () => {
+      ov.contents.innerHTML = "";
+      const pad = _buildSignaturePad();
+      const timeNow = _todayHHMM();
+
+      ov.contents.append(
+        _el("div", { style: { marginBottom: "6px" } }, "Nurse signature"),
+        pad.el,
+        _el("div", { style: { marginTop: "6px", color: "#666" } }, `Date/time now: ${timeNow}`),
+        _el(
+          "div",
+          { style: { display: "flex", gap: "8px", marginTop: "12px", justifyContent: "flex-end" } },
+          _el("button", { type: "button", onclick: step1 }, "Back"),
+          _el("button", {
+            type: "button",
+            onclick: async () => {
+              if (pad.isEmpty()) {
+                alert("Please sign before continuing.");
+                return;
+              }
+              state.nurseSig = await pad.toPNGBlob();
+              step3();
+            },
+          }, "Next")
+        )
+      );
+    };
+
+    // Step 3 — Ward Authorisation (details + signature + submit)
+    const step3 = () => {
+      ov.contents.innerHTML = "";
+
+      const wsISO = _isoFromYmdHHMM(state.ymd, state.worked_start_hhmm);
+      const weISO = _isoFromYmdHHMM(state.ymd, state.worked_end_hhmm);
+      const bsISO = _isoFromYmdHHMM(state.ymd, state.break_start_hhmm);
+      const beISO = _isoFromYmdHHMM(state.ymd, state.break_end_hhmm);
+      const bm = _minutesBetween(bsISO, beISO);
+
+      const nameIn = _el("input", { type: "text", placeholder: "Authoriser full name", oninput: (e) => (state.auth_name = e.target.value) });
+      const titleIn = _el("input", { type: "text", placeholder: "Authoriser job title", oninput: (e) => (state.auth_job_title = e.target.value) });
+
+      const pad = _buildSignaturePad();
+
+      ov.contents.append(
+        _el("div", { style: { marginBottom: "8px", fontWeight: "600" } }, "Ward Authorisation — Signing Timesheet"),
+        _el("div", {}, `Nurse: ${deriveOccupantKey(baseline) || "—"}`),
+        _el("div", {}, `Date: ${state.ymd}`),
+        _el("div", {}, `Hospital: ${state.hospital}`),
+        _el("div", {}, `Ward: ${state.ward}`),
+        _el("div", {}, `Job title: ${state.job_title}`),
+        _el("div", {}, `Start: ${state.worked_start_hhmm}`),
+        _el("div", {}, `End: ${state.worked_end_hhmm}`),
+        _el("div", {}, `Break Start: ${state.break_start_hhmm}`),
+        _el("div", {}, `Break End: ${state.break_end_hhmm}`),
+        _el("div", {}, `Break length: ${bm} mins`),
+        _el("hr"),
+        _el("div", { style: { marginTop: "6px", marginBottom: "6px" } }, "Please enter your full name and job title"),
+        nameIn,
+        titleIn,
+        _el("div", { style: { marginTop: "12px" } }, "Please sign to confirm hours worked are accurate and that you are authorised to sign this timesheet"),
+        pad.el,
+        _el(
+          "div",
+          { style: { display: "flex", gap: "8px", marginTop: "12px", justifyContent: "space-between" } },
+          _el("div", {}, _el("button", { type: "button", onclick: step2 }, "Back")),
+          _el("div", {},
+            _el("button", { type: "button", onclick: () => document.body.removeChild(ov.root) }, "Cancel"),
+            _el("button", {
+              type: "button",
+              style: { marginLeft: "8px" },
+              onclick: async () => {
+                if (!state.auth_name || !state.auth_job_title) {
+                  alert("Please enter authoriser name and job title.");
+                  return;
+                }
+                if (pad.isEmpty()) {
+                  alert("Authoriser signature is required.");
+                  return;
+                }
+
+                // 1) Presign
+                const pres = await presignTimesheet({
+                  occupant_key: deriveOccupantKey(baseline),
+                  date_start_local: state.ymd,
+                  hospital: state.hospital,
+                  ward: state.ward,
+                  job_title: state.job_title,
+                  shift_label: state.shift_label,
+                  scheduled_start_hhmm: state.scheduled_start_hhmm,
+                  scheduled_end_hhmm: state.scheduled_end_hhmm,
+                });
+
+                if (!pres.ok) {
+                  _debugOrToast("Presign failed", pres);
+                  return;
+                }
+                state.presign = pres.json;
+
+                // 2) Upload signatures
+                const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
+                if (!nurseUp.ok) {
+                  _debugOrToast("Nurse signature upload failed", nurseUp);
+                  return;
+                }
+                const authBlob = await pad.toPNGBlob();
+                const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
+                if (!authUp.ok) {
+                  _debugOrToast("Authoriser signature upload failed", authUp);
+                  return;
+                }
+
+                // 3) Submit
+                const payload = {
+                  booking_id: state.presign.booking_id,
+                  scheduled_start_iso: state.scheduled_start_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_start_hhmm) : null,
+                  scheduled_end_iso: state.scheduled_end_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_end_hhmm) : null,
+                  worked_start_iso: wsISO,
+                  worked_end_iso: weISO,
+                  break_start_iso: bsISO,
+                  break_end_iso: beISO,
+                  auth_name: state.auth_name,
+                  auth_job_title: state.auth_job_title,
+                  nurse_key: state.presign.upload.nurse.key,
+                  authoriser_key: state.presign.upload.authoriser.key,
+                  idempotency_key: crypto.randomUUID(),
+                  client_user_agent: navigator.userAgent,
+                  client_timestamp: new Date().toISOString(),
+                  occupant_key: deriveOccupantKey(baseline),
+                  hospital: state.hospital,
+                  ward: state.ward,
+                  job_title: state.job_title,
+                  shift_label: state.shift_label,
+                };
+
+                // Ensure a small status line in the overlay (under the button)
+const statusEl = ensureTsStatusBox(ov.card);
+
+// Disable button while submitting / retrying
+btn.disabled = true;
+btn.textContent = "Submitting…";
+
+// Reuse the same idempotency key for all retries
+if (!payload.idempotency_key) payload.idempotency_key = crypto.randomUUID();
+
+const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
+  maxAttempts: 5,
+  updateStatus: (attempt, max, phase) => {
+    // phase: "submit" | "retry" | "waiting"
+    if (phase === "submit") {
+      setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
+      btn.textContent = `Submitting… (${attempt}/${max})`;
+    } else if (phase === "retry") {
+      setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
+      btn.textContent = `Retrying… (${attempt}/${max})`;
+    } else if (phase === "waiting") {
+      setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
+    }
+  },
+  overlayRoot: ov.root
+});
+
+// Re-enable the button (unless overlay has gone away)
+if (document.body.contains(ov.root)) {
+  btn.disabled = false;
+  btn.textContent = "Authorise Timesheet";
+}
+
+if (!ok) {
+  if (!cancelled) {
+    setTsStatus(statusEl,
+      "Please complete a paper timesheet as there are network problems. " +
+      "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
+    );
+    _debugOrToast("Submit failed", sub);
+  }
+  return;
+}
+
+// Success: show big tick then close + refresh (handled in _successTick)
+_successTick(ov.root);
+
+              },
+            }, "Authorise Timesheet")
+          )
+        )
+      );
+    };
+
+    step1();
+  }
+
+  function _successTick(overlayRoot) {
+  // Mark this overlay so closing it will trigger a server refresh
+  try { if (overlayRoot) overlayRoot.dataset.tsRefreshOnClose = "1"; } catch (_) {}
+
+  const pane = _el("div", {
+    style: {
+      position: "fixed",
+      inset: "0",
+      background: "rgba(255,255,255,0.95)",
+      zIndex: "10000",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      fontSize: "56px",
+      color: "#0a7f43",
+      fontWeight: "800",
+    },
+  }, "✓");
+
+  document.body.appendChild(pane);
+
+  setTimeout(() => {
+    pane.remove();
+
+    // Close the overlay (if still present)
+    if (overlayRoot && overlayRoot.parentNode) {
+      overlayRoot.parentNode.removeChild(overlayRoot);
+    }
+
+    // Refresh tiles from the server after successful authorisation & close
+    try { if (typeof startTilesThenEmergencyChain === "function") startTilesThenEmergencyChain(); } catch (_) {}
+  }, 5000);
+}
+
+
+  function _debugOrToast(label, resp) {
+    const test = CFG.TIMESHEET_TESTMODE && isTimesheetTestUser(window.identity?.msisdn);
+    if (test) {
+      const msg = `${label}\nstatus=${resp?.status}\nerror=${resp?.error || ""}\njson=${JSON.stringify(resp?.json || {}, null, 2)}`;
+      alert(msg);
+    } else if (window.showToast) {
+      window.showToast("Something went wrong. Please try again.");
+    } else {
+      alert("Something went wrong. Please try again.");
+    }
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 8) Submitted Timesheet Modal (summary + revoke & resubmit)
+   * ────────────────────────────────────────────────────────────────────────── */
+
+  async function openSubmittedTimesheetModal(tile, identity, baseline) {
+    // booking_id may be on the tile or computed:
+    const booking_id =
+      tile.booking_id ||
+      (await makeBookingId({
+        occupant_key: deriveOccupantKey(baseline),
+        date_start_local: tile.ymd || tile.date_start_local,
+        hospital: tile.hospital,
+        ward: tile.ward,
+        job_title: tile.job_title || tile.role || tile.jobTitle,
+        shift_label: tile.shift_label || tile.shift || tile.shiftLabel || "",
+      }));
+
+    // Fetch details
+    const resp = await getTimesheet(booking_id);
+    let ts = null;
+    if (resp.ok) ts = resp.json;
+
+    const ov = _mountOverlay("Submitted Timesheet");
+    const c = ov.contents;
+
+    if (!ts) {
+      c.append(_el("div", {}, "No details available for this timesheet."));
+    } else {
+      const lines = [
+        `Hospital: ${ts.hospital || tile.hospital}`,
+        `Ward: ${ts.ward || tile.ward}`,
+        `Job title: ${ts.job_title || tile.job_title || tile.role || tile.jobTitle}`,
+        `Worked Start: ${_fmtTime(ts.worked_start_iso)}`,
+        `Worked End: ${_fmtTime(ts.worked_end_iso)}`,
+        `Break Start: ${_fmtTime(ts.break_start_iso)}`,
+        `Break End: ${_fmtTime(ts.break_end_iso)}`,
+        `Break length: ${ts.break_minutes ?? "—"} mins`,
+        `Authoriser: ${ts.authoriser_name || "—"} (${ts.authoriser_job_title || "—"})`,
+        `Authorised at: ${_fmtDateTime(ts.authorised_at)}`
+      ];
+      c.append(_el("div", { style: { display: "grid", gap: "4px", marginBottom: "12px" } }, ...lines.map((t) => _el("div", {}, t))));
+    }
+
+    const btns = _el(
+      "div",
+      { style: { display: "flex", gap: "8px", justifyContent: "space-between", marginTop: "12px" } },
+      _el("div", {}, _el("button", { onclick: () => document.body.removeChild(ov.root) }, "Close")),
+      _el("div", {},
+        _el("button", {
+          style: { background: "#b21f1f", color: "#fff" },
+          onclick: async () => {
+            // Confirm revoke & presign
+            const confirmMsg = "You have already submitted a timesheet for this shift. Do you want to revoke it and submit a new one?";
+            if (!confirm(confirmMsg)) return;
+
+            const body = {
+              booking_id,
+              reason: "user_resubmitted",
+              occupant_key: deriveOccupantKey(baseline),
+              date_start_local: tile.ymd || tile.date_start_local,
+              hospital: tile.hospital,
+              ward: tile.ward,
+              job_title: tile.job_title || tile.role || tile.jobTitle,
+              shift_label: tile.shift_label || tile.shift || tile.shiftLabel || "",
+            };
+            const rx = await revokeAndPresign(body);
+            if (!rx.ok) {
+              _debugOrToast("Revoke & presign failed", rx);
+              return;
+            }
+            document.body.removeChild(ov.root);
+            // Immediately start wizard on new presign (we’ll just pass the original tile;
+            // the wizard will do a fresh presign anyway if it needs to refresh tokens).
+            startTimesheetWizard(tile, identity, baseline);
+          },
+        }, "Revoke & Resubmit")
+      )
+    );
+
+    c.append(btns);
+  }
+
+  function _fmtTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    const hh = String(d.getHours()).padStart(2, "0");
+    const mm = String(d.getMinutes()).padStart(2, "0");
+    return `${hh}:${mm}`;
+  }
+  function _fmtDateTime(iso) {
+    if (!iso) return "—";
+    const d = new Date(iso);
+    return d.toLocaleString();
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 9) Outbox (optional stubs for offline queueing; safe to no-op)
+   *    - You can wire these to your SW/IndexedDB later.
+   * ────────────────────────────────────────────────────────────────────────── */
+  async function queueSignatureUpload(/* item */) {
+    // TODO: implement IDB queue if desired
+    return true;
+  }
+  async function queueTimesheetSubmit(/* item */) {
+    // TODO: implement IDB queue if desired
+    return true;
+  }
+  async function flushTimesheetOutbox() {
+    // TODO: pull from IDB and replay nurse → authoriser → submit
+    return { uploads: 0, submits: 0 };
+  }
+
+  /* ──────────────────────────────────────────────────────────────────────────
+   * 10) Public API
+   * ────────────────────────────────────────────────────────────────────────── */
+  return {
+    // Config & gating
+    normalizeMsisdn,
+    isTimesheetFeatureEnabled,
+    isTimesheetTestUser,
+    deriveOccupantKey,
+
+    // Booking ids
+    makeBookingId,
+
+    // Broker
+    presignTimesheet,
+    uploadSignaturePutUrl,
+    submitTimesheet,
+    getTimesheet,
+    revokeTimesheet,
+    revokeAndPresign,
+    authorisedStatus,
+    presignSignatureGet,
+
+    // History
+    augmentHistoryWithTimesheetStatus,
+
+    // UI hooks
+    decorateTileWithTSBadge,
+    onTileClickTimesheetBranch,
+    startTimesheetWizard,
+    openSubmittedTimesheetModal,
+
+    // Outbox stubs
+    queueSignatureUpload,
+    queueTimesheetSubmit,
+    flushTimesheetOutbox,
+  };
+})();
+
+// Simple DOM helpers to show status under the modal header/button
+function ensureTsStatusBox(cardEl) {
+  let el = cardEl.querySelector(".ts-status");
+  if (!el) {
+    el = document.createElement("div");
+    el.className = "ts-status";
+    el.style.margin = "8px 0 0 0";
+    el.style.fontSize = "13px";
+    el.style.color = "#444";
+    cardEl.appendChild(el);
+  }
+  return el;
+}
+function setTsStatus(statusEl, text) {
+  if (!statusEl) return;
+  statusEl.textContent = String(text || "");
+}
+
+// Classify transient vs permanent (retryable) errors
+function isTransientTimesheetError(result) {
+  // result can be { ok:false, status, error } from submitTimesheet or a catch
+  const s = Number(result && result.status);
+  if (!isFinite(s) || s === 0) return true;     // network / fetch failure
+  if (s === 408 || s === 429) return true;      // timeout / rate limited
+  if (s >= 500 && s <= 504) return true;        // 5xx
+  return false;                                  // treat others as permanent
+}
+
+// tiny delay
+function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
+
+// Core retry wrapper (reuses idempotency_key)
+async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus, overlayRoot } = {}) {
+  // idempotency_key must be stable across attempts
+  if (!payload.idempotency_key) {
+    payload.idempotency_key = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+  }
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    // If overlay has been closed, stop trying (user navigated away)
+    if (!document.body.contains(overlayRoot)) {
+      return { ok: false, cancelled: true };
+    }
+
+    updateStatus && updateStatus(attempt, maxAttempts, "submit");
+
+    let res;
+    try {
+      res = await submitTimesheet(payload);
+    } catch (err) {
+      res = { ok: false, status: 0, error: err };
+    }
+
+    if (res && res.ok) return { ok: true, sub: res };
+
+    // Decide whether to retry
+    if (attempt >= maxAttempts || !isTransientTimesheetError(res)) {
+      return { ok: false, sub: res };
+    }
+
+    // Backoff with jitter (1s, 2s, 4s, 8s … capped)
+    const base = Math.min(15000, 1000 * Math.pow(2, attempt - 1));
+    const jitter = Math.floor(Math.random() * 300);
+    const waitMs = base + jitter;
+
+    updateStatus && updateStatus(attempt + 1, maxAttempts, "waiting");
+    await delay(waitMs);
+
+    // Update UI state for next loop
+    updateStatus && updateStatus(attempt + 1, maxAttempts, "retry");
+  }
+
+  // Should not reach here
+  return { ok: false };
+}
 
 
 function sizeGrid() {
