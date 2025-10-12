@@ -2152,7 +2152,8 @@ function renderTiles() {
     (function () {
       const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
       const feature_enabled = !!tsFeatureOn;
-      const testmode_allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
+     const testmode_allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(baseline || window.identity));
+
       const booked = !!t.booked;
       const timesheet_eligible = t.timesheet_eligible === true;
       const not_authorised = t.timesheet_authorised !== true;
@@ -5201,18 +5202,32 @@ async function refreshAppState({ force = false } = {}) {
     return true;
   }
 
-  // Derive a display name as robustly as possible
-  const derivedName =
-    (typeof _candidateNameFrom === 'function')
-      ? _candidateNameFrom(identity, window.baseline, identity && (identity.name || identity.fullName || identity.displayName) || '')
-      : (
-          (identity && (identity.name || identity.fullName || identity.displayName)) ||
-          (window.baseline && (window.baseline.candidateName ||
-                               (window.baseline.candidate && (window.baseline.candidate.firstName
-                                  ? `${window.baseline.candidate.surname || ''} ${window.baseline.candidate.firstName || ''}`.trim()
-                                  : '')))) ||
-          ''
-        );
+  // Derive a display name as robustly as possible (guard if helper returns '')
+  const derivedName = (() => {
+    const safe = s => (s == null ? '' : String(s)).trim();
+
+    // 1) Try shared helper (pass identity, baseline, and best-guess raw name)
+    let name = (typeof _candidateNameFrom === 'function')
+      ? _candidateNameFrom(
+          identity,
+          window.baseline,
+          (identity && (identity.name || identity.fullName || identity.displayName)) || ''
+        )
+      : '';
+
+    if (safe(name)) return safe(name);
+
+    // 2) Fallbacks in priority order
+    name = (identity && (identity.name || identity.fullName || identity.displayName)) || '';
+    if (safe(name)) return safe(name);
+
+    name = (window.baseline && window.baseline.candidateName) || '';
+    if (safe(name)) return safe(name);
+
+    const c = window.baseline && window.baseline.candidate;
+    name = c ? `${c.surname || c.lastName || ''} ${c.firstName || c.firstname || ''}` : '';
+    return safe(name);
+  })();
 
   // Normalizer (fallback if _normName is not present)
   const norm = (s) => (typeof _normName === 'function'
@@ -5554,14 +5569,65 @@ window.Timesheets = (function () {
     return digits;
   }
 function isTimesheetTestUser(subject) {
-  // subject may be a name string, an identity object, or a baseline object
-  const name = _candidateNameFrom(
-    typeof subject === 'object' ? subject : window.identity,
-    typeof subject === 'object' ? subject : window.baseline,
-    typeof subject === 'string' ? subject : ''
-  );
-  return _isAllowlistedName(name);
+  const cfg = window.CONFIG || {};
+  const safe = s => (s == null ? '' : String(s)).trim();
+
+  // Heuristics to detect what 'subject' looks like
+  const isBaselineLike = (o) => !!o && (o.tiles || o.candidate || o.candidateName);
+  const isIdentityLike = (o) => !!o && (o.msisdn || o.email || o.name || o.fullName || o.displayName);
+
+  // Try helper first, but fall back if it returns ''
+  let name = (typeof _candidateNameFrom === 'function')
+    ? _candidateNameFrom(
+        // identity-like
+        (isIdentityLike(subject) ? subject : window.identity),
+        // baseline-like
+        (isBaselineLike(subject) ? subject : window.baseline),
+        // best-guess raw display name
+        (typeof subject === 'string'
+          ? subject
+          : (window.identity && (window.identity.name || window.identity.fullName || window.identity.displayName)) || ''
+        )
+      )
+    : '';
+
+  if (!safe(name)) {
+    // Fallbacks in priority order
+    if (isBaselineLike(subject)) {
+      name = subject.candidateName || '';
+      if (!safe(name) && subject.candidate) {
+        name = `${subject.candidate.surname || subject.candidate.lastName || ''} ${subject.candidate.firstName || subject.candidate.firstname || ''}`;
+      }
+    }
+    if (!safe(name)) {
+      name =
+        (window.baseline && window.baseline.candidateName) ||
+        ((window.baseline && window.baseline.candidate)
+          ? `${window.baseline.candidate.surname || ''} ${window.baseline.candidate.firstName || ''}` : '') ||
+        (window.identity && (window.identity.name || window.identity.fullName || window.identity.displayName)) ||
+        '';
+    }
+  }
+
+  // Allowlist decision
+  const allow = (typeof _isAllowlistedName === 'function') ? _isAllowlistedName(name) : false;
+
+  // Optional debug: show exactly what was compared
+  if (cfg.TIMESHEET_DEBUG === true) {
+    const normalize = (s) => (typeof _normName === 'function'
+      ? _normName(s)
+      : String(s || '').toLowerCase().replace(/\s+/g, ' ').trim());
+    console.log('ALLOWLIST_CHECK', {
+      input: name,
+      normalized: normalize(name),
+      matches: ['kier arthur', 'arthur kier'],
+      result: allow
+    });
+  }
+
+  return allow;
 }
+
 
 function isTimesheetFeatureEnabled(subject) {
   if (!CFG.TIMESHEET_FEATURE_ENABLED) return false;
