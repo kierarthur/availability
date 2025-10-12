@@ -6765,6 +6765,8 @@ submitBtn.onclick = async () => {
 const right = _el('div', {});
 right.append(cancelBtn, submitBtn);
 return right;
+  })() // ← close the IIFE that returns the right-hand button group
+);    // ← close the _el(...) for btnRow
 
 
     ov.contents.append(
