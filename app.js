@@ -6194,7 +6194,6 @@ function onTileClickTimesheetBranch(tile, identity, baseline) {
     };
   }
 
-
   // Complete overlay mount; ensures black text inside the card for legibility
 function _mountOverlay(titleText) {
   const scrim = _el('div', {
@@ -6911,7 +6910,7 @@ const step3 = () => {
   // If the original appends these elements, keep doing so in the same place.
   // If you already append elsewhere, leave this as-is.
   // ov.contents.append(linesWrap, nameIn, titleIn, pad.el, btnRow);
-};
+
 
 
 
@@ -6934,6 +6933,7 @@ const step3 = () => {
 // minutesBetweenHHMM('YYYY-MM-DD', 'HH:MM', 'HH:MM') -> integer minutes
 // minutesBetweenHHMM('YYYY-MM-DD', 'HH:MM', 'HH:MM') -> integer minutes
 // Handles cross-midnight and the UK autumn DST fallback hour (01:00–01:59 repeats).
+
 function minutesBetweenHHMM(ymd, startHHMM, endHHMM) {
   const trim = (s) => String(s || '').trim();
   const parseHHMM = (s) => {
