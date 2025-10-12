@@ -2151,50 +2151,73 @@ if (els.candidateName) {
     // CTA_DECISION LOGGING (single row per tile)
     // ─────────────────────────────────────────────────────────────
     (function () {
-      const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
-      const feature_enabled = !!tsFeatureOn;
-     const testmode_allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(baseline || window.identity));
+  const TS = window.Timesheets || {};
+  const id = (typeof baseline !== 'undefined' && baseline) ? baseline : window.identity; // whichever you use elsewhere
 
-      const booked = !!t.booked;
-      const timesheet_eligible = t.timesheet_eligible === true;
-      const not_authorised = t.timesheet_authorised !== true;
-      const decision = !!(TS && TS.shouldShowTimesheetCTA && TS.shouldShowTimesheetCTA(t, baseline || window.identity));
+  const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
 
-      let reason_if_false = null;
-      if (!feature_enabled) {
-        reason_if_false = 'feature_off';
-      } else if (testMode && !testmode_allowed) {
-        reason_if_false = 'testmode_blocked';
-      } else if (!booked) {
-        reason_if_false = 'not_booked';
-      } else if (!timesheet_eligible) {
-        reason_if_false = 'not_eligible';
-      } else if (!not_authorised) {
-        reason_if_false = 'already_authorised';
-      }
-      const tile_ref = {
-        ymd: t.ymd,
-        hospital: t.hospital || t.location || '',
-        ward: t.ward || '',
-        job_title: t.jobTitle || t.job_title || '',
-        shift_label: t.shiftInfo || t.shift_label || t.effectiveLabel || ''
-      };
-      const booking_id = t.booking_id || t.timesheet_booking_id || null;
-      const has_subnode = !!card.querySelector('.tile-sub');
-      console.log('CTA_DECISION', {
-        tile_index: __tileIdx,
-        tile_ref,
-        booking_id,
-        feature_enabled,
-        testmode_allowed,
-        booked,
-        timesheet_eligible,
-        not_authorised,
-        decision,
-        reason_if_false,
-        has_subnode
-      });
-    })();
+  // Prefer your exported predicate; fall back to existing flag/var
+  const feature_enabled =
+  typeof TS.isTimesheetFeatureEnabled === 'function'
+    ? TS.isTimesheetFeatureEnabled(id)
+    : (typeof tsFeatureOn !== 'undefined' ? !!tsFeatureOn : false);
+
+
+  // In test mode, only allow if your gate says so; otherwise default-permit
+  const testmode_allowed =
+    (typeof TS.isTestModeAllowed === 'function')
+      ? !!TS.isTestModeAllowed(id)
+      : true;
+
+  const booked = !!t.booked;
+  const timesheet_eligible = t.timesheet_eligible === true;
+  const not_authorised = t.timesheet_authorised !== true;
+
+  // Use shared predicate if present; else replicate the same logic
+  const decision =
+    (typeof TS.shouldShowTimesheetCTA === 'function')
+      ? !!TS.shouldShowTimesheetCTA(t, id)
+      : (feature_enabled && (!testMode || testmode_allowed) && booked && timesheet_eligible && not_authorised);
+
+  // Match your original reason tree for transparency in logs
+  let reason_if_false = null;
+  if (!feature_enabled) {
+    reason_if_false = 'feature_off';
+  } else if (testMode && !testmode_allowed) {
+    reason_if_false = 'testmode_blocked';
+  } else if (!booked) {
+    reason_if_false = 'not_booked';
+  } else if (!timesheet_eligible) {
+    reason_if_false = 'not_eligible';
+  } else if (!not_authorised) {
+    reason_if_false = 'already_authorised';
+  }
+
+  const tile_ref = {
+    ymd: t.ymd,
+    hospital: t.hospital || t.location || '',
+    ward: t.ward || '',
+    job_title: t.jobTitle || t.job_title || '',
+    shift_label: t.shiftInfo || t.shift_label || t.effectiveLabel || ''
+  };
+  const booking_id = t.booking_id || t.timesheet_booking_id || null;
+  const has_subnode = !!(card && card.querySelector && card.querySelector('.tile-sub'));
+
+  console.log('CTA_DECISION', {
+    tile_index: __tileIdx,
+    tile_ref,
+    booking_id,
+    feature_enabled,
+    testmode_allowed,
+    booked,
+    timesheet_eligible,
+    not_authorised,
+    decision,
+    reason_if_false,
+    has_subnode
+  });
+})();
+
 
     // Booked tile → timesheet click path (wizard or submitted modal)
     if (t.booked && tsFeatureOn) {
@@ -5552,8 +5575,11 @@ function setEmergencyButtonBusy(isBusy) {
  *  - Wire calls from your existing render / click handlers (see summaries)
  * ============================================================================ */
 
-window.Timesheets = (function () {
+(function () {
   "use strict";
+
+  // 👇 Get or create the shared namespace (don’t replace it)
+  const NS = (window.Timesheets = window.Timesheets || {});
 
   /* ──────────────────────────────────────────────────────────────────────────
    * 0) Config (safe defaults; override via window.CONFIG)
@@ -7001,42 +7027,35 @@ function _debugOrToast(label, resp) {
   /* ──────────────────────────────────────────────────────────────────────────
    * 10) Public API
    * ────────────────────────────────────────────────────────────────────────── */
-  return {
-    // Config & gating
-    normalizeMsisdn,
-    isTimesheetFeatureEnabled,
-    isTimesheetTestUser,
-    deriveOccupantKey,
+ /* ── Public API: attach onto NS (guard to avoid clobbering helpers) ── */
+  NS.normalizeMsisdn            = NS.normalizeMsisdn            || normalizeMsisdn;
+  NS.makeBookingId = NS.makeBookingId || makeBookingId;
 
-    // Booking ids
-    makeBookingId,
+  NS.isTimesheetFeatureEnabled  = NS.isTimesheetFeatureEnabled  || isTimesheetFeatureEnabled;
+  NS.isTimesheetTestUser        = NS.isTimesheetTestUser        || isTimesheetTestUser;
+  NS.deriveOccupantKey          = NS.deriveOccupantKey          || deriveOccupantKey;
 
-    // Broker
-    presignTimesheet,
-    uploadSignaturePutUrl,
-    submitTimesheet,
-    getTimesheet,
-    revokeTimesheet,
-    revokeAndPresign,
-    authorisedStatus,
-    presignSignatureGet,
+  NS.presignTimesheet           = NS.presignTimesheet           || presignTimesheet;
+  NS.uploadSignaturePutUrl      = NS.uploadSignaturePutUrl      || uploadSignaturePutUrl;
+  NS.submitTimesheet            = NS.submitTimesheet            || submitTimesheet;
+  NS.getTimesheet               = NS.getTimesheet               || getTimesheet;
+  NS.revokeTimesheet            = NS.revokeTimesheet            || revokeTimesheet;
+  NS.revokeAndPresign           = NS.revokeAndPresign           || revokeAndPresign;
+  NS.authorisedStatus           = NS.authorisedStatus           || authorisedStatus;
+  NS.presignSignatureGet        = NS.presignSignatureGet        || presignSignatureGet;
 
-    // History
-    augmentHistoryWithTimesheetStatus,
+  NS.augmentHistoryWithTimesheetStatus = NS.augmentHistoryWithTimesheetStatus || augmentHistoryWithTimesheetStatus;
 
-    // UI hooks
-    decorateTileWithTSBadge,
-    onTileClickTimesheetBranch,
-    startTimesheetWizard,
-    openSubmittedTimesheetModal,
+  NS.decorateTileWithTSBadge    = NS.decorateTileWithTSBadge    || decorateTileWithTSBadge;
+  NS.onTileClickTimesheetBranch = NS.onTileClickTimesheetBranch || onTileClickTimesheetBranch;
+  NS.startTimesheetWizard       = NS.startTimesheetWizard       || startTimesheetWizard;
+  NS.openSubmittedTimesheetModal= NS.openSubmittedTimesheetModal|| openSubmittedTimesheetModal;
 
-    // Outbox stubs
-    queueSignatureUpload,
-    queueTimesheetSubmit,
-    flushTimesheetOutbox,
-  };
-})();
+  NS.queueSignatureUpload       = NS.queueSignatureUpload       || queueSignatureUpload;
+  NS.queueTimesheetSubmit       = NS.queueTimesheetSubmit       || queueTimesheetSubmit;
+  NS.flushTimesheetOutbox       = NS.flushTimesheetOutbox       || flushTimesheetOutbox;
 
+})(); // ⟵ no return, no replacement — we *augmented*
 // Simple DOM helpers to show status under the modal header/button
 function ensureTsStatusBox(cardEl) {
   let el = cardEl.querySelector(".ts-status");
