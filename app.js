@@ -5995,98 +5995,101 @@ function onTileClickTimesheetBranch(tile, identity, baseline) {
   // We handle the click asynchronously, then always return true so the
   // tile click doesn’t fall through to anything else.
   (async () => {
-    // Build endpoint (supports CONFIG.BROKER_BASE_URL, else relative)
-    const base = (window.CONFIG && window.CONFIG.BROKER_BASE_URL) || '';
-    const url  = base + '/time/uk-check';
+  // Build endpoint using the same broker base as other API calls (no relative fallback)
+  const DEFAULT_BROKER = "https://arthur-rai-broker.kier-88a.workers.dev";
+  const base =
+    (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
+    DEFAULT_BROKER;
+  const url = base.replace(/\/+$/, "") + "/time/uk-check";
 
-    const payload = {
-      phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-      phone_epoch_ms: Date.now()
-    };
+  const payload = {
+    phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    phone_epoch_ms: Date.now()
+  };
 
-    let tzOK = false;
-    try {
-      const res = await fetch(url, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        // omit credentials by default; add `credentials: 'include'` if your
-        // broker requires cookies
-        body: JSON.stringify(payload)
-      });
-      const json = await res.json().catch(() => null);
+  let tzOK = false;
+  try {
+    const res = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      // omit credentials by default; add `credentials: 'include'` if your broker requires cookies
+      body: JSON.stringify(payload)
+    });
+    const json = await res.json().catch(() => null);
 
-      tzOK = !!(json && json.valid === true);
+    tzOK = !!(json && json.valid === true);
 
-      if (!tzOK) {
-        const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
-        if (typeof window.showToast === 'function') window.showToast(msg);
-        else alert(msg);
-
-        if (_canDebugClick()) {
-          console.log('TILE_CLICK_ROUTE', {
-            tile_ref: _tileRefFromTile(tile),
-            booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-            route: 'no_action',
-            why: 'tz_gate_failed',
-            broker_reply: json
-          });
-        }
-        return; // stop — don’t open any modal
-      }
-    } catch (e) {
-      const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
-      if (typeof window.showToast === 'function') window.showToast(msg);
+    if (!tzOK) {
+      const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
+      if (typeof window.showToast === "function") window.showToast(msg);
       else alert(msg);
 
       if (_canDebugClick()) {
-        console.log('TILE_CLICK_ROUTE', {
+        console.log("TILE_CLICK_ROUTE", {
           tile_ref: _tileRefFromTile(tile),
           booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-          route: 'no_action',
-          why: 'tz_gate_error',
-          error: String((e && e.message) || e)
+          route: "no_action",
+          why: "tz_gate_failed",
+          broker_reply: json
         });
       }
       return; // stop — don’t open any modal
     }
-    // ------------------------------------------------------------------------
+  } catch (e) {
+    const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
+    if (typeof window.showToast === "function") window.showToast(msg);
+    else alert(msg);
 
-    // If we’re here, device timezone is verified OK — continue as before.
-
-    if (tile?.timesheet_authorised === true) {
-      if (_canDebugClick()) {
-        console.log('TILE_CLICK_ROUTE', {
-          tile_ref: _tileRefFromTile(tile),
-          booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-          route: 'open_submitted_modal'
-        });
-      }
-      openSubmittedTimesheetModal(tile, identity, baseline);
-      return;
-    }
-
-    if (tile?.timesheet_eligible === true) {
-      if (_canDebugClick()) {
-        console.log('TILE_CLICK_ROUTE', {
-          tile_ref: _tileRefFromTile(tile),
-          booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-          route: 'open_wizard'
-        });
-      }
-      startTimesheetWizard(tile, identity, baseline);
-      return;
-    }
-
-    // Not eligible; do nothing special (preserves existing behaviour)
     if (_canDebugClick()) {
-      console.log('TILE_CLICK_ROUTE', {
+      console.log("TILE_CLICK_ROUTE", {
         tile_ref: _tileRefFromTile(tile),
         booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-        route: 'no_action',
-        why: (tile?.timesheet_eligible !== true) ? 'not_eligible' : 'unknown'
+        route: "no_action",
+        why: "tz_gate_error",
+        error: String((e && e.message) || e)
       });
     }
-  })();
+    return; // stop — don’t open any modal
+  }
+  // ------------------------------------------------------------------------
+
+  // If we’re here, device timezone is verified OK — continue as before.
+
+  if (tile?.timesheet_authorised === true) {
+    if (_canDebugClick()) {
+      console.log("TILE_CLICK_ROUTE", {
+        tile_ref: _tileRefFromTile(tile),
+        booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+        route: "open_submitted_modal"
+      });
+    }
+    openSubmittedTimesheetModal(tile, identity, baseline);
+    return;
+  }
+
+  if (tile?.timesheet_eligible === true) {
+    if (_canDebugClick()) {
+      console.log("TILE_CLICK_ROUTE", {
+        tile_ref: _tileRefFromTile(tile),
+        booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+        route: "open_wizard"
+      });
+    }
+    startTimesheetWizard(tile, identity, baseline);
+    return;
+  }
+
+  // Not eligible; do nothing special (preserves existing behaviour)
+  if (_canDebugClick()) {
+    console.log("TILE_CLICK_ROUTE", {
+      tile_ref: _tileRefFromTile(tile),
+      booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+      route: "no_action",
+      why: (tile?.timesheet_eligible !== true) ? "not_eligible" : "unknown"
+    });
+  }
+})();
+
 
   // We’ve handled the click (asynchronously). Prevent any default tile behavior.
   return true;
@@ -6641,30 +6644,37 @@ submitBtn.onclick = async () => {
   }
   // 0) UK timezone check (second gate just before submitting)
   try {
-    const base = (window.CONFIG && window.CONFIG.BROKER_BASE_URL) || '';
-    const url  = base + '/time/uk-check';
-    const payload = {
-      phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
-      phone_epoch_ms: Date.now()
-    };
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
-    });
-    const json = await resp.json().catch(() => null);
-    if (!json || json.valid !== true) {
-      const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
-      if (typeof window.showToast === 'function') window.showToast(msg); else alert(msg);
-      submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-      return; // don’t proceed to presign/submit
-    }
-  } catch (e) {
-    const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
-    if (typeof window.showToast === 'function') window.showToast(msg); else alert(msg);
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-    return; // fail closed
+  // Always hit the broker origin (fallback to the workers.dev default)
+  const cfgBase =
+    (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
+    "https://arthur-rai-broker.kier-88a.workers.dev";
+
+  // Build GET URL with query params
+  const url =
+    cfgBase.replace(/\/+$/, "") +
+    "/time/uk-check" +
+    "?phone_tz=" + encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "") +
+    "&phone_epoch_ms=" + encodeURIComponent(Date.now());
+
+  const resp = await fetch(url, { method: "GET" });
+  let json = null;
+  if (resp.ok) {
+    try { json = await resp.json(); } catch { /* non-JSON => treat as invalid */ }
   }
+
+  if (!json || json.valid !== true) {
+    const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
+    if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
+    return; // don’t proceed to presign/submit
+  }
+} catch (e) {
+  const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
+  if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+  submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
+  return; // fail closed
+}
+
   // 1) Presign
   const pres = await presignTimesheet({
     occupant_key: deriveOccupantKey(baseline),
