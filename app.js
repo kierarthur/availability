@@ -7157,7 +7157,11 @@ function _debugOrToast(label, resp) {
 
   NS.presignTimesheet           = NS.presignTimesheet           || presignTimesheet;
   NS.uploadSignaturePutUrl      = NS.uploadSignaturePutUrl      || uploadSignaturePutUrl;
-  NS.submitTimesheet            = NS.submitTimesheet            || submitTimesheet;
+ NS.submitTimesheet = NS.submitTimesheet || submitTimesheet;
+// legacy shim for helpers that call the global name
+window.submitTimesheet = NS.submitTimesheet;
+
+
   NS.getTimesheet               = NS.getTimesheet               || getTimesheet;
   NS.revokeTimesheet            = NS.revokeTimesheet            || revokeTimesheet;
   NS.revokeAndPresign           = NS.revokeAndPresign           || revokeAndPresign;
