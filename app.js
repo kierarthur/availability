@@ -6570,257 +6570,347 @@ function refreshWarnings() {
       )
     );
   };
+// Step 3 — Ward Authorisation (details + signature + submit)
+const step3 = () => {
+  ov.contents.innerHTML = '';
 
-  // Step 3 — Ward Authorisation (details + signature + submit)
-  const step3 = () => {
-    ov.contents.innerHTML = '';
+  const canDebug =
+    (typeof _canDebugClick === 'function' && _canDebugClick()) ||
+    (window.CONFIG && !!window.CONFIG.TIMESHEET_DEBUG);
 
-   // ✅ new (handles cross-midnight and matches UI’s 5-min snapping)
-const ws = snap5(state.worked_start_hhmm);
-const we = snap5(state.worked_end_hhmm);
-const bs = snap5(state.break_start_hhmm);
-const be = snap5(state.break_end_hhmm);
-
-const total = minutesBetweenHHMM(state.ymd, ws, we);
-const bm    = minutesBetweenHHMM(state.ymd, bs, be);
-const net   = Math.max(0, total - bm);
-const { H: netH, M: netMin } = minutesToHoursAndMins(net);
-
-// Reusable style for larger, touch-friendly inputs
-const authInputStyle = {
-  width: '100%',
-  fontSize: '18px',        // ≥16px prevents iOS zoom-on-focus
-  lineHeight: '24px',
-  padding: '12px 14px',
-  height: '48px',
-  boxSizing: 'border-box',
-  borderRadius: '10px',
-  border: '1px solid #c9c9c9',
-};
-
-const nameIn  = _el('input', {
-  type: 'text',
-  placeholder: 'Authoriser full name',
-  style: authInputStyle,
-  oninput: e => (state.auth_name = e.target.value)
-});
-
-const titleIn = _el('input', {
-  type: 'text',
-  placeholder: 'Authoriser job title',
-  style: authInputStyle,
-  oninput: e => (state.auth_job_title = e.target.value)
-});
-
-    const pad = _buildSignaturePad();
-
-    // Compact one-line pairs + bold total hours
-    const linesWrap = _el('div', { style: { display: 'grid', gap: '6px', marginBottom: '8px' } },
-      _el('div', {}, `Ward Authorisation — Signing Timesheet`),
-      _el('div', {}, `Nurse: ${deriveOccupantKey(baseline) || '—'}`),
-      _el('div', {}, `Date: ${state.ymd}`),
-      _el('div', {}, `Hospital: ${state.hospital}`),
-      _el('div', {}, `Ward: ${state.ward}`),
-      _el('div', {}, `Job title: ${state.job_title}`),
-      _el('div', {}, `Start: ${state.worked_start_hhmm}   End: ${state.worked_end_hhmm}`),
-      _el('div', {}, `Break: ${state.break_start_hhmm} → ${state.break_end_hhmm} (${bm} mins)`),
-      _el('div', { style: { fontWeight: '700', fontSize: '1.05rem' } }, `Total hours: ${netH} hours ${netMin} mins`)
-    );
-
-    const btnRow = _el(
-      'div',
-      { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'space-between' } },
-      _el('div', {}, _el('button', { type: 'button', onclick: step2 }, 'Back')),
-      (() => {
-        const cancelBtn = _el('button', { type: 'button' }, 'Cancel');
-        cancelBtn.onclick = () => document.body.removeChild(ov.root);
-
-       const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
-submitBtn.onclick = async () => {
-  // single-click guard
-  if (submitBtn.dataset.busy === '1') return;
-  submitBtn.dataset.busy = '1';
-  submitBtn.disabled = true;
-  submitBtn.textContent = 'Please wait…';
-
-  if (!state.auth_name || !state.auth_job_title) {
-    alert('Please enter authoriser name and job title.');
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-    return;
-  }
-  if (pad.isEmpty()) {
-    alert('Authoriser signature is required.');
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-    return;
-  }
-  // 0) UK timezone check (second gate just before submitting)
- try {
-  // Always hit the broker origin (same as other API calls)
-  const DEFAULT_BROKER = "https://arthur-rai-broker.kier-88a.workers.dev";
-  const base =
-    (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
-    DEFAULT_BROKER;
-  const url = base.replace(/\/+$/, "") + "/time/uk-check";
-
-  const payload = {
-    phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-    phone_epoch_ms: Date.now()
-  };
-
-  const resp = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const json = await resp.json().catch(() => null);
-
-  if (!json || json.valid !== true) {
-    const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
-    if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
-    return; // don’t proceed to presign/submit
-  }
-} catch (e) {
-  const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
-  if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
-  submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
-  return; // fail closed
-}
-
-
-  // 1) Presign
-  const pres = await presignTimesheet({
-    occupant_key: deriveOccupantKey(baseline),
-    date_start_local: state.ymd,
-    hospital: state.hospital,
-    ward: state.ward,
-    job_title: state.job_title,
-    shift_label: state.shift_label,
-    scheduled_start_hhmm: state.scheduled_start_hhmm,
-    scheduled_end_hhmm: state.scheduled_end_hhmm
-  });
-
-  if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres);
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-    return; }
-  state.presign = pres.json;
-
-  // 2) Upload signatures
-  const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
-  if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp);
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-    return; }
-  const authBlob = await pad.toPNGBlob();
-  const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
-  if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp);
-    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-    return; }
-
-  // 3) Submit
-  // Build ISO start/end that handle cross-midnight (end <= start ⇒ +1 day)
-  function isoPairFromHHMM(ymd, startHHMM, endHHMM) {
-    if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
-    const [y, m, d]   = String(ymd).split('-').map(Number);
-    const [sH, sM]    = String(startHHMM).split(':').map(n => parseInt(n, 10));
-    const [eH, eM]    = String(endHHMM).split(':').map(n => parseInt(n, 10));
-    const startLocal  = new Date(y, m - 1, d, sH, sM, 0, 0);
-    const endLocal    = new Date(y, m - 1, d, eH, eM, 0, 0);
-    if (endLocal <= startLocal) endLocal.setDate(endLocal.getDate() + 1);
-    return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
-  }
-
-  // Use snapped HH:MM to match UI
+  // ✅ new (handles cross-midnight and matches UI’s 5-min snapping)
   const ws = snap5(state.worked_start_hhmm);
   const we = snap5(state.worked_end_hhmm);
   const bs = snap5(state.break_start_hhmm);
   const be = snap5(state.break_end_hhmm);
 
-  const workedISO = isoPairFromHHMM(state.ymd, ws, we);
-  const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
+  const total = minutesBetweenHHMM(state.ymd, ws, we);
+  const bm    = minutesBetweenHHMM(state.ymd, bs, be);
+  const net   = Math.max(0, total - bm);
+  const { H: netH, M: netMin } = minutesToHoursAndMins(net);
 
-  // Scheduled (if present) should also respect cross-midnight
-  // Always supply scheduled_*_iso (fallback to label → worked), respect cross-midnight
-let sStart = state.scheduled_start_hhmm;
-let sEnd   = state.scheduled_end_hhmm;
+  if (canDebug) {
+    console.log('TSW.step3.derived', {
+      ymd: state.ymd,
+      hospital: state.hospital,
+      ward: state.ward,
+      job_title: state.job_title,
+      shift_label: state.shift_label,
+      worked: { ws, we },
+      break:  { bs, be, mins: bm },
+      totals: { totalMins: total, netMins: net, netH, netMin }
+    });
+  }
 
-if (!sStart || !sEnd) {
-  const parsed = parseTimesFromLabel(state.shift_label);
-  if (!sStart && parsed) sStart = parsed.start;
-  if (!sEnd   && parsed) sEnd   = parsed.end;
-}
-
-// Last resort: use worked window
-if (!sStart) sStart = ws;
-if (!sEnd)   sEnd   = we;
-
-const sS = snap5(sStart);
-const sE = snap5(sEnd);
-const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
-
-
-  const payload = {
-    booking_id: state.presign.booking_id,
-    scheduled_start_iso: schedISO.start_iso,
-    scheduled_end_iso:   schedISO.end_iso,
-    worked_start_iso:    workedISO.start_iso,
-    worked_end_iso:      workedISO.end_iso,
-    break_start_iso:     breakISO.start_iso,
-    break_end_iso:       breakISO.end_iso,
-    auth_name: state.auth_name,
-    auth_job_title: state.auth_job_title,
-    nurse_key: state.presign.upload.nurse.key,
-    authoriser_key: state.presign.upload.authoriser.key,
-    idempotency_key: crypto.randomUUID(),
-    client_user_agent: navigator.userAgent,
-    client_timestamp: new Date().toISOString(),
-    occupant_key: deriveOccupantKey(baseline),
-    hospital: state.hospital,
-    ward: state.ward,
-    job_title: state.job_title,
-    shift_label: state.shift_label
+  // Reusable style for larger, touch-friendly inputs
+  const authInputStyle = {
+    width: '100%',
+    fontSize: '18px',        // ≥16px prevents iOS zoom-on-focus
+    lineHeight: '24px',
+    padding: '12px 14px',
+    height: '48px',
+    boxSizing: 'border-box',
+    borderRadius: '10px',
+    border: '1px solid #c9c9c9',
   };
 
-  const statusEl = ensureTsStatusBox(ov.card);
-
-  // Already disabled above; just update label for clarity
-  submitBtn.textContent = 'Submitting…';
-
-  const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
-    maxAttempts: 5,
-    updateStatus: (attempt, max, phase) => {
-      if (phase === 'submit') {
-        setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
-        submitBtn.textContent = `Submitting… (${attempt}/${max})`;
-      } else if (phase === 'retry') {
-        setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
-        submitBtn.textContent = `Retrying… (${attempt}/${max})`;
-      } else if (phase === 'waiting') {
-        setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
-      }
-    },
-    overlayRoot: ov.root
+  const nameIn  = _el('input', {
+    type: 'text',
+    placeholder: 'Authoriser full name',
+    style: authInputStyle,
+    oninput: e => (state.auth_name = e.target.value)
   });
 
-  // Re-enable if still visible
-  if (document.body.contains(ov.root)) {
-    submitBtn.disabled = false;
-    delete submitBtn.dataset.busy;
-    submitBtn.textContent = 'Authorise Timesheet';
-  }
+  const titleIn = _el('input', {
+    type: 'text',
+    placeholder: 'Authoriser job title',
+    style: authInputStyle,
+    oninput: e => (state.auth_job_title = e.target.value)
+  });
 
-  if (!ok) {
-    if (!cancelled) {
-      setTsStatus(statusEl,
-        "Please complete a paper timesheet as there are network problems. " +
-        "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
-      );
-      _debugOrToast && _debugOrToast('Submit failed', sub);
-    }
-    return;
-  }
+  const pad = _buildSignaturePad();
 
-  // Success: show big tick then close + refresh (handled in _successTick)
-  _successTick(ov.root);
+  // Compact one-line pairs + bold total hours
+  const linesWrap = _el('div', { style: { display: 'grid', gap: '6px', marginBottom: '8px' } },
+    _el('div', {}, `Ward Authorisation — Signing Timesheet`),
+    _el('div', {}, `Nurse: ${deriveOccupantKey(baseline) || '—'}`),
+    _el('div', {}, `Date: ${state.ymd}`),
+    _el('div', {}, `Hospital: ${state.hospital}`),
+    _el('div', {}, `Ward: ${state.ward}`),
+    _el('div', {}, `Job title: ${state.job_title}`),
+    _el('div', {}, `Start: ${state.worked_start_hhmm}   End: ${state.worked_end_hhmm}`),
+    _el('div', {}, `Break: ${state.break_start_hhmm} → ${state.break_end_hhmm} (${bm} mins)`),
+    _el('div', { style: { fontWeight: '700', fontSize: '1.05rem' } }, `Total hours: ${netH} hours ${netMin} mins`)
+  );
+
+  const btnRow = _el(
+    'div',
+    { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'space-between' } },
+    _el('div', {}, _el('button', { type: 'button', onclick: step2 }, 'Back')),
+    (() => {
+      const cancelBtn = _el('button', { type: 'button' }, 'Cancel');
+      cancelBtn.onclick = () => document.body.removeChild(ov.root);
+
+      const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
+      submitBtn.onclick = async () => {
+        // single-click guard
+        if (submitBtn.dataset.busy === '1') return;
+        submitBtn.dataset.busy = '1';
+        submitBtn.disabled = true;
+        submitBtn.textContent = 'Please wait…';
+
+        if (canDebug) {
+          console.log('TSW.submit.click', {
+            ymd: state.ymd,
+            hospital: state.hospital,
+            ward: state.ward,
+            job_title: state.job_title,
+            shift_label: state.shift_label
+          });
+        }
+
+        if (!state.auth_name || !state.auth_job_title) {
+          alert('Please enter authoriser name and job title.');
+          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+          return;
+        }
+        if (pad.isEmpty()) {
+          alert('Authoriser signature is required.');
+          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+          return;
+        }
+
+        // 0) UK timezone check (second gate just before submitting)
+        try {
+          const DEFAULT_BROKER = "https://arthur-rai-broker.kier-88a.workers.dev";
+          const base =
+            (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
+            DEFAULT_BROKER;
+          const url = base.replace(/\/+$/, "") + "/time/uk-check";
+
+          const payloadTz = {
+            phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+            phone_epoch_ms: Date.now()
+          };
+
+          if (canDebug) console.log('TSW.tzCheck.request', { url, payload: payloadTz });
+
+          const resp = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payloadTz)
+          });
+          const json = await resp.json().catch(() => null);
+
+          if (canDebug) console.log('TSW.tzCheck.response', { status: resp.status, ok: resp.ok, json });
+
+          if (!json || json.valid !== true) {
+            const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
+            if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
+            return; // don’t proceed to presign/submit
+          }
+        } catch (e) {
+          if (canDebug) console.error('TSW.tzCheck.error', { error: String(e && e.message || e) });
+          const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
+          if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
+          return; // fail closed
+        }
+
+        // 1) Presign
+        if (canDebug) console.log('TSW.presign.start', {
+          occupant_key: deriveOccupantKey(baseline),
+          date_start_local: state.ymd,
+          hospital: state.hospital,
+          ward: state.ward,
+          job_title: state.job_title,
+          shift_label: state.shift_label
+        });
+
+        const pres = await presignTimesheet({
+          occupant_key: deriveOccupantKey(baseline),
+          date_start_local: state.ymd,
+          hospital: state.hospital,
+          ward: state.ward,
+          job_title: state.job_title,
+          shift_label: state.shift_label,
+          scheduled_start_hhmm: state.scheduled_start_hhmm,
+          scheduled_end_hhmm: state.scheduled_end_hhmm
+        });
+
+        if (canDebug) {
+          const nurseKey = pres?.json?.upload?.nurse?.key;
+          const authKey  = pres?.json?.upload?.authoriser?.key;
+          const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
+          console.log('TSW.presign.result', {
+            ok: pres.ok,
+            status: pres.status,
+            booking_id: pres?.json?.booking_id,
+            version: pres?.json?.version,
+            nurseKeyLast: lastSeg(nurseKey),
+            authoriserKeyLast: lastSeg(authKey)
+          });
+        }
+
+        if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres);
+          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+          return; }
+        state.presign = pres.json;
+
+        // 2) Upload signatures
+        const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
+        if (canDebug) console.log('TSW.upload.nurse.result', nurseUp);
+        if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp);
+          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+          return; }
+
+        const authBlob = await pad.toPNGBlob();
+        const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
+        if (canDebug) console.log('TSW.upload.authoriser.result', authUp);
+        if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp);
+          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+          return; }
+
+        // 3) Submit
+        // Build ISO start/end that handle cross-midnight (end <= start ⇒ +1 day)
+        function isoPairFromHHMM(ymd, startHHMM, endHHMM) {
+          if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
+          const [y, m, d]   = String(ymd).split('-').map(Number);
+          const [sH, sM]    = String(startHHMM).split(':').map(n => parseInt(n, 10));
+          const [eH, eM]    = String(endHHMM).split(':').map(n => parseInt(n, 10));
+          const startLocal  = new Date(y, m - 1, d, sH, sM, 0, 0);
+          const endLocal    = new Date(y, m - 1, d, eH, eM, 0, 0);
+          if (endLocal <= startLocal) endLocal.setDate(endLocal.getDate() + 1);
+          return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
+        }
+
+        // Use snapped HH:MM to match UI
+        const ws = snap5(state.worked_start_hhmm);
+        const we = snap5(state.worked_end_hhmm);
+        const bs = snap5(state.break_start_hhmm);
+        const be = snap5(state.break_end_hhmm);
+
+        const workedISO = isoPairFromHHMM(state.ymd, ws, we);
+        const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
+
+        // Scheduled (if present) should also respect cross-midnight
+        // Always supply scheduled_*_iso (fallback to label → worked), respect cross-midnight
+        let sStart = state.scheduled_start_hhmm;
+        let sEnd   = state.scheduled_end_hhmm;
+
+        if (!sStart || !sEnd) {
+          const parsed = parseTimesFromLabel(state.shift_label);
+          if (!sStart && parsed) sStart = parsed.start;
+          if (!sEnd   && parsed) sEnd   = parsed.end;
+        }
+
+        // Last resort: use worked window
+        if (!sStart) sStart = ws;
+        if (!sEnd)   sEnd   = we;
+
+        const sS = snap5(sStart);
+        const sE = snap5(sEnd);
+        const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
+
+        const payload = {
+          booking_id: state.presign.booking_id,
+          scheduled_start_iso: schedISO.start_iso,
+          scheduled_end_iso:   schedISO.end_iso,
+          worked_start_iso:    workedISO.start_iso,
+          worked_end_iso:      workedISO.end_iso,
+          break_start_iso:     breakISO.start_iso,
+          break_end_iso:       breakISO.end_iso,
+          auth_name: state.auth_name,
+          auth_job_title: state.auth_job_title,
+          nurse_key: state.presign.upload.nurse.key,
+          authoriser_key: state.presign.upload.authoriser.key,
+          idempotency_key: crypto.randomUUID(),
+          client_user_agent: navigator.userAgent,
+          client_timestamp: new Date().toISOString(),
+          occupant_key: deriveOccupantKey(baseline),
+          hospital: state.hospital,
+          ward: state.ward,
+          job_title: state.job_title,
+          shift_label: state.shift_label
+        };
+
+        if (canDebug) {
+          const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
+          console.log('TSW.submit.payload', {
+            booking_id: payload.booking_id,
+            scheduled: { start: payload.scheduled_start_iso, end: payload.scheduled_end_iso },
+            worked:    { start: payload.worked_start_iso,    end: payload.worked_end_iso },
+            breakIso:  { start: payload.break_start_iso,     end: payload.break_end_iso },
+            auth:      { nameLen: (payload.auth_name||'').length, titleLen: (payload.auth_job_title||'').length },
+            keys:      { nurse: lastSeg(payload.nurse_key), authoriser: lastSeg(payload.authoriser_key) },
+            idempotency_key: payload.idempotency_key
+          });
+        }
+
+        const statusEl = ensureTsStatusBox(ov.card);
+
+        // Already disabled above; just update label for clarity
+        submitBtn.textContent = 'Submitting…';
+
+        const t0 = performance.now();
+        const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
+          maxAttempts: 5,
+          updateStatus: (attempt, max, phase) => {
+            if (phase === 'submit') {
+              setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
+              submitBtn.textContent = `Submitting… (${attempt}/${max})`;
+            } else if (phase === 'retry') {
+              setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
+              submitBtn.textContent = `Retrying… (${attempt}/${max})`;
+            } else if (phase === 'waiting') {
+              setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
+            }
+          },
+          overlayRoot: ov.root
+        });
+        const t1 = performance.now();
+
+        if (canDebug) {
+          console.log('TSW.submit.result', {
+            ok, cancelled, durationMs: Math.round(t1 - t0),
+            brokerStatus: sub && (sub.status || sub.httpStatus),
+            error: sub && (sub.error || sub.message || null)
+          });
+        }
+
+        // Re-enable if still visible
+        if (document.body.contains(ov.root)) {
+          submitBtn.disabled = false;
+          delete submitBtn.dataset.busy;
+          submitBtn.textContent = 'Authorise Timesheet';
+        }
+
+        if (!ok) {
+          if (!cancelled) {
+            setTsStatus(statusEl,
+              "Please complete a paper timesheet as there are network problems. " +
+              "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
+            );
+            _debugOrToast && _debugOrToast('Submit failed', sub);
+          }
+          return;
+        }
+
+        // Success: show big tick then close + refresh (handled in _successTick)
+        if (canDebug) console.log('TSW.submit.success.tick');
+        _successTick(ov.root);
+      };
+
+      return _el('div', {}, cancelBtn, submitBtn);
+    })()
+  );
+
+  // (UI append unchanged)
+  // NOTE: This respects your existing structure — no functional changes.
+  // If the original appends these elements, keep doing so in the same place.
+  // If you already append elsewhere, leave this as-is.
+  // ov.contents.append(linesWrap, nameIn, titleIn, pad.el, btnRow);
 };
 
 const right = _el('div', {});
@@ -7124,30 +7214,66 @@ function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
 // Core retry wrapper (reuses idempotency_key)
 async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus, overlayRoot } = {}) {
-  // idempotency_key must be stable across attempts
+  // Ensure stable idempotency across attempts
   if (!payload.idempotency_key) {
     payload.idempotency_key = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
   }
 
+  // Compact digest so logs are useful but not noisy
+  const payloadSummary = {
+    booking_id: payload.booking_id,
+    idempotency_key: payload.idempotency_key,
+    // Presence/shape checks the broker cares about
+    nurse_key_ok: !!payload.nurse_key,
+    authoriser_key_ok: !!payload.authoriser_key,
+    sched_start_ok: !!payload.scheduled_start_iso,
+    sched_end_ok: !!payload.scheduled_end_iso,
+    worked_start_ok: !!payload.worked_start_iso,
+    worked_end_ok: !!payload.worked_end_iso,
+    break_start_ok: !!payload.break_start_iso,
+    break_end_ok: !!payload.break_end_iso,
+    // Useful context
+    hospital: payload.hospital,
+    ward: payload.ward,
+    job_title: payload.job_title,
+    shift_label: payload.shift_label
+  };
+
+  console.log('TS_SUBMIT_RETRY: start', { maxAttempts, payloadSummary });
+
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // If overlay has been closed, stop trying (user navigated away)
     if (!document.body.contains(overlayRoot)) {
+      console.warn('TS_SUBMIT_RETRY: cancelled (overlay removed)', { attempt });
       return { ok: false, cancelled: true };
     }
 
     updateStatus && updateStatus(attempt, maxAttempts, "submit");
+    console.log('TS_SUBMIT_RETRY: attempt_begin', { attempt, maxAttempts, booking_id: payload.booking_id });
 
     let res;
     try {
       res = await submitTimesheet(payload);
     } catch (err) {
+      console.error('TS_SUBMIT_RETRY: network_throw', { attempt, err: String(err) });
       res = { ok: false, status: 0, error: err };
     }
 
-    if (res && res.ok) return { ok: true, sub: res };
+    if (res && res.ok) {
+      console.log('TS_SUBMIT_RETRY: success', { attempt, status: res.status });
+      return { ok: true, sub: res };
+    }
 
     // Decide whether to retry
-    if (attempt >= maxAttempts || !isTransientTimesheetError(res)) {
+    const transient = isTransientTimesheetError(res);
+    if (attempt >= maxAttempts || !transient) {
+      console.error('TS_SUBMIT_RETRY: fail_stop', {
+        attempt,
+        status: res && res.status,
+        error: res && (res.error || (res.json && res.json.error)),
+        json_code: res && res.json && res.json.code,
+        transient
+      });
       return { ok: false, sub: res };
     }
 
@@ -7156,14 +7282,25 @@ async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus
     const jitter = Math.floor(Math.random() * 300);
     const waitMs = base + jitter;
 
+    console.warn('TS_SUBMIT_RETRY: will_retry', {
+      attempt,
+      nextAttempt: attempt + 1,
+      waitMs,
+      status: res && res.status,
+      error: res && (res.error || (res.json && res.json.error)),
+      json_code: res && res.json && res.json.code
+    });
+
     updateStatus && updateStatus(attempt + 1, maxAttempts, "waiting");
     await delay(waitMs);
 
     // Update UI state for next loop
     updateStatus && updateStatus(attempt + 1, maxAttempts, "retry");
+    console.log('TS_SUBMIT_RETRY: attempt_ready', { nextAttempt: attempt + 1 });
   }
 
   // Should not reach here
+  console.error('TS_SUBMIT_RETRY: exhausted_without_return');
   return { ok: false };
 }
 
