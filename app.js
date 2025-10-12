@@ -2035,7 +2035,10 @@ function renderTiles() {
     fitStatusLabel(statusEl);
   }
 
+  let __tileIdx = -1;
   for (const t of tiles) {
+    __tileIdx += 1;
+
     const card = document.createElement('div');
     card.className = 'tile';
     card.dataset.ymd = t.ymd;
@@ -2127,6 +2130,53 @@ function renderTiles() {
     if (!card.classList.contains('attention-border')) {
       card.style.borderColor = '#ffffff';
     }
+
+    // ─────────────────────────────────────────────────────────────
+    // CTA_DECISION LOGGING (single row per tile)
+    // ─────────────────────────────────────────────────────────────
+    (function () {
+      const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
+      const feature_enabled = !!tsFeatureOn;
+      const testmode_allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
+      const booked = !!t.booked;
+      const timesheet_eligible = t.timesheet_eligible === true;
+      const not_authorised = t.timesheet_authorised !== true;
+      const decision = !!(TS && TS.shouldShowTimesheetCTA && TS.shouldShowTimesheetCTA(t, window.identity));
+      let reason_if_false = null;
+      if (!feature_enabled) {
+        reason_if_false = 'feature_off';
+      } else if (testMode && !testmode_allowed) {
+        reason_if_false = 'testmode_blocked';
+      } else if (!booked) {
+        reason_if_false = 'not_booked';
+      } else if (!timesheet_eligible) {
+        reason_if_false = 'not_eligible';
+      } else if (!not_authorised) {
+        reason_if_false = 'already_authorised';
+      }
+      const tile_ref = {
+        ymd: t.ymd,
+        hospital: t.hospital || t.location || '',
+        ward: t.ward || '',
+        job_title: t.jobTitle || t.job_title || '',
+        shift_label: t.shiftInfo || t.shift_label || t.effectiveLabel || ''
+      };
+      const booking_id = t.booking_id || t.timesheet_booking_id || null;
+      const has_subnode = !!card.querySelector('.tile-sub');
+      console.log('CTA_DECISION', {
+        tile_index: __tileIdx,
+        tile_ref,
+        booking_id,
+        feature_enabled,
+        testmode_allowed,
+        booked,
+        timesheet_eligible,
+        not_authorised,
+        decision,
+        reason_if_false,
+        has_subnode
+      });
+    })();
 
     // Booked tile → timesheet click path (wizard or submitted modal)
     if (t.booked && tsFeatureOn) {
@@ -5089,6 +5139,31 @@ async function refreshAppState({ force = false } = {}) {
   function _getConfig() {
     return window.CONFIG || {};
   }
+  // DevTools gating: enable logs if TIMESHEET_DEBUG=true OR (testmode + allowlisted)
+  function _canDebug(identity) {
+    try {
+      const cfg = _getConfig();
+      if (cfg.TIMESHEET_DEBUG === true) return true;
+      const tm = !!cfg.TIMESHEET_TESTMODE;
+      const allow = (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity || window.identity) : false;
+      return tm && allow;
+    } catch { return false; }
+  }
+  function _tileRefFromTile(tile) {
+    return {
+      ymd: tile?.ymd || '',
+      hospital: tile?.hospital || tile?.location || '',
+      ward: tile?.ward || '',
+      job_title: tile?.jobTitle || tile?.job_title || '',
+      shift_label: tile?.shiftInfo || tile?.shift_label || tile?.effectiveLabel || ''
+    };
+  }
+  function _tileRefFromCard(cardEl) {
+    return {
+      ymd: cardEl?.dataset?.ymd || '',
+      hospital: '', ward: '', job_title: '', shift_label: ''
+    };
+  }
 
   // ───────────────────────────────────────────────────────────────────────────
   // isTestModeAllowed(identity)
@@ -5138,17 +5213,53 @@ async function refreshAppState({ force = false } = {}) {
         ? !!TS.isTimesheetFeatureEnabled(identity || window.baseline || '')
         : false;
 
-    if (!enabled) return false;
-
-    if (typeof TS.isTestModeAllowed === 'function' && !TS.isTestModeAllowed(identity)) {
+    if (!enabled) {
+      if (_canDebug(identity)) {
+        console.table({
+          label: 'CTA_PREDICATE',
+          feature_enabled: false,
+          testmode_allowed: (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity) : true,
+          booked: !!tile?.booked,
+          timesheet_eligible: tile?.timesheet_eligible === true,
+          not_authorised: tile?.timesheet_authorised !== true,
+          decision: false,
+          tile_ref: JSON.stringify(_tileRefFromTile(tile)),
+          reason_if_false: 'feature_off'
+        });
+      }
       return false;
     }
 
+    const tmAllowed = (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity) : true;
     const isBooked = !!tile.booked;
     const eligible = tile.timesheet_eligible === true;
     const notAuthorised = tile.timesheet_authorised !== true;
 
-    return isBooked && eligible && notAuthorised;
+    const decision = enabled && tmAllowed && isBooked && eligible && notAuthorised;
+
+    if (_canDebug(identity)) {
+      let reason_if_false = null;
+      const cfg = _getConfig();
+      if (!enabled) reason_if_false = 'feature_off';
+      else if (cfg.TIMESHEET_TESTMODE && !tmAllowed) reason_if_false = 'testmode_blocked';
+      else if (!isBooked) reason_if_false = 'not_booked';
+      else if (!eligible) reason_if_false = 'not_eligible';
+      else if (!notAuthorised) reason_if_false = 'already_authorised';
+
+      console.table({
+        label: 'CTA_PREDICATE',
+        feature_enabled: enabled,
+        testmode_allowed: tmAllowed,
+        booked: isBooked,
+        timesheet_eligible: eligible,
+        not_authorised: notAuthorised,
+        decision,
+        tile_ref: JSON.stringify(_tileRefFromTile(tile)),
+        reason_if_false: reason_if_false || (decision ? '' : 'unknown')
+      });
+    }
+
+    return decision;
   };
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -5203,6 +5314,15 @@ async function refreshAppState({ force = false } = {}) {
       badge.style.pointerEvents = 'none';
       cardEl.appendChild(badge);
     }
+
+    if (_canDebug(window.identity)) {
+      console.log('CTA_APPLY', {
+        tile_ref: _tileRefFromCard(cardEl),
+        orange_class_applied: cardEl.classList.contains('tile--bg-ts-cta'),
+        badge_present: !!cardEl.querySelector('.ts-badge-attn'),
+        has_subnode: !!cardEl.querySelector('.tile-sub')
+      });
+    }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -5222,7 +5342,12 @@ async function refreshAppState({ force = false } = {}) {
     TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
 
     const sub = cardEl.querySelector('.tile-sub');
-    if (!sub) return;
+    if (!sub) {
+      if (_canDebug(window.identity)) {
+        console.warn('ALTERNATOR_NO_SUBNODE', { tile_ref: _tileRefFromCard(cardEl) });
+      }
+      return;
+    }
 
     const orig = originalHtml != null ? String(originalHtml) : sub.innerHTML;
     cardEl.dataset.tsAltOriginalHtml = orig;
@@ -5231,6 +5356,9 @@ async function refreshAppState({ force = false } = {}) {
     const id = window.setInterval(() => {
       try {
         if (!sub.isConnected) {
+          if (_canDebug(window.identity)) {
+            console.warn('ALTERNATOR_STOP_DOM_CHURN', { tile_ref: _tileRefFromCard(cardEl) });
+          }
           // Surface a hint in test mode so QA can see why the alternator stopped
           try {
             const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
@@ -5244,12 +5372,23 @@ async function refreshAppState({ force = false } = {}) {
         }
         showingAlt = !showingAlt;
         sub.innerHTML = showingAlt ? altText : orig;
-      } catch {
+      } catch (e) {
+        if (_canDebug(window.identity)) {
+          console.error('ALTERNATOR_STOP_ERROR', { tile_ref: _tileRefFromCard(cardEl), error: String(e && e.message || e) });
+        }
         TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
       }
     }, Math.max(1000, Number(periodMs) || 4000));
 
     cardEl.dataset.tsAltTimerId = String(id);
+
+    if (_canDebug(window.identity)) {
+      console.log('ALTERNATOR_START', {
+        tile_ref: _tileRefFromCard(cardEl),
+        period_ms: Math.max(1000, Number(periodMs) || 4000),
+        timer_id: id
+      });
+    }
   };
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -5281,6 +5420,10 @@ async function refreshAppState({ force = false } = {}) {
     const attn = cardEl.querySelector('.ts-badge-attn');
     if (attn) attn.remove();
     cardEl.classList.remove('tile--bg-ts-cta');
+
+    if (_canDebug(window.identity)) {
+      console.log('ALTERNATOR_STOP_CLEAN', { tile_ref: _tileRefFromCard(cardEl) });
+    }
   };
 })();
 
@@ -5623,29 +5766,98 @@ function isTimesheetFeatureEnabled(subject) {
    * ────────────────────────────────────────────────────────────────────────── */
 
 function onTileClickTimesheetBranch(tile, identity, baseline) {
-  // NAME-BASED gate
-  if (!isTimesheetFeatureEnabled(baseline || identity || '')) return false;
+  // small helper to gate logs
+  function _canDebugClick() {
+    try {
+      const cfg = window.CONFIG || {};
+      if (cfg.TIMESHEET_DEBUG === true) return true;
+      const tm = !!cfg.TIMESHEET_TESTMODE;
+      const allow = (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function')
+        ? window.Timesheets.isTestModeAllowed(identity)
+        : false;
+      return tm && allow;
+    } catch { return false; }
+  }
+  function _tileRefFromTile(t) {
+    return {
+      ymd: t?.ymd || '',
+      hospital: t?.hospital || t?.location || '',
+      ward: t?.ward || '',
+      job_title: t?.jobTitle || t?.job_title || '',
+      shift_label: t?.shiftInfo || t?.shift_label || t?.effectiveLabel || ''
+    };
+  }
+
+  const featureOn = !!isTimesheetFeatureEnabled(baseline || identity || '');
+  const testModeAllowed = (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function')
+    ? window.Timesheets.isTestModeAllowed(identity)
+    : true;
+
+  if (!featureOn) {
+    if (_canDebugClick()) {
+      console.log('TILE_CLICK_ROUTE', {
+        tile_ref: _tileRefFromTile(tile),
+        booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+        route: 'no_action',
+        why: 'feature_off'
+      });
+    }
+    return false;
+  }
 
   // Test-mode allowlist: only the NAME-whitelisted user may use the flow in test mode
   try {
     if (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function') {
-      if (!window.Timesheets.isTestModeAllowed(identity)) return false;
+      if (!testModeAllowed) {
+        if (_canDebugClick()) {
+          console.log('TILE_CLICK_ROUTE', {
+            tile_ref: _tileRefFromTile(tile),
+            booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+            route: 'no_action',
+            why: 'testmode_blocked'
+          });
+        }
+        return false;
+      }
     }
   } catch (_) {}
 
   if (tile?.timesheet_authorised === true) {
+    if (_canDebugClick()) {
+      console.log('TILE_CLICK_ROUTE', {
+        tile_ref: _tileRefFromTile(tile),
+        booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+        route: 'open_submitted_modal'
+      });
+    }
     openSubmittedTimesheetModal(tile, identity, baseline);
     return true;
   }
 
   if (tile?.timesheet_eligible === true) {
+    if (_canDebugClick()) {
+      console.log('TILE_CLICK_ROUTE', {
+        tile_ref: _tileRefFromTile(tile),
+        booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+        route: 'open_wizard'
+      });
+    }
     startTimesheetWizard(tile, identity, baseline);
     return true;
   }
 
   // Not eligible; do nothing special (preserves existing behaviour)
+  if (_canDebugClick()) {
+    console.log('TILE_CLICK_ROUTE', {
+      tile_ref: _tileRefFromTile(tile),
+      booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+      route: 'no_action',
+      why: (tile?.timesheet_eligible !== true) ? 'not_eligible' : 'unknown'
+    });
+  }
   return false;
 }
+
 
   /* ──────────────────────────────────────────────────────────────────────────
    * 7) Wizard (minimal self-contained overlay)
