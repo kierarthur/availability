@@ -6854,20 +6854,22 @@ const step3 = () => {
 
         const t0 = performance.now();
         const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
-          maxAttempts: 5,
-          updateStatus: (attempt, max, phase) => {
-            if (phase === 'submit') {
-              setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
-              submitBtn.textContent = `Submitting… (${attempt}/${max})`;
-            } else if (phase === 'retry') {
-              setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
-              submitBtn.textContent = `Retrying… (${attempt}/${max})`;
-            } else if (phase === 'waiting') {
-              setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
-            }
-          },
-          overlayRoot: ov.root
-        });
+  maxAttempts: 5,
+  updateStatus: (attempt, max, phase) => {
+    if (phase === 'submit') {
+      setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
+      submitBtn.textContent = `Submitting… (${attempt}/${max})`;
+    } else if (phase === 'retry') {
+      setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
+      submitBtn.textContent = `Retrying… (${attempt}/${max})`;
+    } else if (phase === 'waiting') {
+      setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
+    }
+  },
+  overlayRoot: ov.root,
+  submitImpl: NS.submitTimesheet // optional but recommended
+});
+
         const t1 = performance.now();
 
         if (canDebug) {
@@ -7212,17 +7214,48 @@ function isTransientTimesheetError(result) {
 function delay(ms) { return new Promise(res => setTimeout(res, ms)); }
 
 // Core retry wrapper (reuses idempotency_key)
-async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus, overlayRoot } = {}) {
-  // Ensure stable idempotency across attempts
-  if (!payload.idempotency_key) {
-    payload.idempotency_key = (crypto && crypto.randomUUID) ? crypto.randomUUID() : String(Date.now());
+async function submitTimesheetWithRetry(
+  payload,
+  { maxAttempts = 5, updateStatus, overlayRoot, submitImpl } = {}
+) {
+  // Pick a submit implementation without referencing undeclared identifiers.
+  const submitFn =
+    submitImpl
+    || (typeof NS !== 'undefined' && NS && typeof NS.submitTimesheet === 'function' && NS.submitTimesheet)
+    || (typeof window !== 'undefined' && typeof window.submitTimesheet === 'function' && window.submitTimesheet)
+    || (typeof submitTimesheet === 'function' && submitTimesheet);
+
+  if (typeof submitFn !== 'function') {
+    const err = 'submitTimesheet implementation not found';
+    console.error('TS_SUBMIT_RETRY: no_submit_impl', { err });
+    return { ok: false, sub: { ok: false, status: 0, error: err } };
   }
 
-  // Compact digest so logs are useful but not noisy
+  // Ensure stable idempotency across attempts
+  if (!payload.idempotency_key) {
+    payload.idempotency_key =
+      (typeof crypto !== 'undefined' && crypto.randomUUID)
+        ? crypto.randomUUID()
+        : String(Date.now());
+  }
+
+  // Local fallbacks (safe even if globals exist elsewhere)
+  const delay = (ms) => new Promise((r) => setTimeout(r, ms));
+  const isTransient = (r) => {
+    if (!r) return true; // network throw / unexpected
+    const s = r.status || r.httpStatus || 0;
+    if (s === 0 || s === 408 || s === 429) return true;
+    if (s >= 500 && s <= 599) return true;
+    const code = r.json && r.json.code;
+    return code === 'temporarily_unavailable'
+        || code === 'rate_limited'
+        || code === 'lock_conflict';
+  };
+
+  // Compact digest for logs
   const payloadSummary = {
     booking_id: payload.booking_id,
     idempotency_key: payload.idempotency_key,
-    // Presence/shape checks the broker cares about
     nurse_key_ok: !!payload.nurse_key,
     authoriser_key_ok: !!payload.authoriser_key,
     sched_start_ok: !!payload.scheduled_start_iso,
@@ -7231,7 +7264,6 @@ async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus
     worked_end_ok: !!payload.worked_end_iso,
     break_start_ok: !!payload.break_start_iso,
     break_end_ok: !!payload.break_end_iso,
-    // Useful context
     hospital: payload.hospital,
     ward: payload.ward,
     job_title: payload.job_title,
@@ -7242,17 +7274,17 @@ async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus
 
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     // If overlay has been closed, stop trying (user navigated away)
-    if (!document.body.contains(overlayRoot)) {
+    if (overlayRoot && !document.body.contains(overlayRoot)) {
       console.warn('TS_SUBMIT_RETRY: cancelled (overlay removed)', { attempt });
       return { ok: false, cancelled: true };
     }
 
-    updateStatus && updateStatus(attempt, maxAttempts, "submit");
+    updateStatus && updateStatus(attempt, maxAttempts, 'submit');
     console.log('TS_SUBMIT_RETRY: attempt_begin', { attempt, maxAttempts, booking_id: payload.booking_id });
 
     let res;
     try {
-      res = await submitTimesheet(payload);
+      res = await submitFn(payload);
     } catch (err) {
       console.error('TS_SUBMIT_RETRY: network_throw', { attempt, err: String(err) });
       res = { ok: false, status: 0, error: err };
@@ -7264,7 +7296,7 @@ async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus
     }
 
     // Decide whether to retry
-    const transient = isTransientTimesheetError(res);
+    const transient = isTransient(res);
     if (attempt >= maxAttempts || !transient) {
       console.error('TS_SUBMIT_RETRY: fail_stop', {
         attempt,
@@ -7290,15 +7322,12 @@ async function submitTimesheetWithRetry(payload, { maxAttempts = 5, updateStatus
       json_code: res && res.json && res.json.code
     });
 
-    updateStatus && updateStatus(attempt + 1, maxAttempts, "waiting");
+    updateStatus && updateStatus(attempt + 1, maxAttempts, 'waiting');
     await delay(waitMs);
-
-    // Update UI state for next loop
-    updateStatus && updateStatus(attempt + 1, maxAttempts, "retry");
+    updateStatus && updateStatus(attempt + 1, maxAttempts, 'retry');
     console.log('TS_SUBMIT_RETRY: attempt_ready', { nextAttempt: attempt + 1 });
   }
 
-  // Should not reach here
   console.error('TS_SUBMIT_RETRY: exhausted_without_return');
   return { ok: false };
 }
