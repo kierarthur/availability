@@ -6643,24 +6643,25 @@ submitBtn.onclick = async () => {
     return;
   }
   // 0) UK timezone check (second gate just before submitting)
-  try {
-  // Always hit the broker origin (fallback to the workers.dev default)
-  const cfgBase =
+ try {
+  // Always hit the broker origin (same as other API calls)
+  const DEFAULT_BROKER = "https://arthur-rai-broker.kier-88a.workers.dev";
+  const base =
     (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
-    "https://arthur-rai-broker.kier-88a.workers.dev";
+    DEFAULT_BROKER;
+  const url = base.replace(/\/+$/, "") + "/time/uk-check";
 
-  // Build GET URL with query params
-  const url =
-    cfgBase.replace(/\/+$/, "") +
-    "/time/uk-check" +
-    "?phone_tz=" + encodeURIComponent(Intl.DateTimeFormat().resolvedOptions().timeZone || "") +
-    "&phone_epoch_ms=" + encodeURIComponent(Date.now());
+  const payload = {
+    phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
+    phone_epoch_ms: Date.now()
+  };
 
-  const resp = await fetch(url, { method: "GET" });
-  let json = null;
-  if (resp.ok) {
-    try { json = await resp.json(); } catch { /* non-JSON => treat as invalid */ }
-  }
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const json = await resp.json().catch(() => null);
 
   if (!json || json.valid !== true) {
     const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
@@ -6674,6 +6675,7 @@ submitBtn.onclick = async () => {
   submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
   return; // fail closed
 }
+
 
   // 1) Presign
   const pres = await presignTimesheet({
