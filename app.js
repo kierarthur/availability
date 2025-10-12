@@ -5185,11 +5185,12 @@ async function refreshAppState({ force = false } = {}) {
   // - If test mode OFF → true
   // - If test mode ON  → true only for allowlisted NAME (guarded fallbacks)
   // ───────────────────────────────────────────────────────────────────────────
-  TS.isTestModeAllowed = function isTestModeAllowed(identity) {
+ TS.isTestModeAllowed = function isTestModeAllowed(identity) {
   const cfg = _getConfig();
   const testMode = !!cfg.TIMESHEET_TESTMODE;
+
+  // If test mode is OFF, always allow (but log when debug is enabled)
   if (!testMode) {
-    // Useful to see when test mode is OFF (feature won't gate by name)
     if (cfg.TIMESHEET_DEBUG === true) {
       console.log('TESTMODE_NAME_CHECK', {
         testmode: false,
@@ -5200,10 +5201,10 @@ async function refreshAppState({ force = false } = {}) {
     return true;
   }
 
-  // Prefer shared helper if present; otherwise derive a best-effort name
+  // Derive a display name as robustly as possible
   const derivedName =
     (typeof _candidateNameFrom === 'function')
-      ? _candidateNameFrom(identity, window.baseline)
+      ? _candidateNameFrom(identity, window.baseline, identity && (identity.name || identity.fullName || identity.displayName) || '')
       : (
           (identity && (identity.name || identity.fullName || identity.displayName)) ||
           (window.baseline && (window.baseline.candidateName ||
@@ -5213,36 +5214,44 @@ async function refreshAppState({ force = false } = {}) {
           ''
         );
 
-  // Local fallback normalizer so we can log a stable comparison value
-  const norm = (s) => {
-    if (typeof _normName === 'function') return _normName(s);
-    return String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
-  };
+  // Normalizer (fallback if _normName is not present)
+  const norm = (s) => (typeof _normName === 'function'
+    ? _normName(s)
+    : String(s || '').toLowerCase().replace(/\s+/g, ' ').trim());
+
   const normalizedName = norm(derivedName);
 
+  // Presence of allowlist helper decides gating in test mode
   const allowFnPresent = (typeof _isAllowlistedName === 'function');
-  const allowlisted = allowFnPresent ? _isAllowlistedName(derivedName) : false;
+  const allowlistedViaFn = allowFnPresent ? _isAllowlistedName(derivedName) : false;
 
-  // Log WHEN testmode is on (so you can debug why it’s blocked),
-  // or if explicit debug is enabled.
+  // For transparency in logs: show the explicit comparison you care about,
+  // even though the *actual* decision still uses the allowlist function.
+  const normalizedEqualsKier =
+    (normalizedName === 'kier arthur' || normalizedName === 'arthur kier');
+
+  // Emit detailed log whenever test mode is ON (or debug flag enabled)
   if (cfg.TIMESHEET_DEBUG === true || testMode) {
     const rawIdentityName =
       (identity && (identity.name || identity.fullName || identity.displayName)) || null;
+
     console.log('TESTMODE_NAME_CHECK', {
       testmode: true,
       raw_identity_name: rawIdentityName,
       derived_name: derivedName,
       normalized_name: normalizedName,
       allowlist_fn_present: allowFnPresent,
-      allowlisted,
-      result: allowFnPresent ? allowlisted : false,
-      note: allowFnPresent ? undefined : 'No _isAllowlistedName() defined → blocked by default in test mode'
+      allowlisted_via_fn: allowlistedViaFn,
+      normalized_equals_kier: normalizedEqualsKier,
+      result: allowFnPresent ? allowlistedViaFn : false,
+      note: allowFnPresent
+        ? undefined
+        : 'No _isAllowlistedName() defined → blocked by default in test mode'
     });
   }
 
-  // In test mode, only allow when the allowlist function exists AND approves.
-  if (allowFnPresent) return allowlisted;
-  return false;
+  // Decision: only allow in test mode if the allowlist function exists and approves
+  return allowFnPresent ? allowlistedViaFn : false;
 };
 
 
