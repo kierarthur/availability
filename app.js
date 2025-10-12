@@ -6310,20 +6310,31 @@ async function startTimesheetWizard(tile, identity, baseline) {
     return `${hhmm(isNaN(H) ? 0 : H)}:${hhmm(mm)}`;
   }
   function ensureSeedTimes() {
-    // Worked times: copy from scheduled if empty; else parse from shift_label/shiftInfo
-    if (!state.worked_start_hhmm || !state.worked_end_hhmm) {
-      if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
-        state.worked_start_hhmm = snap5(state.scheduled_start_hhmm);
-        state.worked_end_hhmm = snap5(state.scheduled_end_hhmm);
-      } else {
-        const parsed = parseTimesFromLabel(state.shift_label);
-        if (parsed) {
-          state.worked_start_hhmm = snap5(parsed.start);
-          state.worked_end_hhmm = snap5(parsed.end);
-        }
+  // Seed worked from scheduled or label, as before
+  if (!state.worked_start_hhmm || !state.worked_end_hhmm) {
+    if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
+      state.worked_start_hhmm = snap5(state.scheduled_start_hhmm);
+      state.worked_end_hhmm   = snap5(state.scheduled_end_hhmm);
+    } else {
+      const parsed = parseTimesFromLabel(state.shift_label);
+      if (parsed) {
+        state.worked_start_hhmm = snap5(parsed.start);
+        state.worked_end_hhmm   = snap5(parsed.end);
       }
     }
   }
+
+  // NEW: ensure scheduled exists too (fallback to worked or parsed)
+  if (!state.scheduled_start_hhmm || !state.scheduled_end_hhmm) {
+    const parsed = parseTimesFromLabel(state.shift_label);
+    if (!state.scheduled_start_hhmm) {
+      state.scheduled_start_hhmm = state.worked_start_hhmm || (parsed ? snap5(parsed.start) : '');
+    }
+    if (!state.scheduled_end_hhmm) {
+      state.scheduled_end_hhmm = state.worked_end_hhmm || (parsed ? snap5(parsed.end) : '');
+    }
+  }
+}
 
   // Step 1 — Hours & Break
   const step1 = () => {
@@ -6728,12 +6739,24 @@ submitBtn.onclick = async () => {
   const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
 
   // Scheduled (if present) should also respect cross-midnight
-  let schedISO = { start_iso: null, end_iso: null };
-  if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
-    const sS = snap5(state.scheduled_start_hhmm);
-    const sE = snap5(state.scheduled_end_hhmm);
-    schedISO = isoPairFromHHMM(state.ymd, sS, sE);
-  }
+  // Always supply scheduled_*_iso (fallback to label → worked), respect cross-midnight
+let sStart = state.scheduled_start_hhmm;
+let sEnd   = state.scheduled_end_hhmm;
+
+if (!sStart || !sEnd) {
+  const parsed = parseTimesFromLabel(state.shift_label);
+  if (!sStart && parsed) sStart = parsed.start;
+  if (!sEnd   && parsed) sEnd   = parsed.end;
+}
+
+// Last resort: use worked window
+if (!sStart) sStart = ws;
+if (!sEnd)   sEnd   = we;
+
+const sS = snap5(sStart);
+const sE = snap5(sEnd);
+const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
+
 
   const payload = {
     booking_id: state.presign.booking_id,
