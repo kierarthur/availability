@@ -6769,74 +6769,6 @@ function sizeGrid() {
   document.documentElement.style.setProperty('--footer-h', `${footerH}px`);
 }
 
-// ---------- Simple router for auth flows ----------
-async function init() {
-  // Rehydrate identity (do NOT open login here)
-  identity = loadSavedIdentity();
-
-  // Chrome + furniture
-  ensureLoadingOverlay();
-  ensureMenu();
-  ensureEmergencyButton();
-
-  // If we arrived on a password-reset link, open that flow (non-dismissable)
-  if (new URLSearchParams(location.search).has('k')) {
-    openResetOverlay();
-  }
-
-  // Restore any local draft
-  loadDraft();
-
-  // Try silent auto-login (Credentials API) if we don't have an identity.
-  // Do NOT open login here; let loadFromServer() decide from the server.
-  let autoOK = false;
-  if (!identity.msisdn) {
-    try { if (els.emergencyBtn) { els.emergencyBtn.disabled = true; els.emergencyBtn.hidden = false; } } catch {}
-    try { autoOK = await tryAutoLoginViaCredentialsAPI(); } catch {}
-  }
-
-  try {
-    if (!autoOK) {
-      // Show loader only on true cold start (handled inside loadFromServer)
-      await loadFromServer({ force: true });
-    }
-    // Kick emergency eligibility quietly in background
-    try { refreshEmergencyEligibility({ silent: true }); } catch {}
-  } catch (e) {
-    // Only surface non-auth failures; auth failures show login inside loadFromServer
-    if (String(e && e.message) !== '__AUTH_STOP__') {
-      showToast('Load failed: ' + (e.message || e), 5000);
-    }
-  } finally {
-    sizeGrid();
-    equalizeTileHeights({ reset: true });
-
-    // Ensure the Emergency button exists and is wired (idempotent)
-    ensureEmergencyButton();
-    try { typeof wireEmergencyButton === 'function' && wireEmergencyButton(); } catch {}
-
-    ensurePastShiftsButton();
-  }
-
-  // If we’re signed in, scrub any leftover #/login|#/forgot|#/reset hash so a reload doesn’t reopen the modal.
-  try {
-    if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
-      history.replaceState(null, '', location.pathname + (location.search || ''));
-    }
-  } catch {}
-
-  // Wire Refresh to the unified chain (no premature login)
-  if (els.refreshBtn && !els.refreshBtn.__wired) {
-    els.refreshBtn.__wired = true;
-    els.refreshBtn.addEventListener('click', () => {
-      startTilesThenEmergencyChain({ force: true }).catch(() => {});
-    });
-  }
-
-  routeFromURL && routeFromURL();
-}
-
-window.addEventListener('hashchange', routeFromURL);
 
 // ---------- Boot ----------
 // ───────────────────────── CHANGED (IIFE) ─────────────────────────
@@ -6906,7 +6838,10 @@ async function init() {
     });
   }
 
-  routeFromURL && routeFromURL();
+ if (typeof window.routeFromURL === 'function') {
+  window.routeFromURL();       // initial dispatch
+}
+
 }
 
 
