@@ -1931,10 +1931,11 @@ function renderTiles() {
   // Visual test indicator: name turns red only when testmode+feature+allowlist are true
   try {
     const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
-    const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
-    if (els.candidateName) {
-      if (testMode && tsFeatureOn && allowed) {
-        els.candidateName.style.color = '#ff3b30';
+const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(baseline || window.identity));
+if (els.candidateName) {
+  if (testMode && tsFeatureOn && allowed) {
+    els.candidateName.style.color = '#ff3b30';
+
         els.candidateName.title = 'Test mode: name matched';
       } else {
         els.candidateName.style.color = '';
@@ -2152,11 +2153,13 @@ function renderTiles() {
     (function () {
       const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
       const feature_enabled = !!tsFeatureOn;
-      const testmode_allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
+     const testmode_allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(baseline || window.identity));
+
       const booked = !!t.booked;
       const timesheet_eligible = t.timesheet_eligible === true;
       const not_authorised = t.timesheet_authorised !== true;
-      const decision = !!(TS && TS.shouldShowTimesheetCTA && TS.shouldShowTimesheetCTA(t, window.identity));
+      const decision = !!(TS && TS.shouldShowTimesheetCTA && TS.shouldShowTimesheetCTA(t, baseline || window.identity));
+
       let reason_if_false = null;
       if (!feature_enabled) {
         reason_if_false = 'feature_off';
@@ -2213,8 +2216,9 @@ function renderTiles() {
       // (B) Attention state for eligible, not-yet-authorised tiles
       try {
         const showCTA =
-          TS.shouldShowTimesheetCTA &&
-          TS.shouldShowTimesheetCTA(t, window.identity);
+  TS.shouldShowTimesheetCTA &&
+  TS.shouldShowTimesheetCTA(t, baseline || window.identity);
+
 
         if (showCTA) {
           TS.decorateTileWithTSAttention && TS.decorateTileWithTSAttention(card, t);
@@ -2227,8 +2231,9 @@ function renderTiles() {
           // Diagnostics for test users if the tile *looks* eligible but CTA is not shown
           try {
             const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
-            const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
-            const enabled = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(baseline || window.identity || ''));
+const allowed = !!(TS && typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(baseline || window.identity));
+const enabled = !!(TS && TS.isTimesheetFeatureEnabled && TS.isTimesheetFeatureEnabled(baseline || window.identity || ''));
+
             const isBooked = !!t.booked;
             const eligible = t.timesheet_eligible === true;
             const notAuthorised = t.timesheet_authorised !== true;
@@ -5160,7 +5165,10 @@ async function refreshAppState({ force = false } = {}) {
       const cfg = _getConfig();
       if (cfg.TIMESHEET_DEBUG === true) return true;
       const tm = !!cfg.TIMESHEET_TESTMODE;
-      const allow = (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity || window.identity) : false;
+     const allow = (typeof TS.isTestModeAllowed === 'function')
+  ? TS.isTestModeAllowed(identity || window.baseline || window.identity)
+  : false;
+
       return tm && allow;
     } catch { return false; }
   }
@@ -5201,18 +5209,32 @@ async function refreshAppState({ force = false } = {}) {
     return true;
   }
 
-  // Derive a display name as robustly as possible
-  const derivedName =
-    (typeof _candidateNameFrom === 'function')
-      ? _candidateNameFrom(identity, window.baseline, identity && (identity.name || identity.fullName || identity.displayName) || '')
-      : (
-          (identity && (identity.name || identity.fullName || identity.displayName)) ||
-          (window.baseline && (window.baseline.candidateName ||
-                               (window.baseline.candidate && (window.baseline.candidate.firstName
-                                  ? `${window.baseline.candidate.surname || ''} ${window.baseline.candidate.firstName || ''}`.trim()
-                                  : '')))) ||
-          ''
-        );
+  // Derive a display name as robustly as possible (guard if helper returns '')
+  const derivedName = (() => {
+    const safe = s => (s == null ? '' : String(s)).trim();
+
+    // 1) Try shared helper (pass identity, baseline, and best-guess raw name)
+    let name = (typeof _candidateNameFrom === 'function')
+      ? _candidateNameFrom(
+          identity,
+          window.baseline,
+          (identity && (identity.name || identity.fullName || identity.displayName)) || ''
+        )
+      : '';
+
+    if (safe(name)) return safe(name);
+
+    // 2) Fallbacks in priority order
+    name = (identity && (identity.name || identity.fullName || identity.displayName)) || '';
+    if (safe(name)) return safe(name);
+
+    name = (window.baseline && window.baseline.candidateName) || '';
+    if (safe(name)) return safe(name);
+
+    const c = window.baseline && window.baseline.candidate;
+    name = c ? `${c.surname || c.lastName || ''} ${c.firstName || c.firstname || ''}` : '';
+    return safe(name);
+  })();
 
   // Normalizer (fallback if _normName is not present)
   const norm = (s) => (typeof _normName === 'function'
@@ -5278,7 +5300,7 @@ async function refreshAppState({ force = false } = {}) {
         console.table({
           label: 'CTA_PREDICATE',
           feature_enabled: false,
-          testmode_allowed: (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity) : true,
+          testmode_allowed: (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity || window.baseline) : true,
           booked: !!tile?.booked,
           timesheet_eligible: tile?.timesheet_eligible === true,
           not_authorised: tile?.timesheet_authorised !== true,
@@ -5290,7 +5312,7 @@ async function refreshAppState({ force = false } = {}) {
       return false;
     }
 
-    const tmAllowed = (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity) : true;
+    const tmAllowed = (typeof TS.isTestModeAllowed === 'function') ? TS.isTestModeAllowed(identity || window.baseline) : true;
     const isBooked = !!tile.booked;
     const eligible = tile.timesheet_eligible === true;
     const notAuthorised = tile.timesheet_authorised !== true;
@@ -5342,48 +5364,50 @@ async function refreshAppState({ force = false } = {}) {
   // - Adds a single "TS !" badge (top-right)
   // - Does NOT start the alternator
   // ───────────────────────────────────────────────────────────────────────────
-  TS.decorateTileWithTSAttention = function decorateTileWithTSAttention(cardEl /*, tile */) {
-    if (!cardEl) return;
+ TS.decorateTileWithTSAttention = function decorateTileWithTSAttention(cardEl /*, tile */) {
+  if (!cardEl) return;
 
-    // Apply theme (helper if present)
-    if (typeof TS.applyCTATheme === 'function') {
-      TS.applyCTATheme(cardEl);
-    } else {
-      cardEl.classList.add('tile--bg-ts-cta');
-      try {
-        const pos = getComputedStyle(cardEl).position;
-        if (pos === 'static') cardEl.style.position = 'relative';
-      } catch {}
-    }
+  // Apply theme (helper if present)
+  if (typeof TS.applyCTATheme === 'function') {
+    TS.applyCTATheme(cardEl);
+  } else {
+    cardEl.classList.add('tile--bg-ts-cta');
+    try {
+      const pos = getComputedStyle(cardEl).position;
+      if (pos === 'static') cardEl.style.position = 'relative';
+    } catch {}
+  }
 
-    // Ensure exactly one attention badge
-    if (!cardEl.querySelector('.ts-badge-attn')) {
-      const badge = document.createElement('div');
-      badge.className = 'ts-badge ts-badge-attn';
-      badge.textContent = 'TS !';
-      // Minimal placement; CSS can override
-      badge.style.position = 'absolute';
-      badge.style.top = '6px';
-      badge.style.right = '6px';
-      badge.style.padding = '2px 6px';
-      badge.style.borderRadius = '10px';
-      badge.style.fontSize = '12px';
-      badge.style.fontWeight = '700';
-      badge.style.background = 'rgba(255, 165, 0, 0.95)';
-      badge.style.color = '#000';
-      badge.style.pointerEvents = 'none';
-      cardEl.appendChild(badge);
-    }
+  // Ensure exactly one attention badge
+  if (!cardEl.querySelector('.ts-badge-attn')) {
+    const badge = document.createElement('div');
+    badge.className = 'ts-badge ts-badge-attn';
+    badge.textContent = 'TS !';
+    // Minimal placement; CSS can override
+    badge.style.position = 'absolute';
+    badge.style.top = '6px';
+    badge.style.right = '6px';
+    badge.style.padding = '2px 6px';
+    badge.style.borderRadius = '10px';
+    badge.style.fontSize = '12px';
+    badge.style.fontWeight = '700';
+    badge.style.background = 'rgba(255, 165, 0, 0.95)';
+    badge.style.color = '#000';
+    badge.style.pointerEvents = 'none';
+    cardEl.appendChild(badge);
+  }
 
-    if (_canDebug(window.identity)) {
-      console.log('CTA_APPLY', {
-        tile_ref: _tileRefFromCard(cardEl),
-        orange_class_applied: cardEl.classList.contains('tile--bg-ts-cta'),
-        badge_present: !!cardEl.querySelector('.ts-badge-attn'),
-        has_subnode: !!cardEl.querySelector('.tile-sub')
-      });
-    }
-  };
+  // Debug logging should consider baseline when identity isn't ready
+  if (_canDebug(window.identity || window.baseline)) {
+    console.log('CTA_APPLY', {
+      tile_ref: _tileRefFromCard(cardEl),
+      orange_class_applied: cardEl.classList.contains('tile--bg-ts-cta'),
+      badge_present: !!cardEl.querySelector('.ts-badge-attn'),
+      has_subnode: !!cardEl.querySelector('.tile-sub')
+    });
+  }
+};
+
 
   // ───────────────────────────────────────────────────────────────────────────
   // startTileContentAlternator(cardEl, { originalHtml, altText, periodMs })
@@ -5392,99 +5416,107 @@ async function refreshAppState({ force = false } = {}) {
   // Default altText per spec: "Please tap to submit Timesheet"
   // Emits test-mode toast if subnode is detached (DOM churn).
   // ───────────────────────────────────────────────────────────────────────────
-  TS.startTileContentAlternator = function startTileContentAlternator(
-    cardEl,
-    { originalHtml, altText = 'Please tap to submit Timesheet', periodMs = 4000 } = {}
-  ) {
-    if (!cardEl) return;
+ TS.startTileContentAlternator = function startTileContentAlternator(
+  cardEl,
+  { originalHtml, altText = 'Please tap to submit Timesheet', periodMs = 4000 } = {}
+) {
+  if (!cardEl) return;
 
-    // Clear any existing alternator first
-    TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
+  // Clear any existing alternator first
+  TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
 
-    const sub = cardEl.querySelector('.tile-sub');
-    if (!sub) {
-      if (_canDebug(window.identity)) {
-        console.warn('ALTERNATOR_NO_SUBNODE', { tile_ref: _tileRefFromCard(cardEl) });
-      }
-      return;
+  const sub = cardEl.querySelector('.tile-sub');
+  if (!sub) {
+    if (_canDebug(window.identity || window.baseline)) {
+      console.warn('ALTERNATOR_NO_SUBNODE', { tile_ref: _tileRefFromCard(cardEl) });
     }
+    return;
+  }
 
-    const orig = originalHtml != null ? String(originalHtml) : sub.innerHTML;
-    cardEl.dataset.tsAltOriginalHtml = orig;
+  const orig = originalHtml != null ? String(originalHtml) : sub.innerHTML;
+  cardEl.dataset.tsAltOriginalHtml = orig;
 
-    let showingAlt = false;
-    const id = window.setInterval(() => {
-      try {
-        if (!sub.isConnected) {
-          if (_canDebug(window.identity)) {
-            console.warn('ALTERNATOR_STOP_DOM_CHURN', { tile_ref: _tileRefFromCard(cardEl) });
+  let showingAlt = false;
+  const id = window.setInterval(() => {
+    try {
+      if (!sub.isConnected) {
+        if (_canDebug(window.identity || window.baseline)) {
+          console.warn('ALTERNATOR_STOP_DOM_CHURN', { tile_ref: _tileRefFromCard(cardEl) });
+        }
+        // Surface a hint in test mode so QA can see why the alternator stopped
+        try {
+          const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
+          const allowed = !!(
+            typeof TS.isTestModeAllowed === 'function' &&
+            TS.isTestModeAllowed(window.identity || window.baseline)
+          );
+          if (testMode && allowed && typeof _debugOrToast === 'function') {
+            _debugOrToast('Alternator stopped: .tile-sub removed or replaced', {});
           }
-          // Surface a hint in test mode so QA can see why the alternator stopped
-          try {
-            const testMode = !!(window.CONFIG && window.CONFIG.TIMESHEET_TESTMODE);
-            const allowed = !!(typeof TS.isTestModeAllowed === 'function' && TS.isTestModeAllowed(window.identity));
-            if (testMode && allowed && typeof _debugOrToast === 'function') {
-              _debugOrToast('Alternator stopped: .tile-sub removed or replaced', {});
-            }
-          } catch {}
-          TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
-          return;
-        }
-        showingAlt = !showingAlt;
-        sub.innerHTML = showingAlt ? altText : orig;
-      } catch (e) {
-        if (_canDebug(window.identity)) {
-          console.error('ALTERNATOR_STOP_ERROR', { tile_ref: _tileRefFromCard(cardEl), error: String(e && e.message || e) });
-        }
+        } catch {}
         TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
+        return;
       }
-    }, Math.max(1000, Number(periodMs) || 4000));
-
-    cardEl.dataset.tsAltTimerId = String(id);
-
-    if (_canDebug(window.identity)) {
-      console.log('ALTERNATOR_START', {
-        tile_ref: _tileRefFromCard(cardEl),
-        period_ms: Math.max(1000, Number(periodMs) || 4000),
-        timer_id: id
-      });
+      showingAlt = !showingAlt;
+      sub.innerHTML = showingAlt ? altText : orig;
+    } catch (e) {
+      if (_canDebug(window.identity || window.baseline)) {
+        console.error('ALTERNATOR_STOP_ERROR', {
+          tile_ref: _tileRefFromCard(cardEl),
+          error: String((e && e.message) || e)
+        });
+      }
+      TS.stopTileContentAlternator && TS.stopTileContentAlternator(cardEl);
     }
-  };
+  }, Math.max(1000, Number(periodMs) || 4000));
+
+  cardEl.dataset.tsAltTimerId = String(id);
+
+  if (_canDebug(window.identity || window.baseline)) {
+    console.log('ALTERNATOR_START', {
+      tile_ref: _tileRefFromCard(cardEl),
+      period_ms: Math.max(1000, Number(periodMs) || 4000),
+      timer_id: id
+    });
+  }
+};
 
   // ───────────────────────────────────────────────────────────────────────────
   // stopTileContentAlternator(cardEl)
   // Clears the interval, restores original sub innerHTML, removes CTA visuals.
   // ───────────────────────────────────────────────────────────────────────────
-  TS.stopTileContentAlternator = function stopTileContentAlternator(cardEl) {
-    if (!cardEl) return;
+ TS.stopTileContentAlternator = function stopTileContentAlternator(cardEl) {
+  if (!cardEl) return;
 
-    // 1) Clear any running interval
-    const idRaw = cardEl.dataset.tsAltTimerId;
-    if (idRaw) {
-      const id = Number(idRaw);
-      if (!Number.isNaN(id)) {
-        try { window.clearInterval(id); } catch {}
-      }
+  // 1) Clear any running interval
+  const idRaw = cardEl.dataset.tsAltTimerId;
+  if (idRaw) {
+    const id = Number(idRaw);
+    if (!Number.isNaN(id)) {
+      try { window.clearInterval(id); } catch {}
     }
-    delete cardEl.dataset.tsAltTimerId;
+  }
+  delete cardEl.dataset.tsAltTimerId;
 
-    // 2) Restore original content (if we captured it)
-    try {
-      const sub = cardEl.querySelector('.tile-sub');
-      const orig = cardEl.dataset.tsAltOriginalHtml;
-      if (sub && orig != null) sub.innerHTML = orig;
-    } catch {}
-    delete cardEl.dataset.tsAltOriginalHtml;
+  // 2) Restore original content (if we captured it)
+  try {
+    const sub = cardEl.querySelector('.tile-sub');
+    const orig = cardEl.dataset.tsAltOriginalHtml;
+    if (sub && orig != null) sub.innerHTML = orig;
+  } catch {}
+  delete cardEl.dataset.tsAltOriginalHtml;
 
-    // 3) Remove attention visuals
-    const attn = cardEl.querySelector('.ts-badge-attn');
-    if (attn) attn.remove();
-    cardEl.classList.remove('tile--bg-ts-cta');
+  // 3) Remove attention visuals
+  const attn = cardEl.querySelector('.ts-badge-attn');
+  if (attn) attn.remove();
+  cardEl.classList.remove('tile--bg-ts-cta');
 
-    if (_canDebug(window.identity)) {
-      console.log('ALTERNATOR_STOP_CLEAN', { tile_ref: _tileRefFromCard(cardEl) });
-    }
-  };
+  // key change: include baseline fallback for logging
+  if (_canDebug(window.identity || window.baseline)) {
+    console.log('ALTERNATOR_STOP_CLEAN', { tile_ref: _tileRefFromCard(cardEl) });
+  }
+};
+
 })();
 
 
@@ -5554,14 +5586,65 @@ window.Timesheets = (function () {
     return digits;
   }
 function isTimesheetTestUser(subject) {
-  // subject may be a name string, an identity object, or a baseline object
-  const name = _candidateNameFrom(
-    typeof subject === 'object' ? subject : window.identity,
-    typeof subject === 'object' ? subject : window.baseline,
-    typeof subject === 'string' ? subject : ''
-  );
-  return _isAllowlistedName(name);
+  const cfg = window.CONFIG || {};
+  const safe = s => (s == null ? '' : String(s)).trim();
+
+  // Heuristics to detect what 'subject' looks like
+  const isBaselineLike = (o) => !!o && (o.tiles || o.candidate || o.candidateName);
+  const isIdentityLike = (o) => !!o && (o.msisdn || o.email || o.name || o.fullName || o.displayName);
+
+  // Try helper first, but fall back if it returns ''
+  let name = (typeof _candidateNameFrom === 'function')
+    ? _candidateNameFrom(
+        // identity-like
+        (isIdentityLike(subject) ? subject : window.identity),
+        // baseline-like
+        (isBaselineLike(subject) ? subject : window.baseline),
+        // best-guess raw display name
+        (typeof subject === 'string'
+          ? subject
+          : (window.identity && (window.identity.name || window.identity.fullName || window.identity.displayName)) || ''
+        )
+      )
+    : '';
+
+  if (!safe(name)) {
+    // Fallbacks in priority order
+    if (isBaselineLike(subject)) {
+      name = subject.candidateName || '';
+      if (!safe(name) && subject.candidate) {
+        name = `${subject.candidate.surname || subject.candidate.lastName || ''} ${subject.candidate.firstName || subject.candidate.firstname || ''}`;
+      }
+    }
+    if (!safe(name)) {
+      name =
+        (window.baseline && window.baseline.candidateName) ||
+        ((window.baseline && window.baseline.candidate)
+          ? `${window.baseline.candidate.surname || ''} ${window.baseline.candidate.firstName || ''}` : '') ||
+        (window.identity && (window.identity.name || window.identity.fullName || window.identity.displayName)) ||
+        '';
+    }
+  }
+
+  // Allowlist decision
+  const allow = (typeof _isAllowlistedName === 'function') ? _isAllowlistedName(name) : false;
+
+  // Optional debug: show exactly what was compared
+  if (cfg.TIMESHEET_DEBUG === true) {
+    const normalize = (s) => (typeof _normName === 'function'
+      ? _normName(s)
+      : String(s || '').toLowerCase().replace(/\s+/g, ' ').trim());
+    console.log('ALLOWLIST_CHECK', {
+      input: name,
+      normalized: normalize(name),
+      matches: ['kier arthur', 'arthur kier'],
+      result: allow
+    });
+  }
+
+  return allow;
 }
+
 
 function isTimesheetFeatureEnabled(subject) {
   if (!CFG.TIMESHEET_FEATURE_ENABLED) return false;
@@ -5833,7 +5916,7 @@ function onTileClickTimesheetBranch(tile, identity, baseline) {
       if (cfg.TIMESHEET_DEBUG === true) return true;
       const tm = !!cfg.TIMESHEET_TESTMODE;
       const allow = (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function')
-        ? window.Timesheets.isTestModeAllowed(identity)
+        ? window.Timesheets.isTestModeAllowed(identity || window.baseline)
         : false;
       return tm && allow;
     } catch { return false; }
@@ -5850,7 +5933,7 @@ function onTileClickTimesheetBranch(tile, identity, baseline) {
 
   const featureOn = !!isTimesheetFeatureEnabled(baseline || identity || '');
   const testModeAllowed = (window.Timesheets && typeof window.Timesheets.isTestModeAllowed === 'function')
-    ? window.Timesheets.isTestModeAllowed(identity)
+    ? window.Timesheets.isTestModeAllowed(baseline || identity)
     : true;
 
   if (!featureOn) {
@@ -5882,41 +5965,107 @@ function onTileClickTimesheetBranch(tile, identity, baseline) {
     }
   } catch (_) {}
 
-  if (tile?.timesheet_authorised === true) {
+  // ---- NEW: broker UK-time gate (async) ------------------------------------
+  // We handle the click asynchronously, then always return true so the
+  // tile click doesn’t fall through to anything else.
+  (async () => {
+    // Build endpoint (supports CONFIG.BROKER_BASE_URL, else relative)
+    const base = (window.CONFIG && window.CONFIG.BROKER_BASE_URL) || '';
+    const url  = base + '/time/uk-check';
+
+    const payload = {
+      phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      phone_epoch_ms: Date.now()
+    };
+
+    let tzOK = false;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        // omit credentials by default; add `credentials: 'include'` if your
+        // broker requires cookies
+        body: JSON.stringify(payload)
+      });
+      const json = await res.json().catch(() => null);
+
+      tzOK = !!(json && json.valid === true);
+
+      if (!tzOK) {
+        const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
+        if (typeof window.showToast === 'function') window.showToast(msg);
+        else alert(msg);
+
+        if (_canDebugClick()) {
+          console.log('TILE_CLICK_ROUTE', {
+            tile_ref: _tileRefFromTile(tile),
+            booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+            route: 'no_action',
+            why: 'tz_gate_failed',
+            broker_reply: json
+          });
+        }
+        return; // stop — don’t open any modal
+      }
+    } catch (e) {
+      const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
+      if (typeof window.showToast === 'function') window.showToast(msg);
+      else alert(msg);
+
+      if (_canDebugClick()) {
+        console.log('TILE_CLICK_ROUTE', {
+          tile_ref: _tileRefFromTile(tile),
+          booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+          route: 'no_action',
+          why: 'tz_gate_error',
+          error: String((e && e.message) || e)
+        });
+      }
+      return; // stop — don’t open any modal
+    }
+    // ------------------------------------------------------------------------
+
+    // If we’re here, device timezone is verified OK — continue as before.
+
+    if (tile?.timesheet_authorised === true) {
+      if (_canDebugClick()) {
+        console.log('TILE_CLICK_ROUTE', {
+          tile_ref: _tileRefFromTile(tile),
+          booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+          route: 'open_submitted_modal'
+        });
+      }
+      openSubmittedTimesheetModal(tile, identity, baseline);
+      return;
+    }
+
+    if (tile?.timesheet_eligible === true) {
+      if (_canDebugClick()) {
+        console.log('TILE_CLICK_ROUTE', {
+          tile_ref: _tileRefFromTile(tile),
+          booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
+          route: 'open_wizard'
+        });
+      }
+      startTimesheetWizard(tile, identity, baseline);
+      return;
+    }
+
+    // Not eligible; do nothing special (preserves existing behaviour)
     if (_canDebugClick()) {
       console.log('TILE_CLICK_ROUTE', {
         tile_ref: _tileRefFromTile(tile),
         booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-        route: 'open_submitted_modal'
+        route: 'no_action',
+        why: (tile?.timesheet_eligible !== true) ? 'not_eligible' : 'unknown'
       });
     }
-    openSubmittedTimesheetModal(tile, identity, baseline);
-    return true;
-  }
+  })();
 
-  if (tile?.timesheet_eligible === true) {
-    if (_canDebugClick()) {
-      console.log('TILE_CLICK_ROUTE', {
-        tile_ref: _tileRefFromTile(tile),
-        booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-        route: 'open_wizard'
-      });
-    }
-    startTimesheetWizard(tile, identity, baseline);
-    return true;
-  }
-
-  // Not eligible; do nothing special (preserves existing behaviour)
-  if (_canDebugClick()) {
-    console.log('TILE_CLICK_ROUTE', {
-      tile_ref: _tileRefFromTile(tile),
-      booking_id: tile?.booking_id || tile?.timesheet_booking_id || null,
-      route: 'no_action',
-      why: (tile?.timesheet_eligible !== true) ? 'not_eligible' : 'unknown'
-    });
-  }
-  return false;
+  // We’ve handled the click (asynchronously). Prevent any default tile behavior.
+  return true;
 }
+
 
 
   /* ──────────────────────────────────────────────────────────────────────────
@@ -6099,14 +6248,31 @@ async function startTimesheetWizard(tile, identity, baseline) {
     const M = total % 60;
     return { H, M };
   }
-  function parseTimesFromLabel(label) {
-    const s = String(label || '').replace(/\s+/g, ' ').trim();
-    const m = s.match(/(\d{1,2}):(\d{2})\s*[–-]\s*(\d{1,2}):(\d{2})/);
-    if (!m) return null;
+ function parseTimesFromLabel(label) {
+  const s = String(label || '').replace(/\s+/g, ' ').trim();
+
+  // 1) Prefer explicit times in the label, e.g. "07:30–20:00" or "19:30-08:00"
+  //    (allow both hyphen and en–dash; also accept "7.30" style just in case)
+  const m = s.match(/(\d{1,2})[:.](\d{2})\s*[–-]\s*(\d{1,2})[:.](\d{2})/);
+  if (m) {
     const sH = parseInt(m[1], 10), sM = parseInt(m[2], 10);
     const eH = parseInt(m[3], 10), eM = parseInt(m[4], 10);
     return { start: `${hhmm(sH)}:${hhmm(sM)}`, end: `${hhmm(eH)}:${hhmm(eM)}` };
   }
+
+  // 2) Fallbacks by shift label
+  const U = s.toUpperCase();
+  if (/\bLONG\s*DAY\b/.test(U)) {
+    return { start: '07:30', end: '20:00' };
+  }
+  if (/\bNIGHT\b/.test(U)) {
+    return { start: '19:30', end: '08:00' };
+  }
+
+  // 3) Unknown/ambiguous (e.g. "LONG DAY/NIGHT") → no guess
+  return null;
+}
+
   function snap5(val) {
     // Accepts "HH:MM", returns snapped "HH:MM" (nearest 5)
     const [H, M] = String(val || '00:00').split(':').map(v => parseInt(v || '0', 10));
@@ -6147,16 +6313,59 @@ async function startTimesheetWizard(tile, identity, baseline) {
       oninput: e => { state.ward = e.target.value; }
     });
 
-    const mkTimeInput = (label, key) => {
-      const input = _el('input', {
-        type: 'time',
-        step: '300', // 5-minute increments
-        value: state[key] || '',
-        oninput: e => { state[key] = e.target.value; refreshWarnings(); },
-        onblur:  e => { state[key] = snap5(e.target.value); e.target.value = state[key]; refreshWarnings(); }
-      });
-      return [_el('label', { style: { alignSelf: 'center' } }, label), input];
-    };
+   const mkTimeInput = (label, key) => {
+  let isSnapping = false;
+
+  const input = _el('input', {
+    type: 'time',
+    step: '300', // 5-minute increments
+    value: state[key] || '',
+
+    // While the user types/uses the native wheel, keep state in sync and
+    // snap once the minutes look "complete" (HH:MM with two minute digits).
+    oninput: e => {
+      if (isSnapping) return;
+      const raw = e.target.value || '';
+      state[key] = raw;
+
+      const parts = raw.split(':');
+      const minutes = parts[1];
+      if (minutes && minutes.length === 2) {
+        const snapped = snap5(raw);
+        if (snapped !== raw) {
+          isSnapping = true;
+          e.target.value = snapped;
+          state[key] = snapped;
+          isSnapping = false;
+        }
+      }
+      refreshWarnings();
+    },
+
+    // Android/iOS reliably fire 'change' when the picker closes — hard snap here.
+    onchange: e => {
+      const snapped = snap5(e.target.value || '');
+      isSnapping = true;
+      e.target.value = snapped;
+      state[key] = snapped;
+      isSnapping = false;
+      refreshWarnings();
+    },
+
+    // Final safety net if neither of the above caught it.
+    onblur: e => {
+      const snapped = snap5(e.target.value || '');
+      isSnapping = true;
+      e.target.value = snapped;
+      state[key] = snapped;
+      isSnapping = false;
+      refreshWarnings();
+    }
+  });
+
+  return [_el('label', { style: { alignSelf: 'center' } }, label), input];
+};
+
 
     const [ls1, inpWs] = mkTimeInput('Worked Start (HH:MM)', 'worked_start_hhmm');
     const [ls2, inpWe] = mkTimeInput('Worked End (HH:MM)',   'worked_end_hhmm');
@@ -6217,53 +6426,61 @@ async function startTimesheetWizard(tile, identity, baseline) {
     );
 
     c.append(form, warnBox, btns);
+function refreshWarnings() {
+  // Need all four times before we can evaluate
+  if (!state.worked_start_hhmm || !state.worked_end_hhmm ||
+      !state.break_start_hhmm  || !state.break_end_hhmm) return;
 
-    function refreshWarnings() {
-      // Compute break minutes and equality-to-11.5h check
-      if (!state.worked_start_hhmm || !state.worked_end_hhmm || !state.break_start_hhmm || !state.break_end_hhmm) return;
+  // Snap to 5-minute grid first (keeps behavior consistent with UI)
+  const ws = snap5(state.worked_start_hhmm);
+  const we = snap5(state.worked_end_hhmm);
+  const bs = snap5(state.break_start_hhmm);
+  const be = snap5(state.break_end_hhmm);
 
-      const ws = _isoFromYmdHHMM(state.ymd, snap5(state.worked_start_hhmm));
-      const we = _isoFromYmdHHMM(state.ymd, snap5(state.worked_end_hhmm));
-      const bs = _isoFromYmdHHMM(state.ymd, snap5(state.break_start_hhmm));
-      const be = _isoFromYmdHHMM(state.ymd, snap5(state.break_end_hhmm));
+  // Minutes (handles cross-midnight internally)
+  const totalMins = minutesBetweenHHMM(state.ymd, ws, we);
+  const breakMins = minutesBetweenHHMM(state.ymd, bs, be);
+  if (totalMins == null || breakMins == null) return;
 
-      const totalMins = _minutesBetween(ws, we);
-      const breakMins = _minutesBetween(bs, be);
-      const netMins = Math.max(0, totalMins - breakMins);
-      const { H: netH, M: netMin } = minutesToHoursAndMins(netMins);
+  const netMins = Math.max(0, totalMins - breakMins);
+  const { H: netH, M: netMin } = minutesToHoursAndMins(netMins);
 
-      // Break != 60 → warn + require ack
-      if (breakMins !== 60) {
-        brWarn.style.display = '';
-        brAck.style.display = 'flex';
-        brWarn.textContent = `Break is normally 60 minutes; you have ${breakMins} minutes. Please tick to acknowledge you are correct and then continue.`;
-      } else {
-        brWarn.style.display = 'none';
-        brAck.style.display = 'none';
-        brAck.querySelector('input').checked = false;
-      }
+  // Break != 60 → warn + require ack
+  if (breakMins !== 60) {
+    brWarn.style.display = '';
+    brAck.style.display = 'flex';
+    brWarn.textContent =
+      `Break is normally 60 minutes; you have ${breakMins} minutes. ` +
+      `Please tick to acknowledge you are correct and then continue.`;
+  } else {
+    brWarn.style.display = 'none';
+    brAck.style.display = 'none';
+    brAck.querySelector('input').checked = false;
+  }
 
-      // Net must equal 690 (11.5h) → warn + require ack
-      if (netMins !== 690) {
-        eqWarn.style.display = '';
-        eqAck.style.display = 'flex';
-        eqWarn.textContent = `Shifts are normally 11.5 hours long; you have ${netH} hours ${netMin} mins. Please tick to acknowledge you are correct and then continue.`;
-      } else {
-        eqWarn.style.display = 'none';
-        eqAck.style.display = 'none';
-        eqAck.querySelector('input').checked = false;
-      }
+  // Net must equal 690 (11.5h) → warn + require ack
+  if (netMins !== 690) {
+    eqWarn.style.display = '';
+    eqAck.style.display = 'flex';
+    eqWarn.textContent =
+      `Shifts are normally 11.5 hours long; you have ${netH} hours ${netMin} mins. ` +
+      `Please tick to acknowledge you are correct and then continue.`;
+  } else {
+    eqWarn.style.display = 'none';
+    eqAck.style.display = 'none';
+    eqAck.querySelector('input').checked = false;
+  }
 
-      // Disable/enable Next based on required acknowledgements
-      const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
-      if (nextBtn) {
-        const needsBreakAck = brWarn.style.display !== 'none';
-        const needsEqAck    = eqWarn.style.display !== 'none';
-        const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
-        const eqChecked = needsEqAck ? eqAck.querySelector('input').checked : true;
-        nextBtn.disabled = !(brChecked && eqChecked);
-      }
-    }
+  // Disable/enable Next based on required acknowledgements
+  const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
+  if (nextBtn) {
+    const needsBreakAck = brWarn.style.display !== 'none';
+    const needsEqAck    = eqWarn.style.display   !== 'none';
+    const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
+    const eqChecked = needsEqAck    ? eqAck.querySelector('input').checked : true;
+    nextBtn.disabled = !(brChecked && eqChecked);
+  }
+}
 
     // initial warnings evaluation
     refreshWarnings();
@@ -6318,16 +6535,42 @@ async function startTimesheetWizard(tile, identity, baseline) {
   const step3 = () => {
     ov.contents.innerHTML = '';
 
-    const wsISO = _isoFromYmdHHMM(state.ymd, state.worked_start_hhmm);
-    const weISO = _isoFromYmdHHMM(state.ymd, state.worked_end_hhmm);
-    const bsISO = _isoFromYmdHHMM(state.ymd, state.break_start_hhmm);
-    const beISO = _isoFromYmdHHMM(state.ymd, state.break_end_hhmm);
-    const bm = _minutesBetween(bsISO, beISO);
-    const net = Math.max(0, _minutesBetween(wsISO, weISO) - bm);
-    const { H: netH, M: netMin } = minutesToHoursAndMins(net);
+   // ✅ new (handles cross-midnight and matches UI’s 5-min snapping)
+const ws = snap5(state.worked_start_hhmm);
+const we = snap5(state.worked_end_hhmm);
+const bs = snap5(state.break_start_hhmm);
+const be = snap5(state.break_end_hhmm);
 
-    const nameIn  = _el('input', { type: 'text', placeholder: 'Authoriser full name', oninput: e => (state.auth_name = e.target.value) });
-    const titleIn = _el('input', { type: 'text', placeholder: 'Authoriser job title', oninput: e => (state.auth_job_title = e.target.value) });
+const total = minutesBetweenHHMM(state.ymd, ws, we);
+const bm    = minutesBetweenHHMM(state.ymd, bs, be);
+const net   = Math.max(0, total - bm);
+const { H: netH, M: netMin } = minutesToHoursAndMins(net);
+
+// Reusable style for larger, touch-friendly inputs
+const authInputStyle = {
+  width: '100%',
+  fontSize: '18px',        // ≥16px prevents iOS zoom-on-focus
+  lineHeight: '24px',
+  padding: '12px 14px',
+  height: '48px',
+  boxSizing: 'border-box',
+  borderRadius: '10px',
+  border: '1px solid #c9c9c9',
+};
+
+const nameIn  = _el('input', {
+  type: 'text',
+  placeholder: 'Authoriser full name',
+  style: authInputStyle,
+  oninput: e => (state.auth_name = e.target.value)
+});
+
+const titleIn = _el('input', {
+  type: 'text',
+  placeholder: 'Authoriser job title',
+  style: authInputStyle,
+  oninput: e => (state.auth_job_title = e.target.value)
+});
 
     const pad = _buildSignaturePad();
 
@@ -6352,109 +6595,177 @@ async function startTimesheetWizard(tile, identity, baseline) {
         const cancelBtn = _el('button', { type: 'button' }, 'Cancel');
         cancelBtn.onclick = () => document.body.removeChild(ov.root);
 
-        const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
-        submitBtn.onclick = async () => {
-          if (!state.auth_name || !state.auth_job_title) {
-            alert('Please enter authoriser name and job title.');
-            return;
-          }
-          if (pad.isEmpty()) {
-            alert('Authoriser signature is required.');
-            return;
-          }
+       const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
+submitBtn.onclick = async () => {
+  // single-click guard
+  if (submitBtn.dataset.busy === '1') return;
+  submitBtn.dataset.busy = '1';
+  submitBtn.disabled = true;
+  submitBtn.textContent = 'Please wait…';
 
-          // 1) Presign
-          const pres = await presignTimesheet({
-            occupant_key: deriveOccupantKey(baseline),
-            date_start_local: state.ymd,
-            hospital: state.hospital,
-            ward: state.ward,
-            job_title: state.job_title,
-            shift_label: state.shift_label,
-            scheduled_start_hhmm: state.scheduled_start_hhmm,
-            scheduled_end_hhmm: state.scheduled_end_hhmm
-          });
+  if (!state.auth_name || !state.auth_job_title) {
+    alert('Please enter authoriser name and job title.');
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+    return;
+  }
+  if (pad.isEmpty()) {
+    alert('Authoriser signature is required.');
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+    return;
+  }
+  // 0) UK timezone check (second gate just before submitting)
+  try {
+    const base = (window.CONFIG && window.CONFIG.BROKER_BASE_URL) || '';
+    const url  = base + '/time/uk-check';
+    const payload = {
+      phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+      phone_epoch_ms: Date.now()
+    };
+    const resp = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    const json = await resp.json().catch(() => null);
+    if (!json || json.valid !== true) {
+      const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
+      if (typeof window.showToast === 'function') window.showToast(msg); else alert(msg);
+      submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+      return; // don’t proceed to presign/submit
+    }
+  } catch (e) {
+    const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
+    if (typeof window.showToast === 'function') window.showToast(msg); else alert(msg);
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+    return; // fail closed
+  }
+  // 1) Presign
+  const pres = await presignTimesheet({
+    occupant_key: deriveOccupantKey(baseline),
+    date_start_local: state.ymd,
+    hospital: state.hospital,
+    ward: state.ward,
+    job_title: state.job_title,
+    shift_label: state.shift_label,
+    scheduled_start_hhmm: state.scheduled_start_hhmm,
+    scheduled_end_hhmm: state.scheduled_end_hhmm
+  });
 
-          if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres); return; }
-          state.presign = pres.json;
+  if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres);
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+    return; }
+  state.presign = pres.json;
 
-          // 2) Upload signatures
-          const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
-          if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp); return; }
-          const authBlob = await pad.toPNGBlob();
-          const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
-          if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp); return; }
+  // 2) Upload signatures
+  const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
+  if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp);
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+    return; }
+  const authBlob = await pad.toPNGBlob();
+  const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
+  if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp);
+    submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+    return; }
 
-          // 3) Submit
-          const payload = {
-            booking_id: state.presign.booking_id,
-            scheduled_start_iso: state.scheduled_start_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_start_hhmm) : null,
-            scheduled_end_iso: state.scheduled_end_hhmm ? _isoFromYmdHHMM(state.ymd, state.scheduled_end_hhmm) : null,
-            worked_start_iso: wsISO,
-            worked_end_iso: weISO,
-            break_start_iso: bsISO,
-            break_end_iso: beISO,
-            auth_name: state.auth_name,
-            auth_job_title: state.auth_job_title,
-            nurse_key: state.presign.upload.nurse.key,
-            authoriser_key: state.presign.upload.authoriser.key,
-            idempotency_key: crypto.randomUUID(),
-            client_user_agent: navigator.userAgent,
-            client_timestamp: new Date().toISOString(),
-            occupant_key: deriveOccupantKey(baseline),
-            hospital: state.hospital,
-            ward: state.ward,
-            job_title: state.job_title,
-            shift_label: state.shift_label
-          };
+  // 3) Submit
+  // Build ISO start/end that handle cross-midnight (end <= start ⇒ +1 day)
+  function isoPairFromHHMM(ymd, startHHMM, endHHMM) {
+    if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
+    const [y, m, d]   = String(ymd).split('-').map(Number);
+    const [sH, sM]    = String(startHHMM).split(':').map(n => parseInt(n, 10));
+    const [eH, eM]    = String(endHHMM).split(':').map(n => parseInt(n, 10));
+    const startLocal  = new Date(y, m - 1, d, sH, sM, 0, 0);
+    const endLocal    = new Date(y, m - 1, d, eH, eM, 0, 0);
+    if (endLocal <= startLocal) endLocal.setDate(endLocal.getDate() + 1);
+    return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
+  }
 
-          const statusEl = ensureTsStatusBox(ov.card);
+  // Use snapped HH:MM to match UI
+  const ws = snap5(state.worked_start_hhmm);
+  const we = snap5(state.worked_end_hhmm);
+  const bs = snap5(state.break_start_hhmm);
+  const be = snap5(state.break_end_hhmm);
 
-          // Disable while submitting / retrying
-          submitBtn.disabled = true;
+  const workedISO = isoPairFromHHMM(state.ymd, ws, we);
+  const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
 
-          const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
-            maxAttempts: 5,
-            updateStatus: (attempt, max, phase) => {
-              if (phase === 'submit') {
-                setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
-                submitBtn.textContent = `Submitting… (${attempt}/${max})`;
-              } else if (phase === 'retry') {
-                setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
-                submitBtn.textContent = `Retrying… (${attempt}/${max})`;
-              } else if (phase === 'waiting') {
-                setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
-              }
-            },
-            overlayRoot: ov.root
-          });
+  // Scheduled (if present) should also respect cross-midnight
+  let schedISO = { start_iso: null, end_iso: null };
+  if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
+    const sS = snap5(state.scheduled_start_hhmm);
+    const sE = snap5(state.scheduled_end_hhmm);
+    schedISO = isoPairFromHHMM(state.ymd, sS, sE);
+  }
 
-          // Re-enable if still visible
-          if (document.body.contains(ov.root)) {
-            submitBtn.disabled = false;
-            submitBtn.textContent = 'Authorise Timesheet';
-          }
+  const payload = {
+    booking_id: state.presign.booking_id,
+    scheduled_start_iso: schedISO.start_iso,
+    scheduled_end_iso:   schedISO.end_iso,
+    worked_start_iso:    workedISO.start_iso,
+    worked_end_iso:      workedISO.end_iso,
+    break_start_iso:     breakISO.start_iso,
+    break_end_iso:       breakISO.end_iso,
+    auth_name: state.auth_name,
+    auth_job_title: state.auth_job_title,
+    nurse_key: state.presign.upload.nurse.key,
+    authoriser_key: state.presign.upload.authoriser.key,
+    idempotency_key: crypto.randomUUID(),
+    client_user_agent: navigator.userAgent,
+    client_timestamp: new Date().toISOString(),
+    occupant_key: deriveOccupantKey(baseline),
+    hospital: state.hospital,
+    ward: state.ward,
+    job_title: state.job_title,
+    shift_label: state.shift_label
+  };
 
-          if (!ok) {
-            if (!cancelled) {
-              setTsStatus(statusEl,
-                "Please complete a paper timesheet as there are network problems. " +
-                "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
-              );
-              _debugOrToast && _debugOrToast('Submit failed', sub);
-            }
-            return;
-          }
+  const statusEl = ensureTsStatusBox(ov.card);
 
-          // Success: show big tick then close + refresh (handled in _successTick)
-          _successTick(ov.root);
-        };
+  // Already disabled above; just update label for clarity
+  submitBtn.textContent = 'Submitting…';
 
-        const right = _el('div', {});
-        right.append(cancelBtn, submitBtn);
-        return right;
-      })()
-    );
+  const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
+    maxAttempts: 5,
+    updateStatus: (attempt, max, phase) => {
+      if (phase === 'submit') {
+        setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
+        submitBtn.textContent = `Submitting… (${attempt}/${max})`;
+      } else if (phase === 'retry') {
+        setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
+        submitBtn.textContent = `Retrying… (${attempt}/${max})`;
+      } else if (phase === 'waiting') {
+        setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
+      }
+    },
+    overlayRoot: ov.root
+  });
+
+  // Re-enable if still visible
+  if (document.body.contains(ov.root)) {
+    submitBtn.disabled = false;
+    delete submitBtn.dataset.busy;
+    submitBtn.textContent = 'Authorise Timesheet';
+  }
+
+  if (!ok) {
+    if (!cancelled) {
+      setTsStatus(statusEl,
+        "Please complete a paper timesheet as there are network problems. " +
+        "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
+      );
+      _debugOrToast && _debugOrToast('Submit failed', sub);
+    }
+    return;
+  }
+
+  // Success: show big tick then close + refresh (handled in _successTick)
+  _successTick(ov.root);
+};
+
+const right = _el('div', {});
+right.append(cancelBtn, submitBtn);
+return right;
+
 
     ov.contents.append(
       linesWrap,
@@ -6472,6 +6783,56 @@ async function startTimesheetWizard(tile, identity, baseline) {
   step1();
 }
 
+// minutesBetweenHHMM('YYYY-MM-DD', 'HH:MM', 'HH:MM') -> integer minutes
+// minutesBetweenHHMM('YYYY-MM-DD', 'HH:MM', 'HH:MM') -> integer minutes
+// Handles cross-midnight and the UK autumn DST fallback hour (01:00–01:59 repeats).
+function minutesBetweenHHMM(ymd, startHHMM, endHHMM) {
+  const trim = (s) => String(s || '').trim();
+  const parseHHMM = (s) => {
+    const m = trim(s).match(/^(\d{1,2}):(\d{2})$/);
+    if (!m) return null;
+    const h = parseInt(m[1], 10), min = parseInt(m[2], 10);
+    if (h < 0 || h > 23 || min < 0 || min > 59) return null;
+    return { h, min };
+  };
+
+  const t1 = parseHHMM(startHHMM);
+  const t2 = parseHHMM(endHHMM);
+  if (!ymd || !t1 || !t2) return null;
+
+  const [Y, M, D] = String(ymd).split('-').map((n) => parseInt(n, 10));
+  if (!Number.isFinite(Y) || !Number.isFinite(M) || !Number.isFinite(D)) return null;
+
+  // Minutes since midnight helpers
+  const toMins = (t) => t.h * 60 + t.min;
+  const m1 = toMins(t1);
+  const m2 = toMins(t2);
+
+  // Detect if this date is the UK autumn clock-back night (offset increases by 60 mins)
+  const off0030 = new Date(Y, M - 1, D, 0, 30).getTimezoneOffset();
+  const off0300 = new Date(Y, M - 1, D, 3, 0).getTimezoneOffset();
+  const isFallbackNight = (off0300 - off0030) === 60;
+
+  // Special-case: both times in the ambiguous 01:00–01:59 block AND end < start.
+  // That pattern means the interval crosses the 02:00→01:00 fallback moment.
+  if (isFallbackNight &&
+      m1 >= 60 && m1 < 120 &&
+      m2 >= 60 && m2 < 120 &&
+      m2 < m1) {
+    // Treat as “first 01:xx → fallback → second 01:yy”.
+    // Effective duration = (60 - (start minutes past 01:00)) + (end minutes past 01:00)
+    // Example: 01:50 → 01:10 => (60-50) + 10 = 20 mins
+    const past01_start = m1 - 60;
+    const past01_end   = m2 - 60;
+    return (60 - past01_start) + past01_end;
+  }
+
+  // Default behavior: local Date math + cross-midnight when end < start
+  const start = new Date(Y, M - 1, D, t1.h, t1.min, 0, 0);
+  const end   = new Date(Y, M - 1, D, t2.h, t2.min, 0, 0);
+  if (end < start) end.setDate(end.getDate() + 1);
+  return Math.round((end - start) / 60000);
+}
 
   function _successTick(overlayRoot) {
   // Mark this overlay so closing it will trigger a server refresh
