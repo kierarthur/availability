@@ -207,7 +207,6 @@ function rememberEmailLocal(email) {
 function getRememberedEmail() {
   try { return localStorage.getItem(LAST_EMAIL_KEY) || ''; } catch { return ''; }
 }
-
 // ===== Overlay config (dismiss/blocks-other) =====
 const OVERLAY_CONFIG = {
   pastOverlay:     { dismissible: true,  blocking: false },
@@ -215,7 +214,7 @@ const OVERLAY_CONFIG = {
   welcomeOverlay:  { dismissible: false, blocking: true  }, // MUST press “Got it”
   // Login is truly blocking & non-dismissable
   loginOverlay:    { dismissible: false, blocking: true  },
-  forgotOverlay:   { dismissible: true,  blocking: false },
+  forgotOverlay:   { dismissible: true,  blocking: true  }, // FIX: make Forgot blocking
   resetOverlay:    { dismissible: false, blocking: true  }, // MUST complete/reset flow
   emergencyOverlay:{ dismissible: true,  blocking: false }, // new EMERGENCY flow wizard
   alertOverlay:    { dismissible: false, blocking: true  }  // single-OK blocking alert
