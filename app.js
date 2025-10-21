@@ -6275,64 +6275,53 @@ async function startTimesheetWizard(tile, identity, baseline) {
     const M = total % 60;
     return { H, M };
   }
- function parseTimesFromLabel(label) {
-  const s = String(label || '').replace(/\s+/g, ' ').trim();
+  function parseTimesFromLabel(label) {
+    const s = String(label || '').replace(/\s+/g, ' ').trim();
 
-  // 1) Prefer explicit times in the label, e.g. "07:30–20:00" or "19:30-08:00"
-  //    (allow both hyphen and en–dash; also accept "7.30" style just in case)
-  const m = s.match(/(\d{1,2})[:.](\d{2})\s*[–-]\s*(\d{1,2})[:.](\d{2})/);
-  if (m) {
-    const sH = parseInt(m[1], 10), sM = parseInt(m[2], 10);
-    const eH = parseInt(m[3], 10), eM = parseInt(m[4], 10);
-    return { start: `${hhmm(sH)}:${hhmm(sM)}`, end: `${hhmm(eH)}:${hhmm(eM)}` };
-  }
+    const m = s.match(/(\d{1,2})[:.](\d{2})\s*[–-]\s*(\d{1,2})[:.](\d{2})/);
+    if (m) {
+      const sH = parseInt(m[1], 10), sM = parseInt(m[2], 10);
+      const eH = parseInt(m[3], 10), eM = parseInt(m[4], 10);
+      return { start: `${hhmm(sH)}:${hhmm(sM)}`, end: `${hhmm(eH)}:${hhmm(eM)}` };
+    }
 
-  // 2) Fallbacks by shift label
-  const U = s.toUpperCase();
-  if (/\bLONG\s*DAY\b/.test(U)) {
-    return { start: '07:30', end: '20:00' };
-  }
-  if (/\bNIGHT\b/.test(U)) {
-    return { start: '19:30', end: '08:00' };
-  }
+    const U = s.toUpperCase();
+    if (/\bLONG\s*DAY\b/.test(U)) return { start: '07:30', end: '20:00' };
+    if (/\bNIGHT\b/.test(U))     return { start: '19:30', end: '08:00' };
 
-  // 3) Unknown/ambiguous (e.g. "LONG DAY/NIGHT") → no guess
-  return null;
-}
+    return null;
+  }
 
   function snap5(val) {
-    // Accepts "HH:MM", returns snapped "HH:MM" (nearest 5)
     const [H, M] = String(val || '00:00').split(':').map(v => parseInt(v || '0', 10));
     const snapped = Math.round(M / 5) * 5;
-    const mm = Math.min(55, Math.max(0, snapped)); // clamp
+    const mm = Math.min(55, Math.max(0, snapped));
     return `${hhmm(isNaN(H) ? 0 : H)}:${hhmm(mm)}`;
   }
   function ensureSeedTimes() {
-  // Seed worked from scheduled or label, as before
-  if (!state.worked_start_hhmm || !state.worked_end_hhmm) {
-    if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
-      state.worked_start_hhmm = snap5(state.scheduled_start_hhmm);
-      state.worked_end_hhmm   = snap5(state.scheduled_end_hhmm);
-    } else {
+    if (!state.worked_start_hhmm || !state.worked_end_hhmm) {
+      if (state.scheduled_start_hhmm && state.scheduled_end_hhmm) {
+        state.worked_start_hhmm = snap5(state.scheduled_start_hhmm);
+        state.worked_end_hhmm   = snap5(state.scheduled_end_hhmm);
+      } else {
+        const parsed = parseTimesFromLabel(state.shift_label);
+        if (parsed) {
+          state.worked_start_hhmm = snap5(parsed.start);
+          state.worked_end_hhmm   = snap5(parsed.end);
+        }
+      }
+    }
+
+    if (!state.scheduled_start_hhmm || !state.scheduled_end_hhmm) {
       const parsed = parseTimesFromLabel(state.shift_label);
-      if (parsed) {
-        state.worked_start_hhmm = snap5(parsed.start);
-        state.worked_end_hhmm   = snap5(parsed.end);
+      if (!state.scheduled_start_hhmm) {
+        state.scheduled_start_hhmm = state.worked_start_hhmm || (parsed ? snap5(parsed.start) : '');
+      }
+      if (!state.scheduled_end_hhmm) {
+        state.scheduled_end_hhmm = state.worked_end_hhmm || (parsed ? snap5(parsed.end) : '');
       }
     }
   }
-
-  // NEW: ensure scheduled exists too (fallback to worked or parsed)
-  if (!state.scheduled_start_hhmm || !state.scheduled_end_hhmm) {
-    const parsed = parseTimesFromLabel(state.shift_label);
-    if (!state.scheduled_start_hhmm) {
-      state.scheduled_start_hhmm = state.worked_start_hhmm || (parsed ? snap5(parsed.start) : '');
-    }
-    if (!state.scheduled_end_hhmm) {
-      state.scheduled_end_hhmm = state.worked_end_hhmm || (parsed ? snap5(parsed.end) : '');
-    }
-  }
-}
 
   // Step 1 — Hours & Break
   const step1 = () => {
@@ -6341,7 +6330,6 @@ async function startTimesheetWizard(tile, identity, baseline) {
     const c = ov.contents;
     c.innerHTML = '';
 
-    // Grid layout with alignment + editable Ward
     const form = _el('div', { style: { display: 'grid', gap: '12px', gridTemplateColumns: 'max-content 1fr' } });
 
     const wardInput = _el('input', {
@@ -6351,59 +6339,38 @@ async function startTimesheetWizard(tile, identity, baseline) {
       oninput: e => { state.ward = e.target.value; }
     });
 
-   const mkTimeInput = (label, key) => {
-  let isSnapping = false;
-
-  const input = _el('input', {
-    type: 'time',
-    step: '300', // 5-minute increments
-    value: state[key] || '',
-
-    // While the user types/uses the native wheel, keep state in sync and
-    // snap once the minutes look "complete" (HH:MM with two minute digits).
-    oninput: e => {
-      if (isSnapping) return;
-      const raw = e.target.value || '';
-      state[key] = raw;
-
-      const parts = raw.split(':');
-      const minutes = parts[1];
-      if (minutes && minutes.length === 2) {
-        const snapped = snap5(raw);
-        if (snapped !== raw) {
-          isSnapping = true;
-          e.target.value = snapped;
-          state[key] = snapped;
-          isSnapping = false;
+    const mkTimeInput = (label, key) => {
+      let isSnapping = false;
+      const input = _el('input', {
+        type: 'time',
+        step: '300',
+        value: state[key] || '',
+        oninput: e => {
+          if (isSnapping) return;
+          const raw = e.target.value || '';
+          state[key] = raw;
+          const parts = raw.split(':'); const minutes = parts[1];
+          if (minutes && minutes.length === 2) {
+            const snapped = snap5(raw);
+            if (snapped !== raw) {
+              isSnapping = true; e.target.value = snapped; state[key] = snapped; isSnapping = false;
+            }
+          }
+          refreshWarnings();
+        },
+        onchange: e => {
+          const snapped = snap5(e.target.value || '');
+          isSnapping = true; e.target.value = snapped; state[key] = snapped; isSnapping = false;
+          refreshWarnings();
+        },
+        onblur: e => {
+          const snapped = snap5(e.target.value || '');
+          isSnapping = true; e.target.value = snapped; state[key] = snapped; isSnapping = false;
+          refreshWarnings();
         }
-      }
-      refreshWarnings();
-    },
-
-    // Android/iOS reliably fire 'change' when the picker closes — hard snap here.
-    onchange: e => {
-      const snapped = snap5(e.target.value || '');
-      isSnapping = true;
-      e.target.value = snapped;
-      state[key] = snapped;
-      isSnapping = false;
-      refreshWarnings();
-    },
-
-    // Final safety net if neither of the above caught it.
-    onblur: e => {
-      const snapped = snap5(e.target.value || '');
-      isSnapping = true;
-      e.target.value = snapped;
-      state[key] = snapped;
-      isSnapping = false;
-      refreshWarnings();
-    }
-  });
-
-  return [_el('label', { style: { alignSelf: 'center' } }, label), input];
-};
-
+      });
+      return [_el('label', { style: { alignSelf: 'center' } }, label), input];
+    };
 
     const [ls1, inpWs] = mkTimeInput('Worked Start (HH:MM)', 'worked_start_hhmm');
     const [ls2, inpWe] = mkTimeInput('Worked End (HH:MM)',   'worked_end_hhmm');
@@ -6414,27 +6381,20 @@ async function startTimesheetWizard(tile, identity, baseline) {
       _el('div', { style: { fontWeight: '600' } }, 'Hospital:'), _el('div', {}, String(state.hospital || '')),
       _el('div', { style: { fontWeight: '600' } }, 'Ward:'),     wardInput,
       _el('div', { style: { fontWeight: '600' } }, 'Job title:'),_el('div', {}, String(state.job_title || '')),
-      ls1, inpWs,
-      ls2, inpWe,
-      ls3, inpBs,
-      ls4, inpBe
+      ls1, inpWs, ls2, inpWe, ls3, inpBs, ls4, inpBe
     );
 
-    // Warnings with acknowledgement gates
     const warnBox = _el('div', { style: { display: 'grid', gap: '8px', marginTop: '4px' } });
-
     const brWarn = _el('div', { style: { display: 'none', color: '#a15c00' } });
     const brAck  = _el('label', { style: { display: 'none', userSelect: 'none' } },
       _el('input', { type: 'checkbox', style: { marginRight: '6px' } }),
       'I acknowledge the break length is correct.'
     );
-
     const eqWarn = _el('div', { style: { display: 'none', color: '#a15c00' } });
     const eqAck  = _el('label', { style: { display: 'none', userSelect: 'none' } },
       _el('input', { type: 'checkbox', style: { marginRight: '6px' } }),
       'I acknowledge the total worked time is correct.'
     );
-
     warnBox.append(brWarn, brAck, eqWarn, eqAck);
 
     const btns = _el(
@@ -6444,7 +6404,6 @@ async function startTimesheetWizard(tile, identity, baseline) {
       (() => {
         const nextBtn = _el('button', { type: 'button' }, 'Next');
         nextBtn.onclick = () => {
-          // Block until all required acks
           const needsBreakAck = brWarn.style.display !== 'none';
           const needsEqAck    = eqWarn.style.display !== 'none';
           const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
@@ -6457,73 +6416,59 @@ async function startTimesheetWizard(tile, identity, baseline) {
           if (!(brChecked && eqChecked)) return;
           step2();
         };
-        // Keep a ref for refreshWarnings
         nextBtn.dataset.role = 'nextBtn';
         return nextBtn;
       })()
     );
 
     c.append(form, warnBox, btns);
-function refreshWarnings() {
-  // Need all four times before we can evaluate
-  if (!state.worked_start_hhmm || !state.worked_end_hhmm ||
-      !state.break_start_hhmm  || !state.break_end_hhmm) return;
+    function refreshWarnings() {
+      if (!state.worked_start_hhmm || !state.worked_end_hhmm || !state.break_start_hhmm || !state.break_end_hhmm) return;
 
-  // Snap to 5-minute grid first (keeps behavior consistent with UI)
-  const ws = snap5(state.worked_start_hhmm);
-  const we = snap5(state.worked_end_hhmm);
-  const bs = snap5(state.break_start_hhmm);
-  const be = snap5(state.break_end_hhmm);
+      const ws = snap5(state.worked_start_hhmm);
+      const we = snap5(state.worked_end_hhmm);
+      const bs = snap5(state.break_start_hhmm);
+      const be = snap5(state.break_end_hhmm);
 
-  // Minutes (handles cross-midnight internally)
-  const totalMins = minutesBetweenHHMM(state.ymd, ws, we);
-  const breakMins = minutesBetweenHHMM(state.ymd, bs, be);
-  if (totalMins == null || breakMins == null) return;
+      const totalMins = minutesBetweenHHMM(state.ymd, ws, we);
+      const breakMins = minutesBetweenHHMM(state.ymd, bs, be);
+      if (totalMins == null || breakMins == null) return;
 
-  const netMins = Math.max(0, totalMins - breakMins);
-  const { H: netH, M: netMin } = minutesToHoursAndMins(netMins);
+      const netMins = Math.max(0, totalMins - breakMins);
+      const { H: netH, M: netMin } = minutesToHoursAndMins(netMins);
 
-  // Break != 60 → warn + require ack
-  if (breakMins !== 60) {
-    brWarn.style.display = '';
-    brAck.style.display = 'flex';
-    brWarn.textContent =
-      `Break is normally 60 minutes; you have ${breakMins} minutes. ` +
-      `Please tick to acknowledge you are correct and then continue.`;
-  } else {
-    brWarn.style.display = 'none';
-    brAck.style.display = 'none';
-    brAck.querySelector('input').checked = false;
-  }
+      if (breakMins !== 60) {
+        brWarn.style.display = '';
+        brAck.style.display = 'flex';
+        brWarn.textContent = `Break is normally 60 minutes; you have ${breakMins} minutes. Please tick to acknowledge you are correct and then continue.`;
+      } else {
+        brWarn.style.display = 'none';
+        brAck.style.display = 'none';
+        brAck.querySelector('input').checked = false;
+      }
 
-  // Net must equal 690 (11.5h) → warn + require ack
-  if (netMins !== 690) {
-    eqWarn.style.display = '';
-    eqAck.style.display = 'flex';
-    eqWarn.textContent =
-      `Shifts are normally 11.5 hours long; you have ${netH} hours ${netMin} mins. ` +
-      `Please tick to acknowledge you are correct and then continue.`;
-  } else {
-    eqWarn.style.display = 'none';
-    eqAck.style.display = 'none';
-    eqAck.querySelector('input').checked = false;
-  }
+      if (netMins !== 690) {
+        eqWarn.style.display = '';
+        eqAck.style.display = 'flex';
+        eqWarn.textContent = `Shifts are normally 11.5 hours long; you have ${netH} hours ${netMin} mins. Please tick to acknowledge you are correct and then continue.`;
+      } else {
+        eqWarn.style.display = 'none';
+        eqAck.style.display = 'none';
+        eqAck.querySelector('input').checked = false;
+      }
 
-  // Disable/enable Next based on required acknowledgements
-  const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
-  if (nextBtn) {
-    const needsBreakAck = brWarn.style.display !== 'none';
-    const needsEqAck    = eqWarn.style.display   !== 'none';
-    const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
-    const eqChecked = needsEqAck    ? eqAck.querySelector('input').checked : true;
-    nextBtn.disabled = !(brChecked && eqChecked);
-  }
-}
+      const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
+      if (nextBtn) {
+        const needsBreakAck = brWarn.style.display !== 'none';
+        const needsEqAck    = eqWarn.style.display   !== 'none';
+        const brChecked = needsBreakAck ? brAck.querySelector('input').checked : true;
+        const eqChecked = needsEqAck    ? eqAck.querySelector('input').checked : true;
+        nextBtn.disabled = !(brChecked && eqChecked);
+      }
+    }
 
-    // initial warnings evaluation
     refreshWarnings();
 
-    // allow clicking labels to re-evaluate (ack checkboxes change)
     brAck.querySelector('input').addEventListener('change', () => {
       const nextBtn = ov.card.querySelector('button[data-role="nextBtn"]');
       if (nextBtn) {
@@ -6568,352 +6513,316 @@ function refreshWarnings() {
       )
     );
   };
-// Step 3 — Ward Authorisation (details + signature + submit)
-const step3 = () => {
-  ov.contents.innerHTML = '';
 
-  const canDebug =
-    (typeof _canDebugClick === 'function' && _canDebugClick()) ||
-    (window.CONFIG && !!window.CONFIG.TIMESHEET_DEBUG);
+  // Step 3 — Ward Authorisation (details + signature + submit)
+  const step3 = () => {
+    ov.contents.innerHTML = '';
 
-  // ✅ new (handles cross-midnight and matches UI’s 5-min snapping)
-  const ws = snap5(state.worked_start_hhmm);
-  const we = snap5(state.worked_end_hhmm);
-  const bs = snap5(state.break_start_hhmm);
-  const be = snap5(state.break_end_hhmm);
+    const canDebug =
+      (typeof _canDebugClick === 'function' && _canDebugClick()) ||
+      (window.CONFIG && !!window.CONFIG.TIMESHEET_DEBUG);
 
-  const total = minutesBetweenHHMM(state.ymd, ws, we);
-  const bm    = minutesBetweenHHMM(state.ymd, bs, be);
-  const net   = Math.max(0, total - bm);
-  const { H: netH, M: netMin } = minutesToHoursAndMins(net);
+    const ws = snap5(state.worked_start_hhmm);
+    const we = snap5(state.worked_end_hhmm);
+    const bs = snap5(state.break_start_hhmm);
+    const be = snap5(state.break_end_hhmm);
 
-  if (canDebug) {
-    console.log('TSW.step3.derived', {
-      ymd: state.ymd,
-      hospital: state.hospital,
-      ward: state.ward,
-      job_title: state.job_title,
-      shift_label: state.shift_label,
-      worked: { ws, we },
-      break:  { bs, be, mins: bm },
-      totals: { totalMins: total, netMins: net, netH, netMin }
+    const total = minutesBetweenHHMM(state.ymd, ws, we);
+    const bm    = minutesBetweenHHMM(state.ymd, bs, be);
+    const net   = Math.max(0, total - bm);
+    const { H: netH, M: netMin } = minutesToHoursAndMins(net);
+
+    if (canDebug) {
+      console.log('TSW.step3.derived', {
+        ymd: state.ymd,
+        hospital: state.hospital,
+        ward: state.ward,
+        job_title: state.job_title,
+        shift_label: state.shift_label,
+        worked: { ws, we },
+        break:  { bs, be, mins: bm },
+        totals: { totalMins: total, netMins: net, netH, netMin }
+      });
+    }
+
+    const authInputStyle = {
+      width: '100%',
+      fontSize: '18px',
+      lineHeight: '24px',
+      padding: '12px 14px',
+      height: '48px',
+      boxSizing: 'border-box',
+      borderRadius: '10px',
+      border: '1px solid '#c9c9c9'
+    };
+
+    const nameIn  = _el('input', {
+      type: 'text',
+      placeholder: 'Authoriser full name',
+      style: authInputStyle,
+      oninput: e => (state.auth_name = e.target.value)
     });
-  }
 
-  // Reusable style for larger, touch-friendly inputs
-  const authInputStyle = {
-    width: '100%',
-    fontSize: '18px',        // ≥16px prevents iOS zoom-on-focus
-    lineHeight: '24px',
-    padding: '12px 14px',
-    height: '48px',
-    boxSizing: 'border-box',
-    borderRadius: '10px',
-    border: '1px solid #c9c9c9',
-  };
+    const titleIn = _el('input', {
+      type: 'text',
+      placeholder: 'Authoriser job title',
+      style: authInputStyle,
+      oninput: e => (state.auth_job_title = e.target.value)
+    });
 
-  const nameIn  = _el('input', {
-    type: 'text',
-    placeholder: 'Authoriser full name',
-    style: authInputStyle,
-    oninput: e => (state.auth_name = e.target.value)
-  });
+    const pad = _buildSignaturePad();
 
-  const titleIn = _el('input', {
-    type: 'text',
-    placeholder: 'Authoriser job title',
-    style: authInputStyle,
-    oninput: e => (state.auth_job_title = e.target.value)
-  });
+    const linesWrap = _el('div', { style: { display: 'grid', gap: '6px', marginBottom: '8px' } },
+      _el('div', {}, `Ward Authorisation — Signing Timesheet`),
+      _el('div', {}, `Nurse: ${deriveOccupantKey(baseline) || '—'}`),
+      _el('div', {}, `Date: ${state.ymd}`),
+      _el('div', {}, `Hospital: ${state.hospital}`),
+      _el('div', {}, `Ward: ${state.ward}`),
+      _el('div', {}, `Job title: ${state.job_title}`),
+      _el('div', {}, `Start: ${state.worked_start_hhmm}   End: ${state.worked_end_hhmm}`),
+      _el('div', {}, `Break: ${state.break_start_hhmm} → ${state.break_end_hhmm} (${bm} mins)`),
+      _el('div', { style: { fontWeight: '700', fontSize: '1.05rem' } }, `Total hours: ${netH} hours ${netMin} mins`)
+    );
 
-  const pad = _buildSignaturePad();
+    const btnRow = _el(
+      'div',
+      { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'space-between' } },
+      _el('div', {}, _el('button', { type: 'button', onclick: step2 }, 'Back')),
+      (() => {
+        const cancelBtn = _el('button', { type: 'button' }, 'Cancel');
+        cancelBtn.onclick = () => document.body.removeChild(ov.root);
 
-  // Compact one-line pairs + bold total hours
-  const linesWrap = _el('div', { style: { display: 'grid', gap: '6px', marginBottom: '8px' } },
-    _el('div', {}, `Ward Authorisation — Signing Timesheet`),
-    _el('div', {}, `Nurse: ${deriveOccupantKey(baseline) || '—'}`),
-    _el('div', {}, `Date: ${state.ymd}`),
-    _el('div', {}, `Hospital: ${state.hospital}`),
-    _el('div', {}, `Ward: ${state.ward}`),
-    _el('div', {}, `Job title: ${state.job_title}`),
-    _el('div', {}, `Start: ${state.worked_start_hhmm}   End: ${state.worked_end_hhmm}`),
-    _el('div', {}, `Break: ${state.break_start_hhmm} → ${state.break_end_hhmm} (${bm} mins)`),
-    _el('div', { style: { fontWeight: '700', fontSize: '1.05rem' } }, `Total hours: ${netH} hours ${netMin} mins`)
-  );
+        const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
+        submitBtn.onclick = async () => {
+          if (submitBtn.dataset.busy === '1') return;
+          submitBtn.dataset.busy = '1';
+          submitBtn.disabled = true;
+          submitBtn.textContent = 'Please wait…';
 
-  const btnRow = _el(
-    'div',
-    { style: { display: 'flex', gap: '8px', marginTop: '12px', justifyContent: 'space-between' } },
-    _el('div', {}, _el('button', { type: 'button', onclick: step2 }, 'Back')),
-    (() => {
-      const cancelBtn = _el('button', { type: 'button' }, 'Cancel');
-      cancelBtn.onclick = () => document.body.removeChild(ov.root);
+          if (canDebug) {
+            console.log('TSW.submit.click', {
+              ymd: state.ymd, hospital: state.hospital, ward: state.ward,
+              job_title: state.job_title, shift_label: state.shift_label
+            });
+          }
 
-      const submitBtn = _el('button', { type: 'button', style: { marginLeft: '8px' } }, 'Authorise Timesheet');
-      submitBtn.onclick = async () => {
-        // single-click guard
-        if (submitBtn.dataset.busy === '1') return;
-        submitBtn.dataset.busy = '1';
-        submitBtn.disabled = true;
-        submitBtn.textContent = 'Please wait…';
+          if (!state.auth_name || !state.auth_job_title) {
+            alert('Please enter authoriser name and job title.');
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+            return;
+          }
+          if (pad.isEmpty()) {
+            alert('Authoriser signature is required.');
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+            return;
+          }
 
-        if (canDebug) {
-          console.log('TSW.submit.click', {
-            ymd: state.ymd,
+          // UK timezone gate
+          try {
+            const DEFAULT_BROKER = "https://arthur-rai-broker.kier-88a.workers.dev";
+            const base = (window.CONFIG && window.CONFIG.BROKER_BASE_URL) || DEFAULT_BROKER;
+            const url  = base.replace(/\/+$/, "") + "/time/uk-check";
+            const payloadTz = { phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "", phone_epoch_ms: Date.now() };
+            const resp = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payloadTz) });
+            const json = await resp.json().catch(() => null);
+            if (!json || json.valid !== true) {
+              const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
+              if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+              submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
+              return;
+            }
+          } catch (e) {
+            const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
+            if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
+            return;
+          }
+
+          // 1) Presign — occupant_key MUST be Candidate_ID from tile
+          const cid = String(tile && tile.candidate_id || '').trim();
+          if (!cid) {
+            const msg = "We couldn't identify you for timesheets yet. Please refresh the app and try again.";
+            if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+            return;
+          }
+
+          if (canDebug) console.log('TSW.presign.start', {
+            occupant_key: cid,
+            date_start_local: state.ymd,
             hospital: state.hospital,
             ward: state.ward,
             job_title: state.job_title,
             shift_label: state.shift_label
           });
-        }
 
-        if (!state.auth_name || !state.auth_job_title) {
-          alert('Please enter authoriser name and job title.');
-          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-          return;
-        }
-        if (pad.isEmpty()) {
-          alert('Authoriser signature is required.');
-          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-          return;
-        }
+          const pres = await presignTimesheet({
+            occupant_key: cid,                       // ← Candidate_ID
+            date_start_local: state.ymd,
+            hospital: state.hospital,
+            ward: state.ward,
+            job_title: state.job_title,
+            shift_label: state.shift_label,
+            scheduled_start_hhmm: state.scheduled_start_hhmm,
+            scheduled_end_hhmm: state.scheduled_end_hhmm
+          });
 
-        // 0) UK timezone check (second gate just before submitting)
-        try {
-          const DEFAULT_BROKER = "https://arthur-rai-broker.kier-88a.workers.dev";
-          const base =
-            (window.CONFIG && window.CONFIG.BROKER_BASE_URL) ||
-            DEFAULT_BROKER;
-          const url = base.replace(/\/+$/, "") + "/time/uk-check";
+          if (canDebug) {
+            const nurseKey = pres?.json?.upload?.nurse?.key;
+            const authKey  = pres?.json?.upload?.authoriser?.key;
+            const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
+            console.log('TSW.presign.result', {
+              ok: pres.ok,
+              status: pres.status,
+              booking_id: pres?.json?.booking_id,
+              version: pres?.json?.version,
+              nurseKeyLast: lastSeg(nurseKey),
+              authoriserKeyLast: lastSeg(authKey)
+            });
+          }
 
-          const payloadTz = {
-            phone_tz: Intl.DateTimeFormat().resolvedOptions().timeZone || "",
-            phone_epoch_ms: Date.now()
+          if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres);
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+            return; }
+          state.presign = pres.json;
+
+          // 2) Upload signatures
+          const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
+          if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp);
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+            return; }
+
+          const authBlob = await pad.toPNGBlob();
+          const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
+          if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp);
+            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
+            return; }
+
+          // 3) Submit
+          function isoPairFromHHMM(ymd, startHHMM, endHHMM) {
+            if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
+            const [y, m, d] = String(ymd).split('-').map(Number);
+            const [sH, sM] = String(startHHMM).split(':').map(n => parseInt(n, 10));
+            const [eH, eM] = String(endHHMM).split(':').map(n => parseInt(n, 10));
+            const startLocal = new Date(y, m - 1, d, sH, sM, 0, 0);
+            const endLocal   = new Date(y, m - 1, d, eH, eM, 0, 0);
+            if (endLocal <= startLocal) endLocal.setDate(endLocal.getDate() + 1);
+            return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
+          }
+
+          const ws = snap5(state.worked_start_hhmm);
+          const we = snap5(state.worked_end_hhmm);
+          const bs = snap5(state.break_start_hhmm);
+          const be = snap5(state.break_end_hhmm);
+
+          const workedISO = isoPairFromHHMM(state.ymd, ws, we);
+          const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
+
+          let sStart = state.scheduled_start_hhmm;
+          let sEnd   = state.scheduled_end_hhmm;
+
+          if (!sStart || !sEnd) {
+            const parsed = parseTimesFromLabel(state.shift_label);
+            if (!sStart && parsed) sStart = parsed.start;
+            if (!sEnd   && parsed) sEnd   = parsed.end;
+          }
+          if (!sStart) sStart = ws;
+          if (!sEnd)   sEnd   = we;
+
+          const sS = snap5(sStart);
+          const sE = snap5(sEnd);
+          const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
+
+          const payload = {
+            booking_id: state.presign.booking_id,   // ← server/broker-issued, unchanged
+            scheduled_start_iso: schedISO.start_iso,
+            scheduled_end_iso:   schedISO.end_iso,
+            worked_start_iso:    workedISO.start_iso,
+            worked_end_iso:      workedISO.end_iso,
+            break_start_iso:     breakISO.start_iso,
+            break_end_iso:       breakISO.end_iso,
+            auth_name: state.auth_name,
+            auth_job_title: state.auth_job_title,
+            nurse_key: state.presign.upload.nurse.key,
+            authoriser_key: state.presign.upload.authoriser.key,
+            idempotency_key: crypto.randomUUID(),
+            client_user_agent: navigator.userAgent,
+            client_timestamp: new Date().toISOString(),
+            occupant_key: cid,                      // ← Candidate_ID to broker
+            hospital: state.hospital,
+            ward: state.ward,
+            job_title: state.job_title,
+            shift_label: state.shift_label
           };
 
-          if (canDebug) console.log('TSW.tzCheck.request', { url, payload: payloadTz });
-
-          const resp = await fetch(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payloadTz)
-          });
-          const json = await resp.json().catch(() => null);
-
-          if (canDebug) console.log('TSW.tzCheck.response', { status: resp.status, ok: resp.ok, json });
-
-          if (!json || json.valid !== true) {
-            const msg = "Your phone’s timezone is not set to UK (Europe/London).\nPlease change your device timezone to UK, then tap ‘Retry’.";
-            if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
-            submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
-            return; // don’t proceed to presign/submit
+          if (canDebug) {
+            const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
+            console.log('TSW.submit.payload', {
+              booking_id: payload.booking_id,
+              scheduled: { start: payload.scheduled_start_iso, end: payload.scheduled_end_iso },
+              worked:    { start: payload.worked_start_iso,    end: payload.worked_end_iso },
+              breakIso:  { start: payload.break_start_iso,     end: payload.break_end_iso },
+              auth:      { nameLen: (payload.auth_name||'').length, titleLen: (payload.auth_job_title||'').length },
+              keys:      { nurse: lastSeg(payload.nurse_key), authoriser: lastSeg(payload.authoriser_key) },
+              idempotency_key: payload.idempotency_key,
+              occupant_key_is_cid: !!payload.occupant_key
+            });
           }
-        } catch (e) {
-          if (canDebug) console.error('TSW.tzCheck.error', { error: String(e && e.message || e) });
-          const msg = "We couldn’t verify your timezone. Please check your connection, set your device timezone to UK, then tap ‘Retry’.";
-          if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
-          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = "Authorise Timesheet";
-          return; // fail closed
-        }
 
-        // 1) Presign
-        if (canDebug) console.log('TSW.presign.start', {
-          occupant_key: deriveOccupantKey(baseline),
-          date_start_local: state.ymd,
-          hospital: state.hospital,
-          ward: state.ward,
-          job_title: state.job_title,
-          shift_label: state.shift_label
-        });
+          const statusEl = ensureTsStatusBox(ov.card);
+          submitBtn.textContent = 'Submitting…';
 
-        const pres = await presignTimesheet({
-          occupant_key: deriveOccupantKey(baseline),
-          date_start_local: state.ymd,
-          hospital: state.hospital,
-          ward: state.ward,
-          job_title: state.job_title,
-          shift_label: state.shift_label,
-          scheduled_start_hhmm: state.scheduled_start_hhmm,
-          scheduled_end_hhmm: state.scheduled_end_hhmm
-        });
-
-        if (canDebug) {
-          const nurseKey = pres?.json?.upload?.nurse?.key;
-          const authKey  = pres?.json?.upload?.authoriser?.key;
-          const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
-          console.log('TSW.presign.result', {
-            ok: pres.ok,
-            status: pres.status,
-            booking_id: pres?.json?.booking_id,
-            version: pres?.json?.version,
-            nurseKeyLast: lastSeg(nurseKey),
-            authoriserKeyLast: lastSeg(authKey)
+          const t0 = performance.now();
+          const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
+            maxAttempts: 5,
+            updateStatus: (attempt, max, phase) => {
+              if (phase === 'submit') {
+                setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
+                submitBtn.textContent = `Submitting… (${attempt}/${max})`;
+              } else if (phase === 'retry') {
+                setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
+                submitBtn.textContent = `Retrying… (${attempt}/${max})`;
+              } else if (phase === 'waiting') {
+                setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
+              }
+            },
+            overlayRoot: ov.root,
+            submitImpl: NS.submitTimesheet
           });
-        }
+          const t1 = performance.now();
 
-        if (!pres.ok) { _debugOrToast && _debugOrToast('Presign failed', pres);
-          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-          return; }
-        state.presign = pres.json;
+          if (canDebug) {
+            console.log('TSW.submit.result', {
+              ok, cancelled, durationMs: Math.round(t1 - t0),
+              brokerStatus: sub && (sub.status || sub.httpStatus),
+              error: sub && (sub.error || sub.message || null)
+            });
+          }
 
-        // 2) Upload signatures
-        const nurseUp = await uploadSignaturePutUrl(state.presign.upload.nurse.put_url, state.nurseSig);
-        if (canDebug) console.log('TSW.upload.nurse.result', nurseUp);
-        if (!nurseUp.ok) { _debugOrToast && _debugOrToast('Nurse signature upload failed', nurseUp);
-          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-          return; }
+          if (document.body.contains(ov.root)) {
+            submitBtn.disabled = false;
+            delete submitBtn.dataset.busy;
+            submitBtn.textContent = 'Authorise Timesheet';
+          }
 
-        const authBlob = await pad.toPNGBlob();
-        const authUp = await uploadSignaturePutUrl(state.presign.upload.authoriser.put_url, authBlob);
-        if (canDebug) console.log('TSW.upload.authoriser.result', authUp);
-        if (!authUp.ok) { _debugOrToast && _debugOrToast('Authoriser signature upload failed', authUp);
-          submitBtn.disabled = false; delete submitBtn.dataset.busy; submitBtn.textContent = 'Authorise Timesheet';
-          return; }
+          if (!ok) {
+            if (!cancelled) {
+              setTsStatus(statusEl,
+                "Please complete a paper timesheet as there are network problems. " +
+                "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
+              );
+              _debugOrToast && _debugOrToast('Submit failed', sub);
+            }
+            return;
+          }
 
-        // 3) Submit
-        // Build ISO start/end that handle cross-midnight (end <= start ⇒ +1 day)
-        function isoPairFromHHMM(ymd, startHHMM, endHHMM) {
-          if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
-          const [y, m, d]   = String(ymd).split('-').map(Number);
-          const [sH, sM]    = String(startHHMM).split(':').map(n => parseInt(n, 10));
-          const [eH, eM]    = String(endHHMM).split(':').map(n => parseInt(n, 10));
-          const startLocal  = new Date(y, m - 1, d, sH, sM, 0, 0);
-          const endLocal    = new Date(y, m - 1, d, eH, eM, 0, 0);
-          if (endLocal <= startLocal) endLocal.setDate(endLocal.getDate() + 1);
-          return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
-        }
-
-        // Use snapped HH:MM to match UI
-        const ws = snap5(state.worked_start_hhmm);
-        const we = snap5(state.worked_end_hhmm);
-        const bs = snap5(state.break_start_hhmm);
-        const be = snap5(state.break_end_hhmm);
-
-        const workedISO = isoPairFromHHMM(state.ymd, ws, we);
-        const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
-
-        // Scheduled (if present) should also respect cross-midnight
-        // Always supply scheduled_*_iso (fallback to label → worked), respect cross-midnight
-        let sStart = state.scheduled_start_hhmm;
-        let sEnd   = state.scheduled_end_hhmm;
-
-        if (!sStart || !sEnd) {
-          const parsed = parseTimesFromLabel(state.shift_label);
-          if (!sStart && parsed) sStart = parsed.start;
-          if (!sEnd   && parsed) sEnd   = parsed.end;
-        }
-
-        // Last resort: use worked window
-        if (!sStart) sStart = ws;
-        if (!sEnd)   sEnd   = we;
-
-        const sS = snap5(sStart);
-        const sE = snap5(sEnd);
-        const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
-
-        const payload = {
-          booking_id: state.presign.booking_id,
-          scheduled_start_iso: schedISO.start_iso,
-          scheduled_end_iso:   schedISO.end_iso,
-          worked_start_iso:    workedISO.start_iso,
-          worked_end_iso:      workedISO.end_iso,
-          break_start_iso:     breakISO.start_iso,
-          break_end_iso:       breakISO.end_iso,
-          auth_name: state.auth_name,
-          auth_job_title: state.auth_job_title,
-          nurse_key: state.presign.upload.nurse.key,
-          authoriser_key: state.presign.upload.authoriser.key,
-          idempotency_key: crypto.randomUUID(),
-          client_user_agent: navigator.userAgent,
-          client_timestamp: new Date().toISOString(),
-          occupant_key: deriveOccupantKey(baseline),
-          hospital: state.hospital,
-          ward: state.ward,
-          job_title: state.job_title,
-          shift_label: state.shift_label
+          if (canDebug) console.log('TSW.submit.success.tick');
+          _successTick(ov.root);
         };
 
-        if (canDebug) {
-          const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
-          console.log('TSW.submit.payload', {
-            booking_id: payload.booking_id,
-            scheduled: { start: payload.scheduled_start_iso, end: payload.scheduled_end_iso },
-            worked:    { start: payload.worked_start_iso,    end: payload.worked_end_iso },
-            breakIso:  { start: payload.break_start_iso,     end: payload.break_end_iso },
-            auth:      { nameLen: (payload.auth_name||'').length, titleLen: (payload.auth_job_title||'').length },
-            keys:      { nurse: lastSeg(payload.nurse_key), authoriser: lastSeg(payload.authoriser_key) },
-            idempotency_key: payload.idempotency_key
-          });
-        }
-
-        const statusEl = ensureTsStatusBox(ov.card);
-
-        // Already disabled above; just update label for clarity
-        submitBtn.textContent = 'Submitting…';
-
-        const t0 = performance.now();
-        const { ok, sub, cancelled } = await submitTimesheetWithRetry(payload, {
-  maxAttempts: 5,
-  updateStatus: (attempt, max, phase) => {
-    if (phase === 'submit') {
-      setTsStatus(statusEl, `Submitting… attempt ${attempt}/${max}`);
-      submitBtn.textContent = `Submitting… (${attempt}/${max})`;
-    } else if (phase === 'retry') {
-      setTsStatus(statusEl, `Retrying… attempt ${attempt}/${max}`);
-      submitBtn.textContent = `Retrying… (${attempt}/${max})`;
-    } else if (phase === 'waiting') {
-      setTsStatus(statusEl, `Retrying shortly… attempt ${attempt}/${max}`);
-    }
-  },
-  overlayRoot: ov.root,
-  submitImpl: NS.submitTimesheet // optional but recommended
-});
-
-        const t1 = performance.now();
-
-        if (canDebug) {
-          console.log('TSW.submit.result', {
-            ok, cancelled, durationMs: Math.round(t1 - t0),
-            brokerStatus: sub && (sub.status || sub.httpStatus),
-            error: sub && (sub.error || sub.message || null)
-          });
-        }
-
-        // Re-enable if still visible
-        if (document.body.contains(ov.root)) {
-          submitBtn.disabled = false;
-          delete submitBtn.dataset.busy;
-          submitBtn.textContent = 'Authorise Timesheet';
-        }
-
-        if (!ok) {
-          if (!cancelled) {
-            setTsStatus(statusEl,
-              "Please complete a paper timesheet as there are network problems. " +
-              "If you need a timesheet emailed to you navigate to the menu on the Arthur Rai app and choose ‘Send a timesheet by email’."
-            );
-            _debugOrToast && _debugOrToast('Submit failed', sub);
-          }
-          return;
-        }
-
-        // Success: show big tick then close + refresh (handled in _successTick)
-        if (canDebug) console.log('TSW.submit.success.tick');
-        _successTick(ov.root);
-      };
-
-      return _el('div', {}, cancelBtn, submitBtn);
-    })()
-  );
-
-  // (UI append unchanged)
-  // NOTE: This respects your existing structure — no functional changes.
-  // If the original appends these elements, keep doing so in the same place.
-  // If you already append elsewhere, leave this as-is.
-  // ov.contents.append(linesWrap, nameIn, titleIn, pad.el, btnRow);
-
-
-
+        return _el('div', {}, cancelBtn, submitBtn);
+      })()
+    );
 
     ov.contents.append(
       linesWrap,
@@ -7037,83 +6946,85 @@ function _debugOrToast(label, resp) {
    * 8) Submitted Timesheet Modal (summary + revoke & resubmit)
    * ────────────────────────────────────────────────────────────────────────── */
 
-  async function openSubmittedTimesheetModal(tile, identity, baseline) {
-    // booking_id may be on the tile or computed:
-    const booking_id =
-      tile.booking_id ||
-      (await makeBookingId({
-        occupant_key: deriveOccupantKey(baseline),
-        date_start_local: tile.ymd || tile.date_start_local,
-        hospital: tile.hospital,
-        ward: tile.ward,
-        job_title: tile.job_title || tile.role || tile.jobTitle,
-        shift_label: tile.shift_label || tile.shift || tile.shiftLabel || "",
-      }));
-
-    // Fetch details
-    const resp = await getTimesheet(booking_id);
-    let ts = null;
-    if (resp.ok) ts = resp.json;
-
-    const ov = _mountOverlay("Submitted Timesheet");
-    const c = ov.contents;
-
-    if (!ts) {
-      c.append(_el("div", {}, "No details available for this timesheet."));
-    } else {
-      const lines = [
-        `Hospital: ${ts.hospital || tile.hospital}`,
-        `Ward: ${ts.ward || tile.ward}`,
-        `Job title: ${ts.job_title || tile.job_title || tile.role || tile.jobTitle}`,
-        `Worked Start: ${_fmtTime(ts.worked_start_iso)}`,
-        `Worked End: ${_fmtTime(ts.worked_end_iso)}`,
-        `Break Start: ${_fmtTime(ts.break_start_iso)}`,
-        `Break End: ${_fmtTime(ts.break_end_iso)}`,
-        `Break length: ${ts.break_minutes ?? "—"} mins`,
-        `Authoriser: ${ts.authoriser_name || "—"} (${ts.authoriser_job_title || "—"})`,
-        `Authorised at: ${_fmtDateTime(ts.authorised_at)}`
-      ];
-      c.append(_el("div", { style: { display: "grid", gap: "4px", marginBottom: "12px" } }, ...lines.map((t) => _el("div", {}, t))));
-    }
-
-    const btns = _el(
-      "div",
-      { style: { display: "flex", gap: "8px", justifyContent: "space-between", marginTop: "12px" } },
-      _el("div", {}, _el("button", { onclick: () => document.body.removeChild(ov.root) }, "Close")),
-      _el("div", {},
-        _el("button", {
-          style: { background: "#b21f1f", color: "#fff" },
-          onclick: async () => {
-            // Confirm revoke & presign
-            const confirmMsg = "You have already submitted a timesheet for this shift. Do you want to revoke it and submit a new one?";
-            if (!confirm(confirmMsg)) return;
-
-            const body = {
-              booking_id,
-              reason: "user_resubmitted",
-              occupant_key: deriveOccupantKey(baseline),
-              date_start_local: tile.ymd || tile.date_start_local,
-              hospital: tile.hospital,
-              ward: tile.ward,
-              job_title: tile.job_title || tile.role || tile.jobTitle,
-              shift_label: tile.shift_label || tile.shift || tile.shiftLabel || "",
-            };
-            const rx = await revokeAndPresign(body);
-            if (!rx.ok) {
-              _debugOrToast("Revoke & presign failed", rx);
-              return;
-            }
-            document.body.removeChild(ov.root);
-            // Immediately start wizard on new presign (we’ll just pass the original tile;
-            // the wizard will do a fresh presign anyway if it needs to refresh tokens).
-            startTimesheetWizard(tile, identity, baseline);
-          },
-        }, "Revoke & Resubmit")
-      )
-    );
-
-    c.append(btns);
+ async function openSubmittedTimesheetModal(tile, identity, baseline) {
+  // booking_id must be server/broker-issued; do not fabricate
+  const booking_id = String(tile && tile.booking_id || '').trim();
+  if (!booking_id) {
+    const msg = "This shift isn’t ready for digital timesheets yet. Please refresh the app and try again.";
+    if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+    return;
   }
+
+  // Fetch details
+  const resp = await getTimesheet(booking_id);
+  let ts = null;
+  if (resp.ok) ts = resp.json;
+
+  const ov = _mountOverlay("Submitted Timesheet");
+  const c = ov.contents;
+
+  if (!ts) {
+    c.append(_el("div", {}, "No details available for this timesheet."));
+  } else {
+    const lines = [
+      `Hospital: ${ts.hospital || tile.hospital}`,
+      `Ward: ${ts.ward || tile.ward}`,
+      `Job title: ${ts.job_title || tile.job_title || tile.role || tile.jobTitle}`,
+      `Worked Start: ${_fmtTime(ts.worked_start_iso)}`,
+      `Worked End: ${_fmtTime(ts.worked_end_iso)}`,
+      `Break Start: ${_fmtTime(ts.break_start_iso)}`,
+      `Break End: ${_fmtTime(ts.break_end_iso)}`,
+      `Break length: ${ts.break_minutes ?? "—"} mins`,
+      `Authoriser: ${ts.authoriser_name || "—"} (${ts.authoriser_job_title || "—"})`,
+      `Authorised at: ${_fmtDateTime(ts.authorised_at)}`
+    ];
+    c.append(_el("div", { style: { display: "grid", gap: "4px", marginBottom: "12px" } }, ...lines.map((t) => _el("div", {}, t))));
+  }
+
+  const btns = _el(
+    "div",
+    { style: { display: "flex", gap: "8px", justifyContent: "space-between", marginTop: "12px" } },
+    _el("div", {}, _el("button", { onclick: () => document.body.removeChild(ov.root) }, "Close")),
+    _el("div", {},
+      _el("button", {
+        style: { background: "#b21f1f", color: "#fff" },
+        onclick: async () => {
+          // Confirm revoke & presign
+          const confirmMsg = "You have already submitted a timesheet for this shift. Do you want to revoke it and submit a new one?";
+          if (!confirm(confirmMsg)) return;
+
+          // occupant_key must be tile.candidate_id (CID); block if missing
+          const cid = String(tile && tile.candidate_id || '').trim();
+          if (!cid) {
+            const msg = "We couldn't identify you for timesheets yet. Please refresh the app and try again.";
+            if (typeof window.showToast === "function") window.showToast(msg); else alert(msg);
+            return;
+          }
+
+          const body = {
+            booking_id,                      // ← unchanged; server-issued
+              reason: "user_resubmitted",
+            occupant_key: cid,               // ← Candidate_ID to broker
+            date_start_local: tile.ymd || tile.date_start_local,
+            hospital: tile.hospital,
+            ward: tile.ward,
+            job_title: tile.job_title || tile.role || tile.jobTitle,
+            shift_label: tile.shift_label || tile.shift || tile.shiftLabel || ""
+          };
+          const rx = await revokeAndPresign(body);
+          if (!rx.ok) {
+            _debugOrToast("Revoke & presign failed", rx);
+            return;
+          }
+          document.body.removeChild(ov.root);
+          startTimesheetWizard(tile, identity, baseline);
+        },
+      }, "Revoke & Resubmit")
+    )
+  );
+
+  c.append(btns);
+}
 
   function _fmtTime(iso) {
     if (!iso) return "—";
