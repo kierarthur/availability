@@ -6545,16 +6545,17 @@ async function startTimesheetWizard(tile, identity, baseline) {
       });
     }
 
-    const authInputStyle = {
-      width: '100%',
-      fontSize: '18px',
-      lineHeight: '24px',
-      padding: '12px 14px',
-      height: '48px',
-      boxSizing: 'border-box',
-      borderRadius: '10px',
-      border: '1px solid '#c9c9c9'
-    };
+   const authInputStyle = {
+  width: '100%',
+  fontSize: '18px',
+  lineHeight: '24px',
+  padding: '12px 14px',
+  height: '48px',
+  boxSizing: 'border-box',
+  borderRadius: '10px',
+  border: '1px solid #c9c9c9'
+};
+
 
     const nameIn  = _el('input', {
       type: 'text',
