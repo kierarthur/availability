@@ -368,11 +368,29 @@
       word-break: break-word;
       overflow-wrap: anywhere;
     }
-    /* (Optional safety net) If an exceptionally narrow cover variant appears */
+       /* (Optional safety net) If an exceptionally narrow cover variant appears */
     @media (max-width: 380px) {
       html[data-fold-cover="1"] .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
     }
+
+    /* ===== iOS: prevent auto-zoom on input focus in auth overlays ===== */
+    #loginOverlay  input,
+    #loginOverlay  select,
+    #loginOverlay  textarea,
+    #loginOverlay  button,
+    #forgotOverlay input,
+    #forgotOverlay select,
+    #forgotOverlay textarea,
+    #forgotOverlay button,
+    #resetOverlay  input,
+    #resetOverlay  select,
+    #resetOverlay  textarea,
+    #resetOverlay  button {
+      font-size: 16px;       /* ≥16px stops iOS focus zoom */
+      line-height: 1.25;
+    }
   </style>
+
 
   <!-- Emergency button compatibility shim (for old cached builds) -->
   <script>
