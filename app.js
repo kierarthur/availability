@@ -62,13 +62,11 @@ function showAuthError(message = 'Not an authorised user') {
   window.AUTH_DENIED = true;
   AUTH_DENIED = true;
 
-  // Hide/disable interactive UI
+  // Hide/soft-disable interactive UI (do not permanently hard-disable CTAs here)
   try { els.footer && els.footer.classList.add('hidden'); } catch {}
   try { els.grid && (els.grid.innerHTML = ''); } catch {}
   try { els.helpMsg && els.helpMsg.classList.add('hidden'); } catch {}
-  try { els.submitBtn && (els.submitBtn.disabled = true); } catch {}
-  try { els.clearBtn && (els.clearBtn.disabled = true); } catch {}
-  try { els.refreshBtn && (els.refreshBtn.disabled = true); } catch {}
+  // Leave submit/clear/refresh enablement to showFooterIfNeeded() based on AUTH_DENIED/overlay/dirty
   try { els.emergencyBtn && (els.emergencyBtn.disabled = true); } catch {}
 
   hideLoading();
@@ -114,6 +112,9 @@ function showAuthError(message = 'Not an authorised user') {
   `;
 
   document.body.appendChild(div);
+
+  // Recompute footer/button gating from live state (AUTH_DENIED now true)
+  try { showFooterIfNeeded(); } catch {}
 }
 
 
@@ -1037,18 +1038,32 @@ async function prefetchEmergencyEligibility({ priority = 'normal', onReady } = {
   try { await prefetchEmergencyEligibility._inflight; } finally { prefetchEmergencyEligibility._inflight = null; }
 }
 
-
 function showFooterIfNeeded() {
   const dirty = Object.keys(draft).length > 0;
-  if (els.footer) els.footer.classList.toggle('hidden', !dirty);
+  const blocked = (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen()) || !!AUTH_DENIED || !!window.AUTH_DENIED;
+  const enableSubmit = dirty && !blocked;
 
-  if (els.submitBtn) {
-    if (dirty) els.submitBtn.classList.add('btn-attention');
-    else els.submitBtn.classList.remove('btn-attention');
+  if (els.footer) {
+    // Hide footer when no draft OR when a blocking overlay/auth-denied is active
+    els.footer.classList.toggle('hidden', !dirty || blocked);
   }
 
+  if (els.submitBtn) {
+    // Attention styling follows draft state
+    if (dirty) els.submitBtn.classList.add('btn-attention');
+    else       els.submitBtn.classList.remove('btn-attention');
+
+    // Deterministic interactivity from live state
+    try { els.submitBtn.disabled = !enableSubmit; } catch {}
+  }
+
+  // Keep Clear enabled only when there is a draft; Refresh disabled when blocked
+  try { if (els.clearBtn)   els.clearBtn.disabled   = !dirty; } catch {}
+  try { if (els.refreshBtn) els.refreshBtn.disabled = !!blocked; } catch {}
   // Important: do NOT call sizeGrid() here to avoid scroll jolts when footer appears.
 }
+
+
 
 function showToast(msg, ms=2800) {
   if (!els.toast) return;
@@ -2600,21 +2615,23 @@ async function loadFromServer({ force = false } = {}) {
       }
 
       // We are definitely signed in at this point → ensure no login sheet is lingering
-      // We are definitely signed in at this point → ensure no auth/login overlays are lingering
-try { closeOverlay && closeOverlay('loginOverlay', /* force */ true); } catch {}
-try {
-  if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
-    history.replaceState(null, '', location.pathname + (location.search || ''));
-  }
-} catch {}
+      try { closeOverlay && closeOverlay('loginOverlay', /* force */ true); } catch {}
+      try {
+        if (identity && identity.msisdn && /^#\/(login|forgot|reset)/.test(location.hash || '')) {
+          history.replaceState(null, '', location.pathname + (location.search || ''));
+        }
+      } catch {}
 
-// Clear any previous "auth denied" dimmer and reset the flag
-try {
-  const dim = document.getElementById('authErrorOverlay');
-  if (dim && dim.parentNode) dim.parentNode.removeChild(dim);
-} catch {}
-try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
-try { window.AUTH_DENIED = false; } catch {}
+      // Clear any previous "auth denied" dimmer and reset the flag
+      try {
+        const dim = document.getElementById('authErrorOverlay');
+        if (dim && dim.parentNode) dim.parentNode.removeChild(dim);
+      } catch {}
+      try { window.AUTH_DENIED = false; AUTH_DENIED = false; } catch {}
+      try { window.AUTH_DENIED = false; } catch {}
+
+      // Recompute footer/button gating now that AUTH_DENIED is cleared
+      try { showFooterIfNeeded(); } catch {}
     } finally {
       if (showedLoader) hideLoading();
       try { setTopBarUpdating(false); } catch {}
@@ -2624,7 +2641,6 @@ try { window.AUTH_DENIED = false; } catch {}
   loadFromServer._inflight = work.finally(() => { loadFromServer._inflight = null; });
   return loadFromServer._inflight;
 }
-
 
 
 
@@ -4827,6 +4843,12 @@ let nextTilesDueAt = 0; // epoch ms for next tiles refresh
 // Driver chain: Tiles → Emergency → restart 3-minute clock
 // --- NEW: single path for refresh UX ---
 async function startTilesThenEmergencyChain({ force = false } = {}) {
+  // Do not start any background work while a blocking overlay is visible
+  if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen()) {
+    try { if (typeof scheduleNextTilesRefresh === 'function') scheduleNextTilesRefresh(Date.now()); } catch {}
+    return Promise.resolve();
+  }
+
   if (startTilesThenEmergencyChain._inflight) return startTilesThenEmergencyChain._inflight;
 
   // Ensure top bar state before we potentially render from cache (prevents menu spill)
@@ -4852,6 +4874,7 @@ async function startTilesThenEmergencyChain({ force = false } = {}) {
 
   return startTilesThenEmergencyChain._inflight;
 }
+
 
 function ensureTopBarStatus() {
   try {
@@ -4922,7 +4945,9 @@ function setTopBarUpdating(on) {
 (function ensureTilesPoller() {
   if (window._tilesPollerId) return; // avoid duplicate intervals on hot-reload
   window._tilesPollerId = setInterval(async () => {
-    if (typeof emergencyOpen === 'function' && emergencyOpen()) return; // pause while overlay open
+    // Pause while any blocking overlay (login/reset/welcome/alert/emergency) is open
+    if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen()) return;
+    if (typeof emergencyOpen === 'function' && emergencyOpen()) return; // existing guard
     if (tilesInFlight) return;
 
     const now   = Date.now();
@@ -4954,8 +4979,10 @@ function setTopBarUpdating(on) {
     nextTilesDueAt = 0;
   }
 
-  // Kick once now; subsequent runs are timer-driven
-  startTilesThenEmergencyChain({ force: false }).catch(() => {});
+  // Kick once now only if no blocking overlay is open; otherwise defer to post-login flow
+  if (!(typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen())) {
+    startTilesThenEmergencyChain({ force: false }).catch(() => {});
+  }
 })();
 
 
@@ -5118,6 +5145,8 @@ function shouldBumpTilesOnEmergencyClose() {
  * immediately start the Tiles → Emergency chain and restart cadence from completion.
  */
 async function tilesResumeHandler() {
+  // If a blocking overlay is open (e.g., login/reset), do not start the chain yet
+  if (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen()) return;
   if (typeof emergencyOpen === 'function' && emergencyOpen()) return;
 
   // On app return (tab visibilitychange), we must start from a known-safe state:
@@ -7278,8 +7307,10 @@ async function init() {
   ensureEmergencyButton();
 
   // If we arrived on a password-reset link, open that flow (non-dismissable)
+  let resetJustOpened = false;
   if (new URLSearchParams(location.search).has('k')) {
     openResetOverlay();
+    resetJustOpened = true;
   }
 
   // Restore any local draft
@@ -7294,12 +7325,14 @@ async function init() {
   }
 
   try {
-    if (!autoOK) {
+    const blockedNow = (typeof isBlockingOverlayOpen === 'function' && isBlockingOverlayOpen());
+    // Only load if we are not in a blocking auth/reset flow
+    if (!autoOK && !blockedNow && !resetJustOpened) {
       // Show loader only on true cold start (handled inside loadFromServer)
       await loadFromServer({ force: true });
+      // Kick emergency eligibility quietly in background
+      try { refreshEmergencyEligibility({ silent: true }); } catch {}
     }
-    // Kick emergency eligibility quietly in background
-    try { refreshEmergencyEligibility({ silent: true }); } catch {}
   } catch (e) {
     // Only surface non-auth failures; auth failures show login inside loadFromServer
     if (String(e && e.message) !== '__AUTH_STOP__') {
@@ -7331,10 +7364,12 @@ async function init() {
     });
   }
 
- if (typeof window.routeFromURL === 'function') {
-  window.routeFromURL();       // initial dispatch
-}
+  if (typeof window.routeFromURL === 'function') {
+    window.routeFromURL();       // initial dispatch
+  }
 
+  // Always recompute footer gating at the end of init (covers cold-start edge cases)
+  try { showFooterIfNeeded(); } catch {}
 }
 
 
