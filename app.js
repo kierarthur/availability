@@ -1701,6 +1701,9 @@ function wireAuthForms() {
       // Clear password field for safety
       if (lp) lp.value = '';
 
+      // 🆕 Clear the post-reset silent-login suppression flag on successful MANUAL sign-in
+      try { localStorage.removeItem('POST_RESET_SUPPRESS_SILENT_LOGIN'); } catch {}
+
       // Force-close the blocking Login overlay so it cannot sit over a signed-in UI
       closeOverlay('loginOverlay', /* force */ true);
 
@@ -1866,7 +1869,16 @@ function wireAuthForms() {
       const clean = location.pathname + (location.hash || '');
       history.replaceState(null, '', clean);
 
-      // Close reset, prompt sign-in
+      // 🆕 Post-reset: clear any pre-existing identity so Login overlay won't be suppressed
+      try { clearSavedIdentity && clearSavedIdentity(); } catch {}
+
+      // 🆕 Persist a one-shot guard to suppress silent auto-login attempts after reset
+      try { localStorage.setItem('POST_RESET_SUPPRESS_SILENT_LOGIN', '1'); } catch {}
+
+      // 🆕 Ask the Credentials API (when supported) to prevent silent access until user interacts
+      try { await navigator.credentials?.preventSilentAccess?.(); } catch {}
+
+      // Close reset, prompt sign-in (blocking)
       closeOverlay('resetOverlay', /* force */ true);
       showToast('Password updated. Please sign in.');
       openLoginOverlay();
@@ -1882,7 +1894,6 @@ function wireAuthForms() {
 }
 
 
-
 // ---------- Credential Management API (Android/Chrome) ----------
 async function storeCredentialIfSupported(email, password) {
   try {
@@ -1894,6 +1905,13 @@ async function storeCredentialIfSupported(email, password) {
 }
 async function tryAutoLoginViaCredentialsAPI() {
   try {
+    // 🆕 If a post-reset guard is present, do NOT attempt silent credential login.
+    try {
+      if (localStorage.getItem('POST_RESET_SUPPRESS_SILENT_LOGIN') === '1') {
+        return false;
+      }
+    } catch {}
+
     if (!('credentials' in navigator)) return false;
 
     // If identity already hydrated, nothing to do.
@@ -1921,7 +1939,6 @@ async function tryAutoLoginViaCredentialsAPI() {
   } catch {}
   return false;
 }
-
 
 // ---------- Rendering ----------
 // ───────────────────────── CHANGED ─────────────────────────
