@@ -649,23 +649,7 @@ function ensureLoadingOverlay() {
 
 
 // ----- Overlay open/close with config awareness -----
-function openOverlay(overlayId, focusSel) {
-  ensureLoadingOverlay();
-  const overlay = document.getElementById(overlayId);
-  if (!overlay) return;
 
-  const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
-  overlay.dataset.dismissible = String(!!cfg.dismissible);
-  overlay.dataset.blocking = String(!!cfg.blocking);
-
-  overlay.classList.add('show');
-  overlay.dataset.prevFocus = document.activeElement && document.activeElement.id ? document.activeElement.id : '';
-  const focusEl = focusSel ? overlay.querySelector(focusSel) : overlay.querySelector('.sheet-close') || overlay.querySelector('[tabindex],input,button,select,textarea');
-  focusEl && focusEl.focus();
-
-  // When blocking is active, prevent other overlays from opening later
-  trapFocus(overlay);
-}
 // Close Emergency overlay, then either Tiles→Emergency (if tiles due within 1 min) or just Emergency.
 // Cadence restart is handled by startTilesThenEmergencyChain when available.
 // Close Emergency overlay, then either Tiles→Emergency (if tiles due within 1 min) or just Emergency.
@@ -1594,6 +1578,45 @@ function maybeShowWelcome() {
 }
 
 // ---------- Auth overlays logic ----------
+
+// Helper: detect iOS / iPadOS (incl. iPadOS 13+ that reports as Mac)
+function isIOSDevice() {
+  const ua = navigator.userAgent || '';
+  const iOSClassic = /iP(hone|od|ad)/.test(ua);
+  const iPadOS13Plus = navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1;
+  return iOSClassic || iPadOS13Plus;
+}
+
+function openOverlay(overlayId, focusSel) {
+  ensureLoadingOverlay();
+  const overlay = document.getElementById(overlayId);
+  if (!overlay) return;
+
+  const cfg = OVERLAY_CONFIG[overlayId] || { dismissible:true, blocking:false };
+  overlay.dataset.dismissible = String(!!cfg.dismissible);
+  overlay.dataset.blocking = String(!!cfg.blocking);
+
+  overlay.classList.add('show');
+  overlay.dataset.prevFocus = (document.activeElement && document.activeElement.id) ? document.activeElement.id : '';
+
+  // iOS: avoid auto-focusing text inputs on auth overlays to prevent page zoom
+  const isAuthOverlay = (overlayId === 'loginOverlay' || overlayId === 'forgotOverlay' || overlayId === 'resetOverlay');
+  let focusEl = null;
+  if (isIOSDevice() && isAuthOverlay) {
+    // Prefer a non-text control (close button) if present; otherwise skip focusing
+    focusEl = overlay.querySelector('.sheet-close') || null;
+  } else {
+    // Original behaviour elsewhere (incl. Android/desktop)
+    focusEl = focusSel
+      ? overlay.querySelector(focusSel)
+      : (overlay.querySelector('.sheet-close') || overlay.querySelector('[tabindex],input,button,select,textarea'));
+  }
+  if (focusEl) { try { focusEl.focus(); } catch {} }
+
+  // When blocking is active, prevent other overlays from opening later
+  trapFocus(overlay);
+}
+
 function openLoginOverlay() {
   // Don’t open on top of blocking flows (reset/alert/login already open)
   if (isBlockingOverlayOpen && isBlockingOverlayOpen()) return;
@@ -1603,7 +1626,7 @@ function openLoginOverlay() {
   try {
     const saved = (!identity || !identity.msisdn) ? loadSavedIdentity() : null;
     if (saved && saved.msisdn && !AUTH_DENIED) {
-      identity = identity && identity.msisdn ? identity : saved;
+      identity = (identity && identity.msisdn) ? identity : saved;
       try {
         if (/^#\/login/.test(location.hash)) {
           history.replaceState(null, '', location.pathname + location.search);
@@ -1628,10 +1651,11 @@ function openLoginOverlay() {
   const lerr = document.getElementById('loginErr');
   if (le) le.value = email;
   if (lerr) lerr.textContent = '';
-  openOverlay('loginOverlay', email ? '#loginPassword' : '#loginEmail');
+
+  // iOS: do not request input focus to avoid zoom; Android/desktop keep existing behaviour
+  const focusTarget = isIOSDevice() ? null : (email ? '#loginPassword' : '#loginEmail');
+  openOverlay('loginOverlay', focusTarget);
 }
-
-
 
 function openForgotOverlay() {
   if (isBlockingOverlayOpen()) return; // cannot open over blocking modals
@@ -1639,8 +1663,11 @@ function openForgotOverlay() {
   const fmsg = document.getElementById('forgotMsg');
   if (fe) fe.value = getRememberedEmail();
   if (fmsg) fmsg.textContent = '';
-  openOverlay('forgotOverlay', '#forgotEmail');
+
+  // iOS: no auto-focus on text input to avoid zoom
+  openOverlay('forgotOverlay', isIOSDevice() ? null : '#forgotEmail');
 }
+
 function openResetOverlay() {
   // Non-dismissable by config; keep user inside until completion
   const rerr = document.getElementById('resetErr');
@@ -1651,7 +1678,9 @@ function openResetOverlay() {
   if (rp) rp.value = '';
   if (rc) rc.value = '';
   if (rs) rs.disabled = true; // disabled until validated
-  openOverlay('resetOverlay', '#resetPassword');
+
+  // iOS: no auto-focus on password field to avoid zoom; Android/desktop keep focusing password
+  openOverlay('resetOverlay', isIOSDevice() ? null : '#resetPassword');
 
   // If token is missing → immediately exit to blocking alert, then login
   const k = new URLSearchParams(location.search).get('k');
@@ -1664,6 +1693,9 @@ function openResetOverlay() {
     });
   }
 }
+
+
+
 function wireAuthForms() {
   // Login
   const lf  = document.getElementById('loginForm');
@@ -1924,12 +1956,22 @@ async function tryAutoLoginViaCredentialsAPI() {
         identity = { msisdn: json.msisdn }; saveIdentity(identity);
         rememberEmailLocal(cred.id);
 
-        // Remove any stale auth hash and close overlay if it was open
+        // Remove any stale auth hash so router can’t reopen auth overlays
         try {
           if (/^#\/(login|forgot|reset)/.test(location.hash || '')) {
             history.replaceState(null, '', location.pathname + (location.search || ''));
           }
         } catch {}
+
+        // 🆕 Hide any existing "Not an authorised user" dimmer BEFORE closing the login overlay
+        try {
+          const err = document.getElementById('authErrorOverlay');
+          if (err && err.parentNode) err.parentNode.removeChild(err);
+        } catch {}
+        try { window.AUTH_DENIED = false; } catch {}
+        try { AUTH_DENIED = false; } catch {}
+
+        // Now it’s safe to close the login sheet without flashing the dimmer underneath
         try { closeOverlay('loginOverlay', /*force*/ true); } catch {}
 
         await loadFromServer({ force: true });
