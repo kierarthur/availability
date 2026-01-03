@@ -6829,7 +6829,14 @@ async function startTimesheetWizard(tile, identity, baseline) {
     display_name: String((typeof deriveOccupantKey === 'function' ? deriveOccupantKey(baseline) : '') || baseline?.candidateName || '').trim(),
     first_name: String(baseline?.candidate?.firstName || baseline?.candidate?.firstname || '').trim(),
     surname: String(baseline?.candidate?.surname || baseline?.candidate?.lastName || baseline?.candidate?.last_name || '').trim(),
-    email: String(baseline?.candidate?.email || '').trim(),
+
+    // ✅ email: prefer server-provided, else remembered login email (if helper exists)
+    email: String(
+      baseline?.candidate?.email ||
+      (typeof getRememberedEmail === 'function' ? getRememberedEmail() : '') ||
+      ''
+    ).trim(),
+
     msisdn: String(identity?.msisdn || '').trim()
   };
 
@@ -6865,6 +6872,7 @@ const payload = {
 if (candidate_hint_text && typeof candidate_hint_text === 'object' && !Array.isArray(candidate_hint_text)) {
   payload.candidate_hint_text = candidate_hint_text;
 }
+
 
 
 
