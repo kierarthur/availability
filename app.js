@@ -6822,27 +6822,51 @@ async function startTimesheetWizard(tile, identity, baseline) {
           const sE = snap5(sEnd);
           const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
 
-          const payload = {
-            booking_id: state.presign.booking_id,   // ← server/broker-issued, unchanged
-            scheduled_start_iso: schedISO.start_iso,
-            scheduled_end_iso:   schedISO.end_iso,
-            worked_start_iso:    workedISO.start_iso,
-            worked_end_iso:      workedISO.end_iso,
-            break_start_iso:     breakISO.start_iso,
-            break_end_iso:       breakISO.end_iso,
-            auth_name: state.auth_name,
-            auth_job_title: state.auth_job_title,
-            nurse_key: state.presign.upload.nurse.key,
-            authoriser_key: state.presign.upload.authoriser.key,
-            idempotency_key: crypto.randomUUID(),
-            client_user_agent: navigator.userAgent,
-            client_timestamp: new Date().toISOString(),
-            occupant_key: cid,                      // ← Candidate_ID to broker
-            hospital: state.hospital,
-            ward: state.ward,
-            job_title: state.job_title,
-            shift_label: state.shift_label
-          };
+ const candidate_hint_text = (() => {
+  const hint = {
+    source: 'app_timesheet_submit',
+    gck: cid,
+    display_name: String((typeof deriveOccupantKey === 'function' ? deriveOccupantKey(baseline) : '') || baseline?.candidateName || '').trim(),
+    first_name: String(baseline?.candidate?.firstName || baseline?.candidate?.firstname || '').trim(),
+    surname: String(baseline?.candidate?.surname || baseline?.candidate?.lastName || baseline?.candidate?.last_name || '').trim(),
+    email: String(baseline?.candidate?.email || '').trim(),
+    msisdn: String(identity?.msisdn || '').trim()
+  };
+
+  for (const k of Object.keys(hint)) {
+    if (!hint[k]) delete hint[k];
+  }
+  return Object.keys(hint).length ? hint : null;
+})();
+
+const payload = {
+  booking_id: state.presign.booking_id,
+  scheduled_start_iso: schedISO.start_iso,
+  scheduled_end_iso:   schedISO.end_iso,
+  worked_start_iso:    workedISO.start_iso,
+  worked_end_iso:      workedISO.end_iso,
+  break_start_iso:     breakISO.start_iso,
+  break_end_iso:       breakISO.end_iso,
+  auth_name: state.auth_name,
+  auth_job_title: state.auth_job_title,
+  nurse_key: state.presign.upload.nurse.key,
+  authoriser_key: state.presign.upload.authoriser.key,
+  idempotency_key: crypto.randomUUID(),
+  client_user_agent: navigator.userAgent,
+  client_timestamp: new Date().toISOString(),
+  occupant_key: cid,
+  hospital: state.hospital,
+  ward: state.ward,
+  job_title: state.job_title,
+  shift_label: state.shift_label
+};
+
+// ✅ only include if it's a real JSON object
+if (candidate_hint_text && typeof candidate_hint_text === 'object' && !Array.isArray(candidate_hint_text)) {
+  payload.candidate_hint_text = candidate_hint_text;
+}
+
+
 
           if (canDebug) {
             const lastSeg  = (k) => (k ? String(k).split('/').pop() : null);
