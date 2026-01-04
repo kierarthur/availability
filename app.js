@@ -6788,39 +6788,58 @@ async function startTimesheetWizard(tile, identity, baseline) {
             return; }
 
           // 3) Submit
-          function isoPairFromHHMM(ymd, startHHMM, endHHMM) {
-            if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
-            const [y, m, d] = String(ymd).split('-').map(Number);
-            const [sH, sM] = String(startHHMM).split(':').map(n => parseInt(n, 10));
-            const [eH, eM] = String(endHHMM).split(':').map(n => parseInt(n, 10));
-            const startLocal = new Date(y, m - 1, d, sH, sM, 0, 0);
-            const endLocal   = new Date(y, m - 1, d, eH, eM, 0, 0);
-            if (endLocal <= startLocal) endLocal.setDate(endLocal.getDate() + 1);
-            return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
-          }
+       function isoPairFromHHMM(ymd, startHHMM, endHHMM, opts) {
+  if (!startHHMM || !endHHMM) return { start_iso: null, end_iso: null };
 
-          const ws = snap5(state.worked_start_hhmm);
-          const we = snap5(state.worked_end_hhmm);
-          const bs = snap5(state.break_start_hhmm);
-          const be = snap5(state.break_end_hhmm);
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const treatEqualAsZero = (o.treatEqualAsZero === true);
 
-          const workedISO = isoPairFromHHMM(state.ymd, ws, we);
-          const breakISO  = isoPairFromHHMM(state.ymd, bs, be);
+  const [y, m, d] = String(ymd).split('-').map(Number);
+  const [sH, sM] = String(startHHMM).split(':').map(n => parseInt(n, 10));
+  const [eH, eM] = String(endHHMM).split(':').map(n => parseInt(n, 10));
 
-          let sStart = state.scheduled_start_hhmm;
-          let sEnd   = state.scheduled_end_hhmm;
+  const startLocal = new Date(y, m - 1, d, sH, sM, 0, 0);
+  const endLocal   = new Date(y, m - 1, d, eH, eM, 0, 0);
 
-          if (!sStart || !sEnd) {
-            const parsed = parseTimesFromLabel(state.shift_label);
-            if (!sStart && parsed) sStart = parsed.start;
-            if (!sEnd   && parsed) sEnd   = parsed.end;
-          }
-          if (!sStart) sStart = ws;
-          if (!sEnd)   sEnd   = we;
+  // ✅ Breaks: if start == end, it's 0 minutes (same instant), NOT +24h
+  if (treatEqualAsZero && endLocal.getTime() === startLocal.getTime()) {
+    return { start_iso: startLocal.toISOString(), end_iso: startLocal.toISOString() };
+  }
 
-          const sS = snap5(sStart);
-          const sE = snap5(sEnd);
-          const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
+  // ✅ Overnight rule (shifts, and breaks that genuinely cross midnight)
+  if (endLocal < startLocal) endLocal.setDate(endLocal.getDate() + 1);
+
+  return { start_iso: startLocal.toISOString(), end_iso: endLocal.toISOString() };
+}
+
+const ws = snap5(state.worked_start_hhmm);
+const we = snap5(state.worked_end_hhmm);
+const bs = snap5(state.break_start_hhmm);
+const be = snap5(state.break_end_hhmm);
+
+// Worked: allow overnight (end < start → +1 day)
+const workedISO = isoPairFromHHMM(state.ymd, ws, we);
+
+// Break: ✅ if start == end treat as 0 mins (same instant), but still allow true overnight (end < start → +1 day)
+const breakISO  = isoPairFromHHMM(state.ymd, bs, be, { treatEqualAsZero: true });
+
+let sStart = state.scheduled_start_hhmm;
+let sEnd   = state.scheduled_end_hhmm;
+
+if (!sStart || !sEnd) {
+  const parsed = parseTimesFromLabel(state.shift_label);
+  if (!sStart && parsed) sStart = parsed.start;
+  if (!sEnd   && parsed) sEnd   = parsed.end;
+}
+if (!sStart) sStart = ws;
+if (!sEnd)   sEnd   = we;
+
+const sS = snap5(sStart);
+const sE = snap5(sEnd);
+
+// Scheduled: allow overnight (end < start → +1 day)
+const schedISO = isoPairFromHHMM(state.ymd, sS, sE);
+
 
  const candidate_hint_text = (() => {
   const hint = {
