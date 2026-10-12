@@ -3,7 +3,7 @@
 
 
 // Bump this any time you change assets or caching logic
-const CACHE_NAME = 'rota-avail-v3';
+const CACHE_NAME = 'rota-avail-v4-sync-feedback';
 
 // Core assets to pre-cache for offline
 const ASSETS = [

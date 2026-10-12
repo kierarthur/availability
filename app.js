@@ -1079,7 +1079,7 @@ function saveLastLoaded(tsIso) {
   if (!els.lastLoaded) return;
   if (tsIso) {
     const d = new Date(tsIso);
-    els.lastLoaded.textContent = 'Updated ' + d.toLocaleString();
+    els.lastLoaded.textContent = 'Loaded ' + d.toLocaleString();
     els.lastLoaded.classList.remove('hidden');
   } else {
     els.lastLoaded.classList.add('hidden');
@@ -2703,6 +2703,30 @@ async function loadFromServer({ force = false } = {}) {
 
 
 
+function availabilitySaveFeedback(json) {
+  const results = Array.isArray(json.results) ? json.results : [];
+  const applied = results.filter(r => r.applied === true);
+  const rejected = results.filter(r => r.applied !== true);
+  const sync = json.bridge_sync;
+  const count = applied.length;
+  if (sync?.state === 'QUEUED' || applied.some(r => r.deferred === true)) {
+    return { message: 'Your changes are queued until the rota refresh finishes.', unconfirmed: false };
+  }
+  if (count && sync && !['SYNCED', 'LEGACY_ONLY', 'NO_CHANGES'].includes(sync.state)) {
+    const reference = /^[0-7][0-9A-HJKMNP-TV-Z]{25}$/.test(sync.correlation_id || '')
+      ? ` Reference: ${sync.correlation_id}.` : '';
+    return { message: sync.state === 'REJECTED'
+      ? `Saved to the availability sheet, but MyTMS did not accept every date. Refresh and check your choices.${reference}`
+      : `Saved to the availability sheet; MyTMS sync is not confirmed. Please try Submit again or contact the office.${reference}`,
+      unconfirmed: sync.state !== 'REJECTED' };
+  }
+  if (rejected.length) {
+    const reasons = rejected.slice(0, 3).map(r => `${r.ymd}: ${r.reason}`).join(', ');
+    return { message: `Saved ${count}. Skipped ${rejected.length} (${reasons}${rejected.length > 3 ? ', …' : ''}).`, unconfirmed: false };
+  }
+  return { message: `Saved ${count} change${count === 1 ? '' : 's'}${sync?.state === 'SYNCED' ? ' to the sheet and MyTMS' : ''}.`, unconfirmed: false };
+}
+
 async function submitChanges() {
   if (AUTH_DENIED) return;
   if (!baseline) return;
@@ -2781,14 +2805,12 @@ async function submitChanges() {
       } catch {}
     }
 
-    if (rejected.length) {
-      const reasons = rejected.slice(0,3).map(r => `${r.ymd}: ${r.reason}`).join(', ');
-      showToast(`Saved ${applied.length}. Skipped ${rejected.length} (${reasons}${rejected.length>3?', …':''}).`, 4200);
-    } else {
-      showToast(`Saved ${applied.length} change${applied.length===1?'':'s'}.`);
-    }
+    const feedback = availabilitySaveFeedback(json);
+    showToast(feedback.message, feedback.unconfirmed || json.bridge_sync?.state === 'REJECTED' ? 10000 : 4200);
 
-    draft = {};
+    // Keep the user's exact intent available for explicit status/retry when
+    // the Sheet saved but the second system has not confirmed its receipt.
+    if (!feedback.unconfirmed) draft = {};
     persistDraft();
     cancelSubmitNudge();
     nudgeShown = false;
